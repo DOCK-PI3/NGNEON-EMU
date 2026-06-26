@@ -36,6 +36,8 @@ const RC_OK: c_int = 0;
 const RC_API_SERVER_RESPONSE_CLIENT_ERROR: c_int = -1;
 const RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR: c_int = -2;
 const RC_CONSOLE_ARCADE: u32 = 27;
+const RA_CLIENT_NAME: &str = "NGNEON-EMU";
+const RA_CLIENT_VERSION: &str = "1.2.3";
 
 // ── Event types for frontend consumption ──────────────────────────────────
 
@@ -136,6 +138,13 @@ impl RASession {
             rc_client_set_get_time_millisecs_function(client, Some(ra_get_time_ms));
         }
 
+        // Be explicit: gameplay sessions must start with spectator mode off.
+        // In spectator mode rcheevos evaluates achievements but never submits
+        // unlocks, which is only useful for offline/audit tooling.
+        unsafe {
+            rc_client_set_spectator_mode_enabled(client, 0);
+        }
+
         // Store the memory reference as userdata so callbacks can access it
         // via rc_client_get_userdata. But we need a stable pointer — we'll
         // create a Box<MemoryRef> and leak it.
@@ -202,6 +211,27 @@ impl RASession {
         unsafe {
             rc_client_set_spectator_mode_enabled(self.client, enabled as c_int);
         }
+    }
+
+    /// Check if spectator mode is enabled.
+    pub fn is_spectator(&self) -> bool {
+        unsafe { rc_client_get_spectator_mode_enabled(self.client) != 0 }
+    }
+
+    /// Force normal gameplay mode before loading a game from the frontend.
+    ///
+    /// If spectator was enabled before game load, rcheevos will otherwise
+    /// evaluate achievements but suppress server unlock submissions.
+    pub fn ensure_unlock_submission_enabled(&mut self) {
+        if self.is_spectator() {
+            append_ra_log(
+                "[MODE] Spectator mode was enabled before gameplay load; unloading and disabling",
+            );
+            if self.is_game_loaded() {
+                self.unload_game();
+            }
+        }
+        self.set_spectator(false);
     }
 
     /// Log in with a username and web API token.
@@ -801,7 +831,11 @@ fn ra_user_agent(client: *mut rc_client_t) -> String {
         }
     };
 
-    format!("NGNEON-EMU/0.1 {}", clause_text)
+    if clause_text.is_empty() {
+        format!("{RA_CLIENT_NAME}/{RA_CLIENT_VERSION}")
+    } else {
+        format!("{RA_CLIENT_NAME}/{RA_CLIENT_VERSION} {clause_text}")
+    }
 }
 
 /// Event handler callback for rcheevos.
@@ -1041,6 +1075,25 @@ mod tests {
         assert!(ra_callback_succeeded(0));
         assert!(!ra_callback_succeeded(-28)); // RC_LOGIN_REQUIRED
         assert!(!ra_callback_succeeded(-34)); // RC_INVALID_CREDENTIALS
+    }
+
+    #[test]
+    fn user_agent_uses_release_identifier() {
+        let user_agent = ra_user_agent(std::ptr::null_mut());
+        assert!(user_agent.starts_with("NGNEON-EMU/1.2.3"));
+        assert!(user_agent.contains("rcheevos"));
+    }
+
+    #[test]
+    fn gameplay_sessions_default_to_unlock_submission_enabled() {
+        let memory = Rc::new(RefCell::new(Memory::new()));
+        let mut session = RASession::new(memory);
+
+        assert!(!session.is_spectator());
+        session.set_spectator(true);
+        assert!(session.is_spectator());
+        session.ensure_unlock_submission_enabled();
+        assert!(!session.is_spectator());
     }
 
     #[test]

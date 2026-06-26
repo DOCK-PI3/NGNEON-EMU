@@ -4,3 +4,53 @@ Cargo.lock
 
 # Diagnostic ROM bank dumps
 *_dump.bin
+# Rust / Cargo
+/target/
+**/target/
+
+# Configurador web (se regenera con pnpm)
+/configurator/node_modules/
+/configurator/dist/
+
+# Paquete release generado
+/NGNEON-EMU/
+
+# Contenido local y con copyright
+/bios/
+/roms/
+/roms_zip/
+/media/
+
+# Configuración, credenciales y datos de usuario
+/config/ngneon.conf
+/config/keyboard.conf
+/config/gamepad/
+/saves/
+/screenshots/
+/frontend/config/
+/frontend/saves/
+/frontend/screenshots/
+/core-emulator/screenshots/
+
+# Diagnóstico y compilación local
+*.log
+*.dmp
+*.pdb
+*.obj
+*.ilk
+*.exp
+*.state
+*.state.*
+/frontend/nul
+/deps/rcheevos/.git/
+
+# Editores y sistema operativo
+.env
+.env.*
+.idea/
+.vscode/
+*.suo
+*.user
+Thumbs.db
+Desktop.ini
+.DS_Store

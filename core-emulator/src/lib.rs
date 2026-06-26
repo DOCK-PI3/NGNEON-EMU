@@ -227,6 +227,21 @@ impl NeoGeo {
         }
     }
 
+    /// Ensure RetroAchievements will submit unlocks for the gameplay session.
+    pub fn ra_ensure_unlock_submission_enabled(&mut self) {
+        if let Some(ref mut ra) = self.ra_session {
+            ra.ensure_unlock_submission_enabled();
+        }
+    }
+
+    /// Returns whether RetroAchievements is currently in spectator mode.
+    pub fn ra_is_spectator(&self) -> bool {
+        self.ra_session
+            .as_ref()
+            .map(retroachievements::RASession::is_spectator)
+            .unwrap_or(false)
+    }
+
     /// Load RetroAchievements game data for the current ROM.
     /// `hash` is the MD5 hash of the program ROM.
     pub fn ra_load_game(&mut self, hash: &str) {

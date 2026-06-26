@@ -472,6 +472,8 @@ fn set_ra_pending_game(status: &mut RuntimeStatus, hash: String, path: Option<&P
 }
 
 fn reload_current_ra_game(neogeo: &mut NeoGeo, status: &mut RuntimeStatus) {
+    neogeo.ra_ensure_unlock_submission_enabled();
+
     if !status.ra_game_path.is_empty() {
         neogeo.ra_identify_and_load_arcade_game(&status.ra_game_path);
         status.ra_last_status = String::from("RA: identificando juego");

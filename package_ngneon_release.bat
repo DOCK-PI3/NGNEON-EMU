@@ -158,7 +158,7 @@ if exist "%ROOT%\README.md" copy /y "%ROOT%\README.md" "%OUT%\README.md" >nul
 
 echo [INFO] Making copied config portable...
 set "NGNEON_PACKAGE_CONFIG=%OUT%\config\ngneon.conf"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $p = $env:NGNEON_PACKAGE_CONFIG; if (Test-Path -LiteralPath $p) { $lines = @(Get-Content -LiteralPath $p); $map = [ordered]@{ rom_path=''; bios_dir='bios'; media_dir='media'; gamepad='off' }; foreach ($k in $map.Keys) { $pattern = '^' + [regex]::Escape($k) + '='; $value = $k + '=' + $map[$k]; $found = $false; for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pattern) { $lines[$i] = $value; $found = $true } }; if (-not $found) { $lines += $value } }; Set-Content -LiteralPath $p -Value $lines -Encoding ASCII } }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $p = $env:NGNEON_PACKAGE_CONFIG; if (Test-Path -LiteralPath $p) { $lines = @(Get-Content -LiteralPath $p); $map = [ordered]@{ rom_path=''; bios_dir='bios'; media_dir='media'; gamepad='off'; ra_token=''; ra_password=''; ra_username='' }; foreach ($k in $map.Keys) { $pattern = '^' + [regex]::Escape($k) + '='; $value = $k + '=' + $map[$k]; $found = $false; for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pattern) { $lines[$i] = $value; $found = $true } }; if (-not $found) { $lines += $value } }; Set-Content -LiteralPath $p -Value $lines -Encoding ASCII } }"
 if errorlevel 1 (
     echo [ERROR] Could not update copied config.
     exit /b 1
