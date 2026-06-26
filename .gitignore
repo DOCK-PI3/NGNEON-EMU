@@ -1,0 +1,6 @@
+# Rust build artifacts
+/target
+Cargo.lock
+
+# Diagnostic ROM bank dumps
+*_dump.bin

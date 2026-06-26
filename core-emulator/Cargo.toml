@@ -1,0 +1,15 @@
+[package]
+name = "core-emulator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+lazy_static = "1.5.0"
+z80emu = "0.11.0"
+zip = "8.6.0"
+md5 = "0.7"
+reqwest = { version = "0.12", features = ["blocking"] }
+
+[build-dependencies]
+cc = "1.2"

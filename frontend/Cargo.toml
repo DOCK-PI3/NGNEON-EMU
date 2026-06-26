@@ -1,0 +1,27 @@
+[package]
+name = "frontend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = "0.34.2"
+sdl2 = "0.38.0"
+gl = "0.14"
+core-emulator = { path = "../core-emulator" }
+rfd = "0.14.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lib]
+name = "frontend"
+path = "src/lib.rs"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "resampler_bench"
+harness = false
+
+[[bin]]
+name = "ngneon-emu"
+path = "src/main.rs"
