@@ -435,7 +435,7 @@ impl RASession {
 
     /// Serialize achievement/leaderboard progress for inclusion in a save state.
     pub fn serialize_progress(&mut self) -> Option<Vec<u8>> {
-        if !self.game_loaded || self.is_hardcore() {
+        if !self.game_loaded {
             return None;
         }
 

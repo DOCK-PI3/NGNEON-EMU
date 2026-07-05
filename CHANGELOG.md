@@ -7,6 +7,15 @@ El proyecto combina un núcleo Neo Geo en Rust, un frontend nativo SDL2/OpenGL y
 
 ---
 
+## 2026-07-05 — Preparación RetroAchievements Hardcore
+
+- El cambio Casual → Hardcore aplica un reset completo antes del siguiente frame.
+- UniBIOS queda bloqueada en Hardcore y se sustituye por una BIOS oficial disponible.
+- La carga de save states sigue bloqueada en el núcleo, pero ahora se permite crearlos para depuración junto con el progreso de `rcheevos`.
+- Dumps, overlay de depuración y hacks Geolith se desactivan en Hardcore.
+- El título de ventana y la notificación de carga indican `RA:HARDCORE` o `RA:CASUAL`.
+- Añadida la matriz de trabajo pendiente en `HARDCORE_COMPLIANCE.md`.
+
 ## 2026-07-05 — Paridad adicional con Geolith y persistencia segura
 
 ### Opciones avanzadas de emulación

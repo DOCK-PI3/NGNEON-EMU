@@ -319,7 +319,7 @@ Integración con [RetroAchievements.org](https://retroachievements.org) mediante
 - **Identificación de juegos**: hash MD5 de la P-ROM para identificar el juego en la base de datos de RA.
 - **Logros (Achievements)**: evaluación en tiempo real de condiciones de memoria del juego.
 - **Notificaciones visuales**: popup dorado con el nombre del logro y puntuación al desbloquear.
-- **Modo Hardcore**: desactiva save states para juego legítimo (rankings).
+- **Modo Hardcore**: bloquea la carga de save states; permite crearlos únicamente para depuración.
 - **Rich Presence**: estado del juego en tiempo real (progreso, nivel, etc.) reportado a RA.
 - **Leaderboards**: puntuaciones enviadas a tablas de clasificación (procesado internamente).
 - **Persistencia**: token/password, username y preferencia hardcore guardados en `config/ngneon.conf`.
@@ -339,7 +339,7 @@ ra_hardcore=off
 - **`ra_token`**: tu token de API de RetroAchievements (consíguelo en [Settings > API Keys](https://retroachievements.org/settings)).
 - **`ra_password`**: fallback para login con password si no tienes `ra_token` configurado. `ra_token` tiene prioridad.
 - **`ra_username`**: tu nombre de usuario en RetroAchievements (se guarda automáticamente tras el primer login exitoso).
-- **`ra_hardcore`**: `on`/`off`. En modo hardcore no se permiten save states, rewind, ni trampas.
+- **`ra_hardcore`**: `on`/`off`. En Hardcore no se pueden cargar save states ni usar rewind, trampas, UniBIOS, hacks o herramientas de depuración. Se pueden crear estados para diagnóstico.
 
 ### Menú de configuración (Ctrl+S → RA)
 

@@ -157,6 +157,15 @@ pub fn load_bios_from_multi<P: AsRef<Path>>(dirs: &[P]) -> Result<Option<BiosIma
     Ok(candidates.into_iter().next())
 }
 
+/// Returns whether a BIOS label identifies Universe BIOS.
+///
+/// UniBIOS exposes debugging and cheat facilities, so frontends must reject it
+/// while RetroAchievements Hardcore mode is active.
+pub fn is_unibios_label(label: &str) -> bool {
+    let lower = label.to_ascii_lowercase();
+    lower.contains("uni-bios") || lower.contains("unibios")
+}
+
 /// Load the ZOOM ROM from multiple directories (tries each dir in order).
 pub fn load_zoom_rom_from_multi<P: AsRef<Path>>(dirs: &[P]) -> Result<Option<ZoomRom>, String> {
     for dir in dirs {
@@ -750,6 +759,14 @@ mod tests {
         assert!(!is_bios_candidate_name("sm1.sm1"));
         assert!(is_bios_candidate_name("sp-s2.sp1"));
         assert!(is_bios_candidate_name("uni-bios_4_0.rom"));
+    }
+
+    #[test]
+    fn unibios_labels_are_detected_for_hardcore_enforcement() {
+        assert!(is_unibios_label("neogeo.zip:uni-bios_4_0.rom"));
+        assert!(is_unibios_label("unibios.zip:uni-bios_3_3.rom"));
+        assert!(!is_unibios_label("neogeo.zip:sp-s2.sp1"));
+        assert!(!is_unibios_label("aes.zip:neo-epo.bin"));
     }
 
     #[test]

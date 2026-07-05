@@ -108,6 +108,7 @@ struct RuntimeStatus {
     settings_selected_index: usize,
     settings_vol_adjusting: bool,
     diagnostic_dumps: bool,
+    show_debug: bool,
     volume: u8,
     muted_volume: u8,
     muted: bool,
@@ -145,6 +146,9 @@ struct RuntimeStatus {
     ra_username: String,
     /// RA hardcore mode (no saves, no rewind for legit play)
     ra_hardcore: bool,
+    /// A Casual→Hardcore reset was already applied synchronously; the next
+    /// rcheevos reset event is only an acknowledgement.
+    ra_hardcore_reset_applied: bool,
     /// RA login status
     ra_logged_in: bool,
     /// True after a failed token login has already tried password fallback once.
@@ -219,6 +223,7 @@ impl RuntimeStatus {
             settings_selected_index: 0,
             settings_vol_adjusting: false,
             diagnostic_dumps: false,
+            show_debug: false,
             volume: 100,
             muted_volume: 0,
             muted: false,
@@ -246,6 +251,7 @@ impl RuntimeStatus {
             ra_password: String::new(),
             ra_username: String::new(),
             ra_hardcore: false,
+            ra_hardcore_reset_applied: false,
             ra_logged_in: false,
             ra_token_fallback_attempted: false,
             ra_last_status: String::from("RA: sin iniciar"),
@@ -1011,7 +1017,6 @@ fn run() -> Result<(), String> {
     // Initialize RetroAchievements session
     neogeo.init_retroachievements();
     let mut crt_gl = gl_render::CrtGlConfig::default();
-    let mut show_debug = false;
     let bios_dir = resolve_bios_directory();
     let bios_dir_str = bios_dir.to_string_lossy().to_string();
     let rom_dir = resolve_rom_directory();
@@ -1127,13 +1132,25 @@ fn run() -> Result<(), String> {
     status.memcard_inserted = load_config_bool("memcard", true);
     status.memcard_write_protected = load_config_bool("memcard_write_protect", false);
     if status.ra_hardcore {
-        status.cpu_overclock = false;
-        status.sprite_limit = core_emulator::video::HARDWARE_SPRITES_PER_SCANLINE;
-        status.disable_adpcm_wrap = false;
+        if ensure_hardcore_safe_bios(&mut status, &mut neogeo)? {
+            disable_emulation_hacks_for_hardcore(&mut status, &mut neogeo);
+        } else {
+            status.ra_hardcore = false;
+            status.ra_last_status =
+                String::from("RA: Hardcore requiere una BIOS oficial, no UniBIOS");
+            save_config_bool("ra_hardcore", false);
+            eprintln!(
+                "[RA] Hardcore desactivado: instala una BIOS oficial MVS/AES para reemplazar UniBIOS."
+            );
+        }
     }
     apply_emulation_hacks(&status, &mut neogeo);
     neogeo.set_memory_card_state(status.memcard_inserted, status.memcard_write_protected);
     neogeo.ra_set_hardcore(status.ra_hardcore);
+    if status.ra_hardcore {
+        // A Hardcore session must always start from a clean machine state.
+        neogeo.reset();
+    }
     let mut ra_auto_login_pending = if !status.ra_token.is_empty() {
         status.ra_token_fallback_attempted = false;
         status.ra_last_status = String::from("RA: login token pendiente");
@@ -1341,18 +1358,7 @@ fn run() -> Result<(), String> {
                     repeat: false,
                     ..
                 } if !status.show_state_manager => {
-                    if status.ra_hardcore {
-                        let msg = if status.lang.language == lang::Language::Es {
-                            "Save states desactivados en modo Hardcore"
-                        } else {
-                            "Save states are disabled in Hardcore mode"
-                        };
-                        ui::draw_notification(
-                            &mut neogeo.video.framebuffer,
-                            neogeo.video.width,
-                            msg,
-                        );
-                    } else if let Some(state) = neogeo.save_state() {
+                    if let Some(state) = neogeo.save_state() {
                         let save_dir = std::path::Path::new("saves");
                         let _ = std::fs::create_dir_all(save_dir);
                         let slot = status.current_slot;
@@ -1576,10 +1582,24 @@ fn run() -> Result<(), String> {
                     repeat: false,
                     ..
                 } => {
-                    show_debug = !show_debug;
+                    if status.ra_hardcore {
+                        status.show_debug = false;
+                        let msg = if status.lang.language == lang::Language::Es {
+                            "Overlay de depuración bloqueado en RA Hardcore"
+                        } else {
+                            "Debug overlay is blocked in RA Hardcore"
+                        };
+                        ui::draw_notification(
+                            &mut neogeo.video.framebuffer,
+                            neogeo.video.width,
+                            msg,
+                        );
+                        continue;
+                    }
+                    status.show_debug = !status.show_debug;
                     println!(
                         "[INFO] Debug overlay {}",
-                        if show_debug { "ON" } else { "OFF" }
+                        if status.show_debug { "ON" } else { "OFF" }
                     );
                 }
                 Event::KeyDown {
@@ -2175,6 +2195,21 @@ fn run() -> Result<(), String> {
                     let idx = status.bios_selected_index;
                     if idx < status.bios_list.len() {
                         let label = status.bios_list[idx].clone();
+                        if status.ra_hardcore && core_emulator::bios::is_unibios_label(&label) {
+                            let msg = if status.lang.language == lang::Language::Es {
+                                "UniBIOS bloqueada en RA Hardcore"
+                            } else {
+                                "UniBIOS is blocked in RA Hardcore"
+                            };
+                            eprintln!("[RA] {msg}");
+                            ui::draw_notification(
+                                &mut neogeo.video.framebuffer,
+                                neogeo.video.width,
+                                msg,
+                            );
+                            status.show_bios_selector = false;
+                            continue;
+                        }
                         // Scan for BIOS data by matching label (check both bios/ and roms/)
                         let dirs = [&bios_dir_str as &str, &rom_dir.to_string_lossy()];
                         if let Ok(bios_list) = core_emulator::bios::list_available_bios_multi(&dirs)
@@ -2592,18 +2627,7 @@ fn run() -> Result<(), String> {
                     ..
                 } if status.show_state_manager => {
                     // Save to the manager-selected slot
-                    if status.ra_hardcore {
-                        let msg = if status.lang.language == lang::Language::Es {
-                            "Save states desactivados en modo Hardcore"
-                        } else {
-                            "Save states are disabled in Hardcore mode"
-                        };
-                        ui::draw_notification(
-                            &mut neogeo.video.framebuffer,
-                            neogeo.video.width,
-                            msg,
-                        );
-                    } else if let Some(state) = neogeo.save_state() {
+                    if let Some(state) = neogeo.save_state() {
                         let save_dir = std::path::Path::new("saves");
                         let _ = std::fs::create_dir_all(save_dir);
                         let slot = status.mgr_selected_slot;
@@ -2869,10 +2893,15 @@ fn run() -> Result<(), String> {
                             .lang
                             .ra_game_loaded
                             .replacen("{}", &num_achievements.to_string(), 1);
+                    let mode = if status.ra_hardcore {
+                        "HARDCORE"
+                    } else {
+                        "CASUAL"
+                    };
                     ui::draw_notification(
                         &mut neogeo.video.framebuffer,
                         neogeo.video.width,
-                        &format!("RA: {}", title),
+                        &format!("RA: {title} [{mode}]"),
                     );
                 }
                 core_emulator::retroachievements::RAEvent::GameLoadFailed { error } => {
@@ -2892,8 +2921,12 @@ fn run() -> Result<(), String> {
                 }
                 core_emulator::retroachievements::RAEvent::ResetRequested => {
                     println!("[RA] Runtime requested a reset after changing hardcore mode.");
-                    neogeo.reset();
-                    clear_audio_pipeline(&ring_buffer, &mut resampler);
+                    if status.ra_hardcore_reset_applied {
+                        status.ra_hardcore_reset_applied = false;
+                    } else {
+                        neogeo.reset();
+                        clear_audio_pipeline(&ring_buffer, &mut resampler);
+                    }
                     status.ra_last_status = String::from("RA: sistema reiniciado");
                     ui::draw_notification(
                         &mut neogeo.video.framebuffer,
@@ -2913,6 +2946,20 @@ fn run() -> Result<(), String> {
                     // silent for now
                 }
                 _ => {}
+            }
+        }
+        // RC_CLIENT_EVENT_RESET is emitted synchronously when Hardcore is
+        // enabled. Do not let an acknowledgement flag leak into later frames
+        // when no RA game was waiting for reset.
+        status.ra_hardcore_reset_applied = false;
+        let runtime_hardcore = neogeo.ra_is_hardcore();
+        if status.ra_hardcore != runtime_hardcore {
+            status.ra_hardcore = runtime_hardcore;
+            status.ra_hardcore_reset_applied = false;
+            save_config_bool("ra_hardcore", runtime_hardcore);
+            if !runtime_hardcore {
+                status.ra_last_status = String::from("RA: Hardcore desactivado por el servicio");
+                eprintln!("[RA] Hardcore desactivado por RetroAchievements para esta sesión.");
             }
         }
 
@@ -2991,7 +3038,7 @@ fn run() -> Result<(), String> {
         }
 
         // Draw debug overlay (on CPU framebuffer, before GPU upload)
-        if show_debug {
+        if status.show_debug {
             let machine = neogeo.status();
             ui::draw_debug_overlay(
                 &mut neogeo.video.framebuffer,
@@ -3287,6 +3334,65 @@ fn load_default_bios(
     Ok(bios_label)
 }
 
+fn apply_bios_label(neogeo: &mut NeoGeo, label: &str) -> Result<bool, String> {
+    let bios_dir = resolve_bios_directory();
+    let rom_dir = resolve_rom_directory();
+    let bios_dir_text = bios_dir.to_string_lossy();
+    let rom_dir_text = rom_dir.to_string_lossy();
+    let dirs = [bios_dir_text.as_ref(), rom_dir_text.as_ref()];
+    let candidates = core_emulator::bios::list_available_bios_multi(&dirs)?;
+    let Some(found) = candidates.iter().find(|candidate| candidate.label == label) else {
+        return Ok(false);
+    };
+
+    neogeo.set_bios(found.data.clone());
+    if let Some(zoom_rom) = core_emulator::bios::load_zoom_rom_for_bios_from_multi(&dirs, label)? {
+        neogeo.set_zoom_rom(zoom_rom.data);
+    }
+    if let Some(sfix_rom) = core_emulator::bios::load_sfix_rom_for_bios_from_multi(&dirs, label)? {
+        neogeo.set_sfix_rom(sfix_rom.data);
+    }
+    if let Some(sm1_rom) = core_emulator::bios::load_sm1_rom_for_bios_from_multi(&dirs, label)? {
+        neogeo.set_sm1_rom(sm1_rom.data);
+    }
+    Ok(true)
+}
+
+/// Replaces UniBIOS with the first available official BIOS before Hardcore.
+///
+/// UniBIOS includes cheat and debugging facilities. Hardcore must remain
+/// disabled when no safe firmware is available.
+fn ensure_hardcore_safe_bios(
+    status: &mut RuntimeStatus,
+    neogeo: &mut NeoGeo,
+) -> Result<bool, String> {
+    if !core_emulator::bios::is_unibios_label(&status.current_bios) {
+        return Ok(true);
+    }
+
+    let bios_dir = resolve_bios_directory();
+    let rom_dir = resolve_rom_directory();
+    let bios_dir_text = bios_dir.to_string_lossy();
+    let rom_dir_text = rom_dir.to_string_lossy();
+    let dirs = [bios_dir_text.as_ref(), rom_dir_text.as_ref()];
+    let candidates = core_emulator::bios::list_available_bios_multi(&dirs)?;
+    let Some(safe_bios) = candidates
+        .iter()
+        .find(|candidate| !core_emulator::bios::is_unibios_label(&candidate.label))
+    else {
+        return Ok(false);
+    };
+    let label = safe_bios.label.clone();
+    if !apply_bios_label(neogeo, &label)? {
+        return Ok(false);
+    }
+
+    status.current_bios = label.clone();
+    save_config_bios(&label);
+    println!("[RA] Hardcore: UniBIOS sustituida por BIOS segura '{label}'.");
+    Ok(true)
+}
+
 fn parse_initial_rom_request(
     mut args: impl Iterator<Item = OsString>,
 ) -> Result<InitialRomRequest, String> {
@@ -3491,10 +3597,16 @@ fn update_window_title(
         EmulationMode::Paused => status.lang.title_paused,
         EmulationMode::Running => status.lang.title_rom,
     };
+    let ra_mode = if status.ra_hardcore {
+        "RA:HARDCORE"
+    } else {
+        "RA:CASUAL"
+    };
     let title = format!(
-        "NGNEON-EMU | {} | {} | {} {}/{} | {:.1} FPS | {} | PC={:06X} SR={:04X} | {}/{} | PBANK=0x{:X} | P1={:02X} SYS={:02X}",
+        "NGNEON-EMU | {} | {} | {} | {} {}/{} | {:.1} FPS | {} | PC={:06X} SR={:04X} | {}/{} | PBANK=0x{:X} | P1={:02X} SYS={:02X}",
         mode,
         status.label,
+        ra_mode,
         status.lang.title_slot,
         status.current_slot,
         SAVE_SLOTS - 1,
@@ -3608,6 +3720,9 @@ fn disable_emulation_hacks_for_hardcore(status: &mut RuntimeStatus, neogeo: &mut
     status.cpu_overclock = false;
     status.sprite_limit = core_emulator::video::HARDWARE_SPRITES_PER_SCANLINE;
     status.disable_adpcm_wrap = false;
+    status.diagnostic_dumps = false;
+    status.show_debug = false;
+    core_emulator::rom::set_diagnostic_dumps(false);
     apply_emulation_hacks(status, neogeo);
     save_config_bool("cpu_overclock", false);
     save_config_key(
@@ -3615,6 +3730,7 @@ fn disable_emulation_hacks_for_hardcore(status: &mut RuntimeStatus, neogeo: &mut
         &core_emulator::video::HARDWARE_SPRITES_PER_SCANLINE.to_string(),
     );
     save_config_bool("disable_adpcm_wrap", false);
+    save_config_bool("diagnostic_dumps", false);
 }
 
 fn notify_hack_blocked_by_hardcore(status: &mut RuntimeStatus, neogeo: &mut NeoGeo) {
@@ -3634,8 +3750,8 @@ fn handle_settings_enter(
     neogeo: &mut NeoGeo,
     crt_gl: &mut gl_render::CrtGlConfig,
     window: &mut sdl2::video::Window,
-    _ring_buffer: &std::sync::Arc<std::sync::Mutex<audio::AudioRingBuffer>>,
-    _resampler: &mut audio::Resampler,
+    ring_buffer: &std::sync::Arc<std::sync::Mutex<audio::AudioRingBuffer>>,
+    resampler: &mut audio::Resampler,
     _save_counter: u32,
 ) {
     match status.settings_tab {
@@ -3770,16 +3886,26 @@ fn handle_settings_enter(
                 }
                 1 => {
                     // Toggle ROM dumps
-                    status.diagnostic_dumps = !status.diagnostic_dumps;
-                    core_emulator::rom::set_diagnostic_dumps(status.diagnostic_dumps);
-                    save_config_bool("diagnostic_dumps", status.diagnostic_dumps);
-                    let msg = if status.diagnostic_dumps {
-                        "ROM dumps: ON"
+                    if status.ra_hardcore {
+                        status.diagnostic_dumps = false;
+                        core_emulator::rom::set_diagnostic_dumps(false);
+                        notify_hack_blocked_by_hardcore(status, neogeo);
                     } else {
-                        "ROM dumps: OFF"
-                    };
-                    println!("[INFO] {msg}");
-                    ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, msg);
+                        status.diagnostic_dumps = !status.diagnostic_dumps;
+                        core_emulator::rom::set_diagnostic_dumps(status.diagnostic_dumps);
+                        save_config_bool("diagnostic_dumps", status.diagnostic_dumps);
+                        let msg = if status.diagnostic_dumps {
+                            "ROM dumps: ON"
+                        } else {
+                            "ROM dumps: OFF"
+                        };
+                        println!("[INFO] {msg}");
+                        ui::draw_notification(
+                            &mut neogeo.video.framebuffer,
+                            neogeo.video.width,
+                            msg,
+                        );
+                    }
                 }
                 2 => {
                     // Toggle Auto-save on exit
@@ -4008,11 +4134,45 @@ fn handle_settings_enter(
                     reload_current_ra_game(neogeo, status);
                 }
                 6 => {
-                    status.ra_hardcore = !status.ra_hardcore;
-                    if status.ra_hardcore {
+                    let enabling = !status.ra_hardcore;
+                    if enabling {
+                        match ensure_hardcore_safe_bios(status, neogeo) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                let msg = if status.lang.language == lang::Language::Es {
+                                    "Hardcore requiere una BIOS oficial MVS/AES"
+                                } else {
+                                    "Hardcore requires an official MVS/AES BIOS"
+                                };
+                                status.ra_last_status = msg.to_string();
+                                ui::draw_notification(
+                                    &mut neogeo.video.framebuffer,
+                                    neogeo.video.width,
+                                    msg,
+                                );
+                                return;
+                            }
+                            Err(error) => {
+                                status.ra_last_status = format!("RA BIOS: {error}");
+                                eprintln!("[RA] No se pudo validar la BIOS para Hardcore: {error}");
+                                return;
+                            }
+                        }
                         disable_emulation_hacks_for_hardcore(status, neogeo);
+                        let reset_event_expected = neogeo.ra_is_game_loaded();
+                        neogeo.ra_set_hardcore(true);
+                        // Apply the mandatory reset before another emulated
+                        // frame can run. The queued rcheevos reset event is
+                        // treated as an acknowledgement.
+                        neogeo.reset();
+                        clear_audio_pipeline(ring_buffer, resampler);
+                        status.ra_hardcore_reset_applied = reset_event_expected;
+                        status.ra_hardcore = true;
+                    } else {
+                        neogeo.ra_set_hardcore(false);
+                        status.ra_hardcore = false;
+                        status.ra_hardcore_reset_applied = false;
                     }
-                    neogeo.ra_set_hardcore(status.ra_hardcore);
                     save_config_bool("ra_hardcore", status.ra_hardcore);
                     let msg = if status.ra_hardcore {
                         "RA Hardcore: ON"

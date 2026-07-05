@@ -229,6 +229,20 @@ impl NeoGeo {
         }
     }
 
+    /// Returns whether RetroAchievements Hardcore mode is active.
+    pub fn ra_is_hardcore(&self) -> bool {
+        self.ra_session
+            .as_ref()
+            .is_some_and(retroachievements::RASession::is_hardcore)
+    }
+
+    /// Returns whether RetroAchievements has activated data for the current game.
+    pub fn ra_is_game_loaded(&self) -> bool {
+        self.ra_session
+            .as_ref()
+            .is_some_and(retroachievements::RASession::is_game_loaded)
+    }
+
     /// Ensure RetroAchievements will submit unlocks for the gameplay session.
     pub fn ra_ensure_unlock_submission_enabled(&mut self) {
         if let Some(ref mut ra) = self.ra_session {
@@ -493,14 +507,10 @@ impl NeoGeo {
 
     /// Save the full emulation state to a binary buffer.
     /// Returns `None` if the save path hasn't been set (no ROM loaded).
+    ///
+    /// Creating states is allowed in RetroAchievements Hardcore mode for
+    /// debugging. Loading them remains blocked by [`Self::load_state`].
     pub fn save_state(&mut self) -> Option<Vec<u8>> {
-        if self
-            .ra_session
-            .as_ref()
-            .is_some_and(retroachievements::RASession::is_hardcore)
-        {
-            return None;
-        }
         let mem = self.memory.borrow();
         mem.save_path.as_ref()?;
         let mut state = savestate::serialize_all(
@@ -886,6 +896,22 @@ mod tests {
         assert!(!neogeo.emulation_paused);
         assert!(neogeo.last_error.is_none());
         assert_eq!(neogeo.last_cpu_cycles, 0);
+    }
+
+    #[test]
+    fn hardcore_allows_state_creation_but_blocks_loading() {
+        let mut neogeo = NeoGeo::new();
+        neogeo.memory.borrow_mut().save_path = Some("hardcore-test".to_string());
+        neogeo.init_retroachievements();
+        neogeo.ra_set_hardcore(true);
+
+        let state = neogeo
+            .save_state()
+            .expect("hardcore must allow creating debugging states");
+        assert_eq!(
+            neogeo.load_state(&state),
+            Err("Save states are disabled in RetroAchievements Hardcore mode")
+        );
     }
 
     #[test]
