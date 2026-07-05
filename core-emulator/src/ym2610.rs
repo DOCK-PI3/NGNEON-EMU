@@ -968,6 +968,7 @@ pub struct Ym2610 {
     // Runtime backend. The Rust implementation remains available for focused
     // unit tests; normal emulation uses Geolith's YMFM core through FFI.
     geolith_backend: bool,
+    adpcm_wrap: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1028,7 +1029,21 @@ impl Ym2610 {
             sample_count: 0,
             vrom,
             geolith_backend: false,
+            adpcm_wrap: true,
         }
+    }
+
+    pub fn set_adpcm_wrap(&mut self, enabled: bool) {
+        self.adpcm_wrap = enabled;
+        if self.geolith_backend {
+            unsafe {
+                ng_ymfm_adpcm_wrap(i32::from(enabled));
+            }
+        }
+    }
+
+    pub fn adpcm_wrap(&self) -> bool {
+        self.adpcm_wrap
     }
 
     pub fn enable_geolith_backend(&mut self) {
@@ -1036,7 +1051,7 @@ impl Ym2610 {
         unsafe {
             ng_ymfm_init();
             ng_ymfm_reset();
-            ng_ymfm_adpcm_wrap(1);
+            ng_ymfm_adpcm_wrap(i32::from(self.adpcm_wrap));
         }
         self.update_geolith_roms();
     }
@@ -1070,7 +1085,7 @@ impl Ym2610 {
         if self.geolith_backend {
             unsafe {
                 ng_ymfm_reset();
-                ng_ymfm_adpcm_wrap(1);
+                ng_ymfm_adpcm_wrap(i32::from(self.adpcm_wrap));
             }
             self.update_geolith_roms();
         }
@@ -1737,12 +1752,12 @@ impl Ym2610 {
             }
             unsafe {
                 ng_ymfm_state_load(data[off..off + geolith_len].as_ptr(), geolith_len);
-                ng_ymfm_adpcm_wrap(1);
+                ng_ymfm_adpcm_wrap(i32::from(self.adpcm_wrap));
             }
         } else if self.geolith_backend {
             unsafe {
                 ng_ymfm_reset();
-                ng_ymfm_adpcm_wrap(1);
+                ng_ymfm_adpcm_wrap(i32::from(self.adpcm_wrap));
             }
         }
         Ok(())
@@ -2470,7 +2485,17 @@ mod tests {
     }
 
     #[test]
-    fn geolith_busy_period_restarts_instead_of_accumulating() {
+    fn adpcm_wrap_setting_survives_backend_reset() {
+        let mut chip = new_test_ym2610();
+        chip.enable_geolith_backend();
+        chip.set_adpcm_wrap(false);
+        chip.reset();
+
+        assert!(!chip.adpcm_wrap());
+    }
+
+    #[test]
+    fn geolith_busy_period_accumulates_like_reference_core() {
         let mut chip = new_test_ym2610();
         chip.enable_geolith_backend();
 
@@ -2488,11 +2513,15 @@ mod tests {
         let mut buffer = [0i16; 4];
         chip.generate(&mut buffer, 2);
 
-        assert_eq!(
+        assert_ne!(
             chip.read_status(0) & 0x80,
             0,
-            "busy duration must be based on the latest write, not all prior writes"
+            "back-to-back writes must extend the pending BUSY interval"
         );
+
+        let mut drain = vec![0i16; 2_048];
+        chip.generate(&mut drain, 1_024);
+        assert_eq!(chip.read_status(0) & 0x80, 0);
     }
 
     #[test]

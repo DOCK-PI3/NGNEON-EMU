@@ -303,19 +303,6 @@ fn is_expected_silent_attract(label: &str) -> bool {
     matches!(label.as_str(), "diggerma" | "dragonsh")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::is_expected_silent_attract;
-
-    #[test]
-    fn expected_silent_attract_accepts_neo_and_zip_labels() {
-        assert!(is_expected_silent_attract("diggerma.neo"));
-        assert!(is_expected_silent_attract("diggerma.zip"));
-        assert!(is_expected_silent_attract("dragonsh.zip"));
-        assert!(!is_expected_silent_attract("mslug.zip"));
-    }
-}
-
 fn count_nonblack(framebuffer: &[u32]) -> usize {
     framebuffer
         .iter()
@@ -376,5 +363,18 @@ impl SystemRoms {
             machine.set_sm1_rom(sm1.clone());
         }
         machine
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_expected_silent_attract;
+
+    #[test]
+    fn expected_silent_attract_accepts_neo_and_zip_labels() {
+        assert!(is_expected_silent_attract("diggerma.neo"));
+        assert!(is_expected_silent_attract("diggerma.zip"));
+        assert!(is_expected_silent_attract("dragonsh.zip"));
+        assert!(!is_expected_silent_attract("mslug.zip"));
     }
 }

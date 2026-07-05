@@ -14,7 +14,8 @@ const SCB1_WORDS_PER_SPRITE: u16 = 64;
 const SCB2_START: u16 = 0x8000;
 const SCB3_START: u16 = 0x8200;
 const SCB4_START: u16 = 0x8400;
-const SPRITES_PER_SCANLINE_LIMIT: usize = 96;
+pub const HARDWARE_SPRITES_PER_SCANLINE: usize = 96;
+pub const MAX_SPRITES_PER_SCANLINE: usize = 381;
 const FIX_MAP_START: u16 = 0x7000;
 const FIX_MAP_COLUMNS: usize = 40;
 const FIX_MAP_ROWS: usize = 32;
@@ -115,6 +116,7 @@ pub struct Video {
     pub height: usize,
     sprite_line_buffers: [[u16; SCREEN_WIDTH]; 2],
     sprite_line_buffer_active: usize,
+    sprites_per_scanline: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +171,14 @@ struct FixDebugStats {
 }
 
 impl Video {
+    pub fn set_sprites_per_scanline(&mut self, limit: usize) {
+        self.sprites_per_scanline = limit.clamp(1, MAX_SPRITES_PER_SCANLINE);
+    }
+
+    pub fn sprites_per_scanline(&self) -> usize {
+        self.sprites_per_scanline
+    }
+
     /// Clear the framebuffer (public — called by the emulation loop at frame start).
     pub fn clear_framebuffer(&mut self) {
         self.clear();
@@ -344,6 +354,7 @@ impl Video {
             height: SCREEN_HEIGHT,
             sprite_line_buffers: [[0; SCREEN_WIDTH]; 2],
             sprite_line_buffer_active: 0,
+            sprites_per_scanline: HARDWARE_SPRITES_PER_SCANLINE,
         }
     }
 
@@ -461,7 +472,7 @@ fn render_scanline_sprites(
             continue;
         }
 
-        if matched_sprites == SPRITES_PER_SCANLINE_LIMIT {
+        if matched_sprites == video.sprites_per_scanline {
             break;
         }
 
@@ -553,7 +564,7 @@ fn render_scanline_sprites_to_line_buffer(
             continue;
         }
 
-        if matched_sprites == SPRITES_PER_SCANLINE_LIMIT {
+        if matched_sprites == video.sprites_per_scanline {
             break;
         }
 
@@ -601,7 +612,15 @@ fn draw_sprite_scanline(
     let tile_lsb = read_vram_word(memory, scb1 + tile_map_offset);
     let attr = read_vram_word(memory, scb1 + tile_map_offset + 1);
     let tile_index = tile_index_from_scb1(tile_lsb, attr, memory.auto_animation_counter());
-    let Some(tile) = decode_sprite_tile(&memory.crom, tile_index, memory.lspc_rom_size) else {
+    let source_row = source_y % SPRITE_TILE_HEIGHT;
+    let decoded_row = if attr & 0x0002 != 0 {
+        SPRITE_TILE_HEIGHT - 1 - source_row
+    } else {
+        source_row
+    };
+    let Some(tile_row) =
+        decode_sprite_tile_row(&memory.crom, tile_index, memory.lspc_rom_size, decoded_row)
+    else {
         return 0;
     };
 
@@ -613,17 +632,15 @@ fn draw_sprite_scanline(
         palette_bank,
         memory.palette_shadow,
     );
-    draw_sprite_tile_scanline(
+    draw_sprite_row_scanline(
         video,
-        &tile,
+        &tile_row,
         &palette,
         SpriteDrawParams {
             h_flip: attr & 0x0001 != 0,
-            v_flip: attr & 0x0002 != 0,
             ..params
         },
         scanline,
-        source_y % SPRITE_TILE_HEIGHT,
     )
 }
 
@@ -643,22 +660,28 @@ fn draw_sprite_scanline_to_line_buffer(
     let tile_lsb = read_vram_word(memory, scb1 + tile_map_offset);
     let attr = read_vram_word(memory, scb1 + tile_map_offset + 1);
     let tile_index = tile_index_from_scb1(tile_lsb, attr, memory.auto_animation_counter());
-    let Some(tile) = decode_sprite_tile(&memory.crom, tile_index, memory.lspc_rom_size) else {
+    let source_row = source_y % SPRITE_TILE_HEIGHT;
+    let decoded_row = if attr & 0x0002 != 0 {
+        SPRITE_TILE_HEIGHT - 1 - source_row
+    } else {
+        source_row
+    };
+    let Some(tile_row) =
+        decode_sprite_tile_row(&memory.crom, tile_index, memory.lspc_rom_size, decoded_row)
+    else {
         return 0;
     };
 
     let palette_bank = ((attr >> 8) & 0xFF) as usize;
     let palette_word_base = active_palette_base(memory) / 2 + palette_bank * 16;
-    draw_sprite_tile_scanline_to_line_buffer(
+    draw_sprite_row_scanline_to_line_buffer(
         video,
-        &tile,
+        &tile_row,
         palette_word_base,
         SpriteDrawParams {
             h_flip: attr & 0x0001 != 0,
-            v_flip: attr & 0x0002 != 0,
             ..params
         },
-        source_y % SPRITE_TILE_HEIGHT,
     )
 }
 
@@ -896,24 +919,21 @@ fn draw_sprite_tile(
     pixels
 }
 
-fn draw_sprite_tile_scanline(
+/// Draw an already-decoded C-ROM row.
+///
+/// The live LSPC path only consumes one 16-pixel row from each tile on a
+/// scanline. Decoding all 256 pixels for every visible sprite line wastes most
+/// of the work and becomes expensive in sprite-heavy games.
+fn draw_sprite_row_scanline(
     video: &mut Video,
-    tile: &[u8; 256],
+    tile_row: &[u8; SPRITE_TILE_WIDTH],
     palette: &[u32; 16],
     params: SpriteDrawParams,
     scanline: usize,
-    tile_dest_y: usize,
 ) -> usize {
     if params.width == 0 || params.height == 0 || scanline >= video.height {
         return 0;
     }
-
-    let unflipped_y = tile_dest_y * SPRITE_TILE_HEIGHT / params.height;
-    let src_y = if params.v_flip {
-        SPRITE_TILE_HEIGHT - 1 - unflipped_y
-    } else {
-        unflipped_y
-    };
 
     let hshrink = params.width.saturating_sub(1).min(HSHRINK_LUT.len() - 1);
     let mut pixels = 0;
@@ -928,43 +948,32 @@ fn draw_sprite_tile_scanline(
         } else {
             source_column
         };
-        let color_index = tile[src_y * SPRITE_TILE_WIDTH + src_x] as usize;
+        let color_index = tile_row[src_x] as usize;
         if params.transparent_zero && color_index == 0 {
             dest_x += 1;
             continue;
         }
 
         let fb_x = ((params.x + dest_x as isize) & 0x01FF) as usize;
-        if fb_x >= video.width {
-            dest_x += 1;
-            continue;
+        if fb_x < video.width {
+            video.framebuffer[scanline * video.width + fb_x] = palette[color_index];
+            pixels += 1;
         }
-
-        video.framebuffer[scanline * video.width + fb_x] = palette[color_index];
-        pixels += 1;
         dest_x += 1;
     }
 
     pixels
 }
 
-fn draw_sprite_tile_scanline_to_line_buffer(
+fn draw_sprite_row_scanline_to_line_buffer(
     video: &mut Video,
-    tile: &[u8; 256],
+    tile_row: &[u8; SPRITE_TILE_WIDTH],
     palette_word_base: usize,
     params: SpriteDrawParams,
-    tile_dest_y: usize,
 ) -> usize {
     if params.width == 0 || params.height == 0 {
         return 0;
     }
-
-    let unflipped_y = tile_dest_y * SPRITE_TILE_HEIGHT / params.height;
-    let src_y = if params.v_flip {
-        SPRITE_TILE_HEIGHT - 1 - unflipped_y
-    } else {
-        unflipped_y
-    };
 
     let hshrink = params.width.saturating_sub(1).min(HSHRINK_LUT.len() - 1);
     let buffer_index = video.sprite_line_buffer_active;
@@ -980,7 +989,7 @@ fn draw_sprite_tile_scanline_to_line_buffer(
         } else {
             source_column
         };
-        let color_index = tile[src_y * SPRITE_TILE_WIDTH + src_x] as usize;
+        let color_index = tile_row[src_x] as usize;
         if params.transparent_zero && color_index == 0 {
             dest_x += 1;
             continue;
@@ -1080,11 +1089,22 @@ pub fn decode_sprite_tile(
     tile_index: usize,
     _lspc_rom_size: u16,
 ) -> Option<[u8; 256]> {
+    let tile_data = sprite_tile_data(crom, tile_index)?;
+    let mut pixels = [0u8; SPRITE_TILE_WIDTH * SPRITE_TILE_HEIGHT];
+
+    for y in 0..SPRITE_TILE_HEIGHT {
+        let row = decode_sprite_tile_row_data(tile_data, y);
+        pixels[y * SPRITE_TILE_WIDTH..(y + 1) * SPRITE_TILE_WIDTH].copy_from_slice(&row);
+    }
+
+    Some(pixels)
+}
+
+fn sprite_tile_data(crom: &[u8], tile_index: usize) -> Option<&[u8]> {
     // Geolith computes crommask once from the real C-ROM size in
     // geo_lspc_postload(): geo_calc_mask(32, romdata->csz >> 7). Runtime
     // writes to 0x3C000C are IRQ acknowledgements in the games we run here;
-    // using them as a sprite mask makes some games intermittently fetch the
-    // wrong tile. Keep the third parameter only to avoid churn at call sites.
+    // using them as a sprite mask makes some games fetch the wrong tile.
     let mask = calc_crom_mask(crom.len());
     let tile_count = crom.len() / BYTES_PER_TILE;
     if tile_count == 0 {
@@ -1092,9 +1112,11 @@ pub fn decode_sprite_tile(
     }
     let masked_index = tile_index & mask;
     let base = (masked_index % tile_count).checked_mul(BYTES_PER_TILE)?;
-    let tile_data = crom.get(base..base + BYTES_PER_TILE)?;
-    let mut pixels = [0u8; SPRITE_TILE_WIDTH * SPRITE_TILE_HEIGHT];
+    crom.get(base..base + BYTES_PER_TILE)
+}
 
+fn decode_sprite_tile_row_data(tile_data: &[u8], row: usize) -> [u8; SPRITE_TILE_WIDTH] {
+    let mut pixels = [0u8; SPRITE_TILE_WIDTH];
     // NeoGeo C-ROM tile format (matches Geolith):
     // 16×16 pixels, 4bpp, 128 bytes per tile.
     // The pixel data is stored right-to-left in two 64-byte halves. Geolith
@@ -1104,20 +1126,29 @@ pub fn decode_sprite_tile(
     // Each half has 16 rows × 4 bytes. Cart C ROM bitplanes are read in
     // Geolith order [0, 2, 1, 3], producing palette bits [0, 1, 2, 3].
     // Bit order: bit 0 (LSB) = first displayed pixel in the 8-pixel half.
-    for y in 0..SPRITE_TILE_HEIGHT {
-        for x in 0..SPRITE_TILE_WIDTH {
-            let half_base = if x < 8 { 64 } else { 0 };
-            let row_base = half_base + y * 4;
-            let bit = x & 7;
-            let color = ((tile_data[row_base] >> bit) & 1)
-                | (((tile_data[row_base + 2] >> bit) & 1) << 1)
-                | (((tile_data[row_base + 1] >> bit) & 1) << 2)
-                | (((tile_data[row_base + 3] >> bit) & 1) << 3);
-            pixels[y * SPRITE_TILE_WIDTH + x] = color;
-        }
+    for (x, pixel) in pixels.iter_mut().enumerate() {
+        let half_base = if x < 8 { 64 } else { 0 };
+        let row_base = half_base + row * 4;
+        let bit = x & 7;
+        *pixel = ((tile_data[row_base] >> bit) & 1)
+            | (((tile_data[row_base + 2] >> bit) & 1) << 1)
+            | (((tile_data[row_base + 1] >> bit) & 1) << 2)
+            | (((tile_data[row_base + 3] >> bit) & 1) << 3);
     }
+    pixels
+}
 
-    Some(pixels)
+pub fn decode_sprite_tile_row(
+    crom: &[u8],
+    tile_index: usize,
+    _lspc_rom_size: u16,
+    row: usize,
+) -> Option<[u8; SPRITE_TILE_WIDTH]> {
+    if row >= SPRITE_TILE_HEIGHT {
+        return None;
+    }
+    let tile_data = sprite_tile_data(crom, tile_index)?;
+    Some(decode_sprite_tile_row_data(tile_data, row))
 }
 
 pub fn decode_fix_tile(
@@ -1634,7 +1665,7 @@ fn generated_sprite_stats(memory: &crate::memory::Memory) -> GeneratedSpriteStat
     let max_sprites_per_scanline = counts.iter().copied().max().unwrap_or(0);
     let overflow_scanlines = counts
         .iter()
-        .filter(|count| **count > SPRITES_PER_SCANLINE_LIMIT)
+        .filter(|count| **count > HARDWARE_SPRITES_PER_SCANLINE)
         .count();
 
     GeneratedSpriteStats {
@@ -1687,6 +1718,18 @@ fn fix_debug_stats(memory: &crate::memory::Memory, fix_rom: &[u8]) -> FixDebugSt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sprite_limit_defaults_to_hardware_and_clamps_to_geolith_range() {
+        let mut video = Video::new();
+        assert_eq!(video.sprites_per_scanline(), HARDWARE_SPRITES_PER_SCANLINE);
+
+        video.set_sprites_per_scanline(MAX_SPRITES_PER_SCANLINE);
+        assert_eq!(video.sprites_per_scanline(), MAX_SPRITES_PER_SCANLINE);
+
+        video.set_sprites_per_scanline(usize::MAX);
+        assert_eq!(video.sprites_per_scanline(), MAX_SPRITES_PER_SCANLINE);
+    }
 
     #[test]
     fn clear_fills_opaque_black() {
@@ -1881,8 +1924,8 @@ mod tests {
     #[test]
     fn horizontal_shrink_uses_geolith_column_lut() {
         let mut video = Video::new();
-        let mut tile = [0u8; SPRITE_TILE_WIDTH * SPRITE_TILE_HEIGHT];
-        for (x, pixel) in tile.iter_mut().enumerate().take(SPRITE_TILE_WIDTH) {
+        let mut tile_row = [0u8; SPRITE_TILE_WIDTH];
+        for (x, pixel) in tile_row.iter_mut().enumerate() {
             *pixel = (x + 1) as u8;
         }
 
@@ -1891,9 +1934,9 @@ mod tests {
             *color = 0xFF000000 | index as u32;
         }
 
-        draw_sprite_tile_scanline(
+        draw_sprite_row_scanline(
             &mut video,
-            &tile,
+            &tile_row,
             &palette,
             SpriteDrawParams {
                 x: 40,
@@ -1904,7 +1947,6 @@ mod tests {
                 width: 2,
                 height: SPRITE_TILE_HEIGHT,
             },
-            0,
             0,
         );
 
@@ -2397,6 +2439,24 @@ mod tests {
         // pixel 8 (right half): all planes = 0
         assert_eq!(tile[8], 0x00);
         assert_eq!(tile[SPRITE_TILE_WIDTH * 8 + 8], 0x00);
+    }
+
+    #[test]
+    fn scanline_decoder_matches_every_row_of_full_tile_decoder() {
+        let mut crom = vec![0; BYTES_PER_TILE];
+        for (index, byte) in crom.iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_mul(37).wrapping_add(11);
+        }
+
+        let tile = decode_sprite_tile(&crom, 0, 0).unwrap();
+        for row in 0..SPRITE_TILE_HEIGHT {
+            let decoded_row = decode_sprite_tile_row(&crom, 0, 0, row).unwrap();
+            assert_eq!(
+                decoded_row.as_slice(),
+                &tile[row * SPRITE_TILE_WIDTH..(row + 1) * SPRITE_TILE_WIDTH]
+            );
+        }
+        assert!(decode_sprite_tile_row(&crom, 0, 0, SPRITE_TILE_HEIGHT).is_none());
     }
 
     #[test]

@@ -32,9 +32,12 @@ fn run() -> Result<(), String> {
         .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("target/ngneon_capture.wav"));
-    let standard_stimulus = args
-        .next()
-        .is_some_and(|value| value.to_string_lossy().eq_ignore_ascii_case("stimulus"));
+    let options = args
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let standard_stimulus = options.iter().any(|value| value == "stimulus");
+    let overclock = options.iter().any(|value| value == "overclock");
+    let disable_adpcm_wrap = options.iter().any(|value| value == "nowrap");
 
     let mut rom = RomData::from_neo(&rom_path)?;
     let dirs = [bios_dir.as_path()];
@@ -45,6 +48,8 @@ fn run() -> Result<(), String> {
     let sm1 = bios::load_sm1_rom_for_bios_from_multi(&dirs, &bios.label)?;
 
     let mut machine = NeoGeo::new();
+    machine.set_cpu_overclock(overclock);
+    machine.set_adpcm_wrap(!disable_adpcm_wrap);
     machine.set_bios(bios.data);
     if let Some(zoom) = zoom {
         machine.set_zoom_rom(zoom.data);

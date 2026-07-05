@@ -38,6 +38,7 @@ const RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR: c_int = -2;
 const RC_CONSOLE_ARCADE: u32 = 27;
 const RA_CLIENT_NAME: &str = "NGNEON-EMU";
 const RA_CLIENT_VERSION: &str = "1.2.3";
+const RA_UNKNOWN_EMULATOR_WARNING_ID: u32 = 101_000_001;
 
 // ── Event types for frontend consumption ──────────────────────────────────
 
@@ -52,6 +53,9 @@ pub enum RAEvent {
         points: u32,
         badge_url: String,
     },
+    /// RetroAchievements requires this client release to be approved for
+    /// hardcore mode. This server warning is not a game achievement.
+    ClientValidationRequired,
     /// A leaderboard was submitted.
     LeaderboardSubmitted {
         id: u32,
@@ -867,12 +871,16 @@ extern "C" fn ra_event_handler(event: *const rc_client_event_t, client: *mut rc_
                 let description = cstr_to_string(a.description);
                 let badge_url = cstr_to_string(a.badge_url);
 
-                RAEvent::AchievementUnlocked {
-                    id: a.id,
-                    title,
-                    description,
-                    points: a.points,
-                    badge_url,
+                if is_client_validation_warning(a.id, &title) {
+                    RAEvent::ClientValidationRequired
+                } else {
+                    RAEvent::AchievementUnlocked {
+                        id: a.id,
+                        title,
+                        description,
+                        points: a.points,
+                        badge_url,
+                    }
                 }
             }
             RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED => {
@@ -924,6 +932,10 @@ unsafe fn cstr_to_string(ptr: *const std::ffi::c_char) -> String {
         return String::new();
     }
     CStr::from_ptr(ptr).to_str().unwrap_or("").to_string()
+}
+
+fn is_client_validation_warning(id: u32, title: &str) -> bool {
+    id == RA_UNKNOWN_EMULATOR_WARNING_ID || title.eq_ignore_ascii_case("Warning: Unknown Emulator")
 }
 
 /// Login callback.
@@ -1082,6 +1094,23 @@ mod tests {
         let user_agent = ra_user_agent(std::ptr::null_mut());
         assert!(user_agent.starts_with("NGNEON-EMU/1.2.3"));
         assert!(user_agent.contains("rcheevos"));
+    }
+
+    #[test]
+    fn unknown_emulator_warning_is_not_a_game_achievement() {
+        assert!(is_client_validation_warning(
+            101_000_001,
+            "Warning: Unknown Emulator"
+        ));
+        assert!(is_client_validation_warning(
+            101_000_001,
+            "server-localized warning"
+        ));
+        assert!(is_client_validation_warning(
+            42,
+            "warning: unknown emulator"
+        ));
+        assert!(!is_client_validation_warning(42, "First Mission"));
     }
 
     #[test]

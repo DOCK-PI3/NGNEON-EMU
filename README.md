@@ -140,7 +140,7 @@ La ROM generada contiene una P-ROM mínima con vector reset 68000 válido. El pr
 - `Ctrl+S`: abrir/cerrar el menú de configuración con **6 pestañas**:
   - **VIDEO**: scanlines, CRT curvature, phosphor bloom, fullscreen, **window scale** (2x/3x/4x).
   - **AUDIO**: volumen + **mute** (ON/OFF). El volumen usa un **modo de ajuste dedicado**: presiona `Enter` sobre «Volume» para entrar, luego `←`/`→` ajustan ±5%, `Enter`/`Esc` salen. La barra muestra bloques `█`/`░`.
-  - **SYSTEM**: idioma (ES/EN), volcado diagnóstico de ROMs, **auto-save**, selector de BIOS.
+  - **SYSTEM**: idioma, volcados, auto-save, BIOS, tarjeta de memoria y hacks compatibles con Geolith: CPU 24 MHz, límite de sprites y ADPCM wrap.
   - **CONTROLS**: backend **Gamepad SDL2** (ON/OFF, requiere reinicio), configuración de gamepad (`>`), **configuración de teclado** (`>`).
   - **PATHS**: rutas de ROMs, BIOS, screenshots, saves (solo lectura, **rutas resueltas**).
   - `←`/`→`: **siempre** cambian de pestaña (sin sobrecarga de ajuste de volumen).
@@ -217,6 +217,11 @@ window_scale=3
 auto_save=on
 muted=off
 gamepad=off
+cpu_overclock=off
+sprite_limit=96
+disable_adpcm_wrap=off
+memcard=on
+memcard_write_protect=off
 ra_token=
 ra_password=
 ra_username=
@@ -228,6 +233,10 @@ ra_hardcore=off
 > Las claves `ra_token`, `ra_password`, `ra_username` y `ra_hardcore` configuran la integración con [RetroAchievements](https://retroachievements.org). Si hay `ra_token`, se prefiere sobre `ra_password`.
 >
 > **Gamepad SDL2**: `gamepad=off` es el modo seguro por defecto para evitar bloqueos de arranque en algunos backends de mando de Windows. Puedes activarlo desde **Ctrl+S → CONTROLS → Gamepad SDL2** y reiniciar el emulador para que SDL inicialice los mandos.
+>
+> **Hacks Geolith**: `cpu_overclock=on` elimina gran parte de la ralentización interna de juegos como Metal Slug 2; `sprite_limit` acepta `96`, `192`, `288` o `381`; `disable_adpcm_wrap=on` corrige efectos concretos de Ganryu/Nightmare in the Dark. Los tres quedan bloqueados en RetroAchievements Hardcore.
+>
+> **Memory Card**: la tarjeta es compartida entre juegos como en el hardware y se guarda en `saves/memory-card.mem`. Los antiguos archivos `<juego>.mem` se importan como fallback.
 
 ### Configuración de gamepad (`config/gamepad/<guid>.conf`)
 
@@ -332,9 +341,9 @@ ra_hardcore=off
 - **`ra_username`**: tu nombre de usuario en RetroAchievements (se guarda automáticamente tras el primer login exitoso).
 - **`ra_hardcore`**: `on`/`off`. En modo hardcore no se permiten save states, rewind, ni trampas.
 
-### Menú de configuración (Ctrl+S → SYSTEM)
+### Menú de configuración (Ctrl+S → RA)
 
-En la pestaña **SYSTEM** del menú de configuración aparecen las opciones:
+En la pestaña **RA** del menú de configuración aparecen las opciones:
 - **RA Login**: muestra el estado de la sesión (`No has iniciado sesión` / `Sesión: Usuario` / `Iniciar sesión`).
 - **Modo Hardcore**: ON/OFF.
 

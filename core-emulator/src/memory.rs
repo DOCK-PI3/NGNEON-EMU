@@ -31,6 +31,7 @@ pub const Z80_CLOCK_HZ: i32 = 4_000_000;
 /// Geolith watchdog threshold converted from master cycles to M68K cycles:
 /// 3_244_030 master cycles / DIV_M68K(2), roughly 8 frames.
 pub const WATCHDOG_M68K_CYCLES: u32 = 1_622_015;
+const MEMORY_CARD_SAVE_PATH: &str = "saves/memory-card.mem";
 /// SVC Chaos needs 10,000 additional master cycles of watchdog tolerance.
 /// The memory subsystem tracks M68K cycles, so divide by `DIV_M68K` (2).
 const SVC_WATCHDOG_TOLERANCE_M68K_CYCLES: u32 = 5_000;
@@ -1436,9 +1437,13 @@ impl Memory {
             self.backup_ram[..len].copy_from_slice(&data[..len]);
         }
 
-        // Try to load memory card
-        let mem_path = format!("{save_path}.mem");
-        if let Ok(data) = std::fs::read(&mem_path) {
+        // A Neo Geo memory card is shared between cartridges. Prefer the
+        // hardware-accurate shared file, with a legacy per-game fallback so
+        // existing users do not lose previous card data.
+        let legacy_mem_path = format!("{save_path}.mem");
+        if let Ok(data) =
+            std::fs::read(MEMORY_CARD_SAVE_PATH).or_else(|_| std::fs::read(&legacy_mem_path))
+        {
             let len = data.len().min(self.memory_card.len());
             self.memory_card[..len].copy_from_slice(&data[..len]);
         }
@@ -1471,15 +1476,14 @@ impl Memory {
         if !self.dirty_memory_card.get() {
             return;
         }
-        let Some(ref save_path) = self.save_path else {
+        if self.save_path.is_none() {
             return;
-        };
+        }
         if self.memory_card.iter().all(|&b| b == 0xFF) {
             return; // Don't save default all-0xFF data
         }
-        let path = format!("{save_path}.mem");
-        if let Err(e) = std::fs::write(&path, &self.memory_card) {
-            eprintln!("[WARN] No se pudo guardar memory card en {path}: {e}");
+        if let Err(e) = std::fs::write(MEMORY_CARD_SAVE_PATH, &self.memory_card) {
+            eprintln!("[WARN] No se pudo guardar memory card en {MEMORY_CARD_SAVE_PATH}: {e}");
         } else {
             self.dirty_memory_card.set(false);
         }
@@ -1508,6 +1512,11 @@ impl Memory {
 
     pub fn reset_watchdog(&mut self) {
         self.watchdog_cycles = 0;
+    }
+
+    pub fn set_memory_card_state(&mut self, inserted: bool, write_protected: bool) {
+        self.memcard_inserted = inserted;
+        self.memcard_write_protected = inserted && write_protected;
     }
 
     pub fn advance_watchdog(&mut self, m68k_cycles: u32) -> bool {
@@ -1622,6 +1631,11 @@ impl Memory {
 
     /// Carga los datos de una ROM en la memoria
     pub fn load_rom(&mut self, rom: &mut crate::rom::RomData) {
+        // Persist the previous cartridge before replacing its data or save
+        // path. Each game must start from clean SRAM/card contents before its
+        // own files are loaded, otherwise saves leak between cartridges.
+        self.save_persistent_data();
+
         // Copiar datos de la ROM a los bancos de memoria usando move en lugar de clone
         self.prom = std::mem::take(&mut rom.prom);
         self.crom = std::mem::take(&mut rom.crom);
@@ -1641,7 +1655,10 @@ impl Memory {
         self.palette_ram.fill(0);
         self.adpcm_a_ram.fill(0);
         self.adpcm_b_ram.fill(0);
+        self.backup_ram.fill(0);
         self.memory_card.fill(0xFF);
+        self.dirty_backup_ram.set(false);
+        self.dirty_memory_card.set(false);
         self.vram_addr.set(0);
         self.vram_mod = 1;
         self.lspc_mode = 0;
@@ -1684,8 +1701,6 @@ impl Memory {
         self.memcard_lock2 = false;
         self.memcard_unlocked = true;
         self.memcard_register_select = false;
-        self.memcard_inserted = false;
-        self.memcard_write_protected = false;
         self.bus_trace.borrow_mut().clear();
         self.z80_io_trace.borrow_mut().clear();
         self.input_ports = InputPorts::default();
@@ -1693,9 +1708,6 @@ impl Memory {
         self.watchdog_enabled = true;
         self.rom_ngh = rom_ngh(rom);
         self.watchdog_limit = watchdog_limit_for_rom(rom);
-        // Flush previous ROM's save data before loading new ROM
-        self.save_persistent_data();
-
         self.cart_protection = detect_cart_protection(rom);
         self.fix_bankswitch = detect_fix_bankswitch(rom);
         self.cart_reg[0].set(0);
@@ -2426,10 +2438,17 @@ impl Memory {
     }
 
     pub fn tick_irq2_counter(&mut self, m68k_cycles: u32) -> bool {
-        let mut dec = m68k_cycles >> 1;
-        self.irq2_frags = self.irq2_frags.wrapping_add(m68k_cycles & 0x01);
-        if self.irq2_frags >= 2 {
-            self.irq2_frags -= 2;
+        self.tick_irq2_counter_with_overclock(m68k_cycles, false)
+    }
+
+    pub fn tick_irq2_counter_with_overclock(&mut self, m68k_cycles: u32, overclock: bool) -> bool {
+        let shift = u32::from(overclock);
+        let frag_mask = if overclock { 0x03 } else { 0x01 };
+        let frag_period = 2u32 << shift;
+        let mut dec = (m68k_cycles >> 1) >> shift;
+        self.irq2_frags = self.irq2_frags.wrapping_add(m68k_cycles & frag_mask);
+        if self.irq2_frags >= frag_period {
+            self.irq2_frags -= frag_period;
             dec = dec.wrapping_add(1);
         }
 
@@ -2458,16 +2477,26 @@ impl Memory {
     }
 
     pub fn cycles_until_irq2_event(&self, max_cycles: u32) -> Option<u32> {
+        self.cycles_until_irq2_event_with_overclock(max_cycles, false)
+    }
+
+    pub fn cycles_until_irq2_event_with_overclock(
+        &self,
+        max_cycles: u32,
+        overclock: bool,
+    ) -> Option<u32> {
         if self.irq2_counter == 0
             || self.irq2_ctrl & (IRQ_TIMER_ENABLED | IRQ_TIMER_RELOAD_COUNT0) == 0
         {
             return None;
         }
 
+        let shift = u32::from(overclock);
+        let cycles_per_pixel = 2u32 << shift;
         let needed = self
             .irq2_counter
-            .saturating_mul(2)
-            .saturating_sub(self.irq2_frags.min(1));
+            .saturating_mul(cycles_per_pixel)
+            .saturating_sub(self.irq2_frags.min(cycles_per_pixel - 1));
         if needed == 0 || needed > max_cycles {
             None
         } else {
@@ -3268,6 +3297,27 @@ mod tests {
     }
 
     #[test]
+    fn loading_cartridge_isolates_persistent_ram_and_preserves_card_switches() {
+        let mut memory = Memory::new();
+        memory.save_path = None;
+        memory.backup_ram[0] = 0x5a;
+        memory.memory_card[0] = 0xa5;
+        memory.dirty_backup_ram.set(true);
+        memory.dirty_memory_card.set(true);
+        memory.set_memory_card_state(true, true);
+        let mut rom = rom_with_board(0x202, crate::rom::NeoBoardType::Default);
+
+        memory.load_rom(&mut rom);
+
+        assert!(memory.backup_ram.iter().all(|value| *value == 0));
+        assert!(memory.memory_card.iter().all(|value| *value == 0xff));
+        assert!(!memory.dirty_backup_ram.get());
+        assert!(!memory.dirty_memory_card.get());
+        assert!(memory.memcard_inserted);
+        assert!(memory.memcard_write_protected);
+    }
+
+    #[test]
     fn watchdog_triggers_after_geolith_threshold() {
         let mut memory = Memory::new();
 
@@ -3275,6 +3325,23 @@ mod tests {
         assert!(memory.advance_watchdog(1));
         memory.reset_watchdog();
         assert_eq!(memory.watchdog_cycles, 0);
+    }
+
+    #[test]
+    fn overclocked_irq2_preserves_geolith_quarter_cycle_fragments() {
+        let mut memory = Memory::new();
+        memory.irq2_ctrl = IRQ_TIMER_ENABLED;
+        memory.irq2_counter = 1;
+
+        assert_eq!(
+            memory.cycles_until_irq2_event_with_overclock(4, true),
+            Some(4)
+        );
+        assert!(!memory.tick_irq2_counter_with_overclock(1, true));
+        assert!(!memory.tick_irq2_counter_with_overclock(1, true));
+        assert!(!memory.tick_irq2_counter_with_overclock(1, true));
+        assert!(memory.tick_irq2_counter_with_overclock(1, true));
+        assert_eq!(memory.irq2_frags, 0);
     }
 
     #[test]

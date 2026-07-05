@@ -616,6 +616,22 @@ impl AudioRingBuffer {
         }
     }
 
+    /// Queue silence without a temporary allocation. This is used to prime
+    /// SDL's first callback after startup, reset, or a ROM change so the
+    /// consumer never races an intentionally empty producer buffer.
+    pub fn write_silence(&mut self, samples: usize) {
+        for _ in 0..samples {
+            if self.available >= self.data.len() {
+                self.read_pos = (self.read_pos + 1) % self.data.len();
+                self.available -= 1;
+                self.overrun_samples += 1;
+            }
+            self.data[self.write_pos] = 0;
+            self.write_pos = (self.write_pos + 1) % self.data.len();
+            self.available += 1;
+        }
+    }
+
     /// Read samples into `out` from the audio callback thread.
     /// If there aren't enough samples, the last stereo frame fades out
     /// briefly instead of snapping to hard silence.
@@ -1125,6 +1141,19 @@ mod tests {
 
         assert_eq!(out, [10, 20, 30, 40]);
         assert_eq!(buf.available, 0);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn ring_silence_primes_first_callback_without_underrun() {
+        let mut buf = AudioRingBuffer::new(4096);
+        buf.write_silence(2048);
+
+        let mut out = vec![1i16; 2048];
+        buf.read(&mut out);
+
+        assert!(all_zero(&out));
+        assert_eq!(buf.underrun_samples(), 0);
         assert!(buf.is_empty());
     }
 

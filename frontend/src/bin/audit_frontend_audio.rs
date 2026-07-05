@@ -66,6 +66,8 @@ fn run() -> Result<(), String> {
 
     let mut resampler = Resampler::new_mvs(AUDIO_OUTPUT_RATE);
     let mut ring = AudioRingBuffer::new(RING_CAPACITY_SAMPLES);
+    let preroll_samples = SDL_CALLBACK_PAIRS * 2;
+    ring.write_silence(preroll_samples);
     let mut native_pairs = 0usize;
     let mut output_pairs = 0usize;
     let mut callbacks = 0usize;
@@ -106,7 +108,8 @@ fn run() -> Result<(), String> {
     let expected_output_pairs =
         (frames as u64 * AUDIO_OUTPUT_RATE as u64 * MVS_MASTER_CYCLES_PER_FRAME
             / MVS_MASTER_CLOCK_HZ) as usize;
-    let expected_ring_samples = output_pairs * 2 - callbacks * SDL_CALLBACK_PAIRS * 2;
+    let expected_ring_samples =
+        preroll_samples + output_pairs * 2 - callbacks * SDL_CALLBACK_PAIRS * 2;
     let passed = output_pairs == expected_output_pairs
         && ring.len() == expected_ring_samples
         && resampler.starved_output_pairs() == 0

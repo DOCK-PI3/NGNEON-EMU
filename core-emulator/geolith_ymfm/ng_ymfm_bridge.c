@@ -192,12 +192,11 @@ void ymfm_set_timer(uint32_t tnum, int32_t duration_in_clocks)
 void ymfm_set_busy_end(uint32_t clocks)
 {
 	/*
-	 * ymfm asks the host to set a new busy-clear deadline relative to the
-	 * current chip time.  Repeated register writes restart this short period;
-	 * accumulating them can leave the Z80 polling BUSY for thousands of
-	 * frames after a driver's initialization burst.
+	 * Match Geolith's host clock exactly. Each register access consumes chip
+	 * time, so writes performed before the previous BUSY period expires extend
+	 * the pending interval instead of replacing it.
 	 */
-	g_busy_timer = (int32_t)clocks;
+	g_busy_timer += (int32_t)clocks;
 }
 
 bool ymfm_is_busy(void)

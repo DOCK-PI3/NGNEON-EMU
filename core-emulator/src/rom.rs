@@ -2232,7 +2232,7 @@ fn decrypt_kof98_program(prom: &mut [u8]) {
     }
 
     let mut temp = vec![0u8; P1_SIZE];
-    for i in 0..DECRYPT_WINDOW {
+    for (i, output) in temp.iter_mut().enumerate().take(DECRYPT_WINDOW) {
         let mut j = i;
 
         if (i & 0x0000fc) == 0x000000 {
@@ -2260,7 +2260,7 @@ fn decrypt_kof98_program(prom: &mut [u8]) {
             j ^= 0x100002;
         }
 
-        temp[i] = prom[j];
+        *output = prom[j];
     }
 
     prom[VECTOR_OVERLAY_SKIP..P1_SIZE].copy_from_slice(&temp[VECTOR_OVERLAY_SKIP..P1_SIZE]);

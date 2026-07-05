@@ -22,9 +22,11 @@ const WINDOW_SCALE: u32 = 3;
 const TARGET_FRAME_TIME: Duration = Duration::from_micros(16_896);
 const TITLE_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 const SAVE_SLOTS: usize = 10;
-const SETTINGS_ITEMS: [usize; 6] = [6, 2, 4, 3, 5, 7]; // Video, Audio, System, Controls, Paths, RetroAchievements
+const SETTINGS_ITEMS: [usize; 6] = [6, 2, 9, 3, 5, 7]; // Video, Audio, System, Controls, Paths, RetroAchievements
 const AUDIO_RING_BUFFER_SAMPLES: usize = 32768;
 const SDL_AUDIO_CALLBACK_SAMPLES: u16 = 1024;
+const AUDIO_PREROLL_SAMPLES: usize =
+    SDL_AUDIO_CALLBACK_SAMPLES as usize * audio::AUDIO_CHANNELS as usize;
 
 // ROM browser grid constants
 const ROM_BROWSER_COLS: usize = 2;
@@ -112,6 +114,11 @@ struct RuntimeStatus {
     window_scale: u32,
     auto_save: bool,
     gamepad_enabled: bool,
+    cpu_overclock: bool,
+    sprite_limit: usize,
+    disable_adpcm_wrap: bool,
+    memcard_inserted: bool,
+    memcard_write_protected: bool,
     // Keyboard config overlay
     show_kb_config: bool,
     kb_selected_action: usize,
@@ -218,6 +225,11 @@ impl RuntimeStatus {
             window_scale: WINDOW_SCALE,
             auto_save: true,
             gamepad_enabled: false,
+            cpu_overclock: false,
+            sprite_limit: core_emulator::video::HARDWARE_SPRITES_PER_SCANLINE,
+            disable_adpcm_wrap: false,
+            memcard_inserted: true,
+            memcard_write_protected: false,
             show_kb_config: false,
             kb_selected_action: 0,
             kb_listening: false,
@@ -452,6 +464,7 @@ fn clear_audio_pipeline(
 ) {
     if let Ok(mut buf) = ring_buffer.lock() {
         buf.clear();
+        buf.write_silence(AUDIO_PREROLL_SAMPLES);
     }
     resampler.reset();
 }
@@ -993,8 +1006,6 @@ fn run() -> Result<(), String> {
     let device = audio_subsystem
         .open_playback(None, &desired_spec, |_spec| callback)
         .map_err(|e| format!("No se pudo abrir dispositivo de audio: {e}"))?;
-    device.resume();
-    println!("[INFO] Audio SDL2 iniciado");
 
     let mut neogeo = NeoGeo::new();
     // Initialize RetroAchievements session
@@ -1015,6 +1026,8 @@ fn run() -> Result<(), String> {
         &mut resampler,
         &mouse_util,
     )?;
+    device.resume();
+    println!("[INFO] Audio SDL2 iniciado con preroll");
     // --- Determine language from config, then build RuntimeStatus ---
     let language = load_config_language();
     let mut status = RuntimeStatus::new(
@@ -1105,6 +1118,21 @@ fn run() -> Result<(), String> {
     status.ra_password = load_config_key("ra_password").unwrap_or_default();
     status.ra_username = load_config_key("ra_username").unwrap_or_default();
     status.ra_hardcore = load_config_bool("ra_hardcore", false);
+    status.cpu_overclock = load_config_bool("cpu_overclock", false);
+    status.sprite_limit = load_config_key("sprite_limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| matches!(*value, 96 | 192 | 288 | 381))
+        .unwrap_or(core_emulator::video::HARDWARE_SPRITES_PER_SCANLINE);
+    status.disable_adpcm_wrap = load_config_bool("disable_adpcm_wrap", false);
+    status.memcard_inserted = load_config_bool("memcard", true);
+    status.memcard_write_protected = load_config_bool("memcard_write_protect", false);
+    if status.ra_hardcore {
+        status.cpu_overclock = false;
+        status.sprite_limit = core_emulator::video::HARDWARE_SPRITES_PER_SCANLINE;
+        status.disable_adpcm_wrap = false;
+    }
+    apply_emulation_hacks(&status, &mut neogeo);
+    neogeo.set_memory_card_state(status.memcard_inserted, status.memcard_write_protected);
     neogeo.ra_set_hardcore(status.ra_hardcore);
     let mut ra_auto_login_pending = if !status.ra_token.is_empty() {
         status.ra_token_fallback_attempted = false;
@@ -2763,6 +2791,14 @@ fn run() -> Result<(), String> {
                         .ra_notifications
                         .push((title, points, status.frame_count));
                 }
+                core_emulator::retroachievements::RAEvent::ClientValidationRequired => {
+                    eprintln!(
+                        "[RA] RetroAchievements requires official validation of this client \
+                         release for hardcore mode."
+                    );
+                    status.ra_last_status =
+                        String::from("RA: cliente pendiente de validación hardcore");
+                }
                 core_emulator::retroachievements::RAEvent::LoginSuccess {
                     display_name,
                     score,
@@ -3000,6 +3036,11 @@ fn run() -> Result<(), String> {
                 crt_gl.display_aspect.label(),
                 status.auto_save,
                 status.gamepad_enabled,
+                status.cpu_overclock,
+                status.sprite_limit,
+                status.disable_adpcm_wrap,
+                status.memcard_inserted,
+                status.memcard_write_protected,
                 status.settings_vol_adjusting,
                 status.ra_logged_in,
                 &status.ra_username,
@@ -3557,6 +3598,35 @@ fn auto_load_state(neogeo: &mut NeoGeo, label: &str) {
 
 // --- Settings menu handler ---
 
+fn apply_emulation_hacks(status: &RuntimeStatus, neogeo: &mut NeoGeo) {
+    neogeo.set_cpu_overclock(status.cpu_overclock);
+    neogeo.set_sprites_per_scanline(status.sprite_limit);
+    neogeo.set_adpcm_wrap(!status.disable_adpcm_wrap);
+}
+
+fn disable_emulation_hacks_for_hardcore(status: &mut RuntimeStatus, neogeo: &mut NeoGeo) {
+    status.cpu_overclock = false;
+    status.sprite_limit = core_emulator::video::HARDWARE_SPRITES_PER_SCANLINE;
+    status.disable_adpcm_wrap = false;
+    apply_emulation_hacks(status, neogeo);
+    save_config_bool("cpu_overclock", false);
+    save_config_key(
+        "sprite_limit",
+        &core_emulator::video::HARDWARE_SPRITES_PER_SCANLINE.to_string(),
+    );
+    save_config_bool("disable_adpcm_wrap", false);
+}
+
+fn notify_hack_blocked_by_hardcore(status: &mut RuntimeStatus, neogeo: &mut NeoGeo) {
+    let msg = if status.lang.language == lang::Language::Es {
+        "Desactiva RA Hardcore para usar hacks"
+    } else {
+        "Disable RA Hardcore to use hacks"
+    };
+    println!("[INFO] {msg}");
+    ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, msg);
+}
+
 /// Handle Enter press in the settings menu for the selected tab+item.
 /// Returns the function result from potential fullscreen toggle.
 fn handle_settings_enter(
@@ -3680,7 +3750,9 @@ fn handle_settings_enter(
             }
         }
         2 => {
-            // SYSTEM tab: Language(0), ROM Dumps(1), Auto-save(2), BIOS Selector(3)
+            // SYSTEM tab: Language(0), ROM Dumps(1), Auto-save(2), BIOS(3),
+            // CPU overclock(4), sprite limit(5), disable ADPCM wrap(6),
+            // memory card inserted(7), memory card write protect(8).
             match status.settings_selected_index {
                 0 => {
                     // Toggle language
@@ -3731,6 +3803,101 @@ fn handle_settings_enter(
                         .position(|b| b == &status.current_bios)
                         .unwrap_or(0);
                     println!("[INFO] BIOS Selector abierto desde configuración.");
+                }
+                4 => {
+                    if status.ra_hardcore {
+                        notify_hack_blocked_by_hardcore(status, neogeo);
+                    } else {
+                        status.cpu_overclock = !status.cpu_overclock;
+                        neogeo.set_cpu_overclock(status.cpu_overclock);
+                        save_config_bool("cpu_overclock", status.cpu_overclock);
+                        let msg = if status.cpu_overclock {
+                            "CPU 68K: 24 MHz (HACK)"
+                        } else {
+                            "CPU 68K: 12 MHz"
+                        };
+                        println!("[INFO] {msg}");
+                        ui::draw_notification(
+                            &mut neogeo.video.framebuffer,
+                            neogeo.video.width,
+                            msg,
+                        );
+                    }
+                }
+                5 => {
+                    if status.ra_hardcore {
+                        notify_hack_blocked_by_hardcore(status, neogeo);
+                    } else {
+                        status.sprite_limit = match status.sprite_limit {
+                            96 => 192,
+                            192 => 288,
+                            288 => 381,
+                            _ => 96,
+                        };
+                        neogeo.set_sprites_per_scanline(status.sprite_limit);
+                        save_config_key("sprite_limit", &status.sprite_limit.to_string());
+                        let msg = format!("Sprites/line: {}", status.sprite_limit);
+                        println!("[INFO] {msg}");
+                        ui::draw_notification(
+                            &mut neogeo.video.framebuffer,
+                            neogeo.video.width,
+                            &msg,
+                        );
+                    }
+                }
+                6 => {
+                    if status.ra_hardcore {
+                        notify_hack_blocked_by_hardcore(status, neogeo);
+                    } else {
+                        status.disable_adpcm_wrap = !status.disable_adpcm_wrap;
+                        neogeo.set_adpcm_wrap(!status.disable_adpcm_wrap);
+                        save_config_bool("disable_adpcm_wrap", status.disable_adpcm_wrap);
+                        let msg = if status.disable_adpcm_wrap {
+                            "ADPCM wrap: OFF (HACK)"
+                        } else {
+                            "ADPCM wrap: ON"
+                        };
+                        println!("[INFO] {msg}");
+                        ui::draw_notification(
+                            &mut neogeo.video.framebuffer,
+                            neogeo.video.width,
+                            msg,
+                        );
+                    }
+                }
+                7 => {
+                    status.memcard_inserted = !status.memcard_inserted;
+                    if !status.memcard_inserted {
+                        status.memcard_write_protected = false;
+                    }
+                    neogeo.set_memory_card_state(
+                        status.memcard_inserted,
+                        status.memcard_write_protected,
+                    );
+                    save_config_bool("memcard", status.memcard_inserted);
+                    save_config_bool("memcard_write_protect", status.memcard_write_protected);
+                    let msg = if status.memcard_inserted {
+                        "Memory Card: INSERTED"
+                    } else {
+                        "Memory Card: EJECTED"
+                    };
+                    println!("[INFO] {msg}");
+                    ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, msg);
+                }
+                8 if status.memcard_inserted => {
+                    status.memcard_write_protected = !status.memcard_write_protected;
+                    neogeo.set_memory_card_state(
+                        status.memcard_inserted,
+                        status.memcard_write_protected,
+                    );
+                    save_config_bool("memcard_write_protect", status.memcard_write_protected);
+                    let msg = if status.memcard_write_protected {
+                        "Memory Card: READ ONLY"
+                    } else {
+                        "Memory Card: READ/WRITE"
+                    };
+                    println!("[INFO] {msg}");
+                    ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, msg);
                 }
                 _ => {}
             }
@@ -3842,6 +4009,9 @@ fn handle_settings_enter(
                 }
                 6 => {
                     status.ra_hardcore = !status.ra_hardcore;
+                    if status.ra_hardcore {
+                        disable_emulation_hacks_for_hardcore(status, neogeo);
+                    }
                     neogeo.ra_set_hardcore(status.ra_hardcore);
                     save_config_bool("ra_hardcore", status.ra_hardcore);
                     let msg = if status.ra_hardcore {

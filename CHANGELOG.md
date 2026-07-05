@@ -7,6 +7,74 @@ El proyecto combina un núcleo Neo Geo en Rust, un frontend nativo SDL2/OpenGL y
 
 ---
 
+## 2026-07-05 — Paridad adicional con Geolith y persistencia segura
+
+### Opciones avanzadas de emulación
+
+- Añadido overclock opcional del 68K a 24 MHz, equivalente a `geolith_oc`.
+  - El vídeo, Z80, YM2610, RTC e IRQ2 conservan la cadencia de hardware.
+  - Metal Slug 2 mantiene exactamente la misma duración de audio con o sin overclock.
+- Límite de sprites configurable: 96 hardware, 192, 288 o 381.
+- Opción para desactivar ADPCM accumulator wrap, útil para Ganryu y Nightmare in the Dark.
+- Los hacks se desactivan y bloquean automáticamente en RetroAchievements Hardcore.
+
+### Memory Card y saves
+
+- Tarjeta de memoria insertada por defecto, como Geolith.
+- Inserción y protección de escritura configurables desde SYSTEM.
+- La tarjeta es ahora compartida entre cartuchos en `saves/memory-card.mem`.
+- Compatibilidad de migración con antiguos saves `<juego>.mem`.
+- Corregida contaminación de backup RAM entre juegos al cambiar de cartucho.
+- El cartucho anterior se guarda antes de sustituir su ruta y la SRAM del nuevo juego empieza limpia.
+
+### Auditoría
+
+- FBNeo actualizado contrastado hasta `3c489fec`.
+- Geolith actualizado contrastado hasta `c5b57a6b`.
+- Loader ZIP: 160/160 sets cargados.
+- Ganryu, Metal Slug 2, Nightmare in the Dark y su bootleg pasan 1.800 frames con cadencia de audio exacta.
+- 413 pruebas superadas, Clippy estricto sin avisos y build release correcto.
+
+---
+
+## 2026-07-04 — Rendimiento de sprites, audio estable y aviso RetroAchievements
+
+### Vídeo y rendimiento
+
+- El render scanline decodifica únicamente la fila visible de 16 píxeles de cada tile de sprite.
+- Se elimina la decodificación repetida de las 16 filas completas por cada sprite y scanline.
+- Metal Slug 2 mejora aproximadamente un 30% en la prueba de 1.200 frames:
+  - antes: ~10,7 s;
+  - después: ~7,6 s;
+  - coste final: ~6,38 ms/frame frente al presupuesto MVS de 16,896 ms.
+- Los hashes de vídeo y audio permanecen idénticos, por lo que la optimización no altera la emulación.
+
+### Audio
+
+- El temporizador BUSY del YM2610 vuelve a acumular escrituras como el backend YMFM de Geolith.
+- SDL inicia después de cargar la ROM y con un callback estéreo de preroll silencioso.
+- Los resets y cambios de ROM limpian y vuelven a cebar el búfer para evitar carreras y cortes.
+- Auditorías de 3.600 frames en Metal Slug 2 y Shock Troopers:
+  - cadencia exacta;
+  - cero starvation del resampler;
+  - cero overruns;
+  - cero underruns.
+
+### RetroAchievements
+
+- El aviso especial `101000001` («Warning: Unknown Emulator») se clasifica como validación del cliente y deja de tratarse como un logro del juego.
+- Ya no suma progreso, puntos ni genera un popup de logro falso.
+- Se conserva el User-Agent versionado `NGNEON-EMU/1.2.3` y el flujo normal de logros reales.
+- La aprobación de hardcore sigue dependiendo de la validación oficial de RetroAchievements para cada cliente/release.
+
+### Calidad
+
+- `cargo clippy --workspace --all-targets -- -D warnings` sin avisos.
+- `cargo test --workspace`: 408 pruebas superadas.
+- `cargo build --release --workspace` correcto.
+
+---
+
 ## 2026-06-25 — Compatibilidad completa de ROMs ZIP auditadas
 
 ### Loader ZIP
@@ -476,4 +544,3 @@ cargo build --release --workspace
 cargo run --release -p core-emulator --bin audit_zip_library -- roms_zip
 cargo run --release -p core-emulator --bin audit_neo_library -- roms_zip 1200
 ```
-

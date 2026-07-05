@@ -105,6 +105,7 @@ pub struct NeoGeo {
     pub last_error: Option<String>,
     pub demo_mode: bool,
     pub cpu_cycles_per_frame: i32,
+    m68k_overclock: bool,
     pub last_cpu_cycles: i32,
     pub z80_tstates_per_frame: u32,
     pub last_z80_tstates: u32,
@@ -142,6 +143,7 @@ impl NeoGeo {
             last_error: None,
             demo_mode: false,
             cpu_cycles_per_frame: DEFAULT_CPU_CYCLES_PER_FRAME,
+            m68k_overclock: false,
             last_cpu_cycles: 0,
             z80_tstates_per_frame: DEFAULT_Z80_TSTATES_PER_FRAME,
             last_z80_tstates: 0,
@@ -289,6 +291,36 @@ impl NeoGeo {
         self.memory.borrow_mut().set_sm1_rom(sm1);
     }
 
+    /// Match Geolith's optional 24 MHz 68K divider hack while preserving the
+    /// normal master-clock cadence for video, Z80 and YM2610.
+    pub fn set_cpu_overclock(&mut self, enabled: bool) {
+        self.m68k_overclock = enabled;
+        self.cpu_cycles_per_frame = if enabled {
+            DEFAULT_CPU_CYCLES_PER_FRAME * 2
+        } else {
+            DEFAULT_CPU_CYCLES_PER_FRAME
+        };
+        self.m68k_cycle_debt = 0;
+    }
+
+    pub fn cpu_overclock(&self) -> bool {
+        self.m68k_overclock
+    }
+
+    pub fn set_sprites_per_scanline(&mut self, limit: usize) {
+        self.video.set_sprites_per_scanline(limit);
+    }
+
+    pub fn set_adpcm_wrap(&mut self, enabled: bool) {
+        self.ym2610.borrow_mut().set_adpcm_wrap(enabled);
+    }
+
+    pub fn set_memory_card_state(&mut self, inserted: bool, write_protected: bool) {
+        self.memory
+            .borrow_mut()
+            .set_memory_card_state(inserted, write_protected);
+    }
+
     pub fn reset(&mut self) {
         self.memory.borrow_mut().soft_reset_for_watchdog();
         self.cpu.reset();
@@ -330,10 +362,23 @@ impl NeoGeo {
             return;
         }
 
+        let master_div = if self.m68k_overclock {
+            1
+        } else {
+            M68K_MASTER_DIV
+        };
         self.master_cycles = self
             .master_cycles
-            .saturating_add(cycles.saturating_mul(M68K_MASTER_DIV));
+            .saturating_add(cycles.saturating_mul(master_div));
         self.catch_up_z80_audio_to_master_clock();
+    }
+
+    fn effective_m68k_cycles(&self, cycles: u32) -> u32 {
+        if self.m68k_overclock {
+            cycles >> 1
+        } else {
+            cycles
+        }
     }
 
     fn catch_up_z80_audio_to_master_clock(&mut self) {
@@ -369,7 +414,7 @@ impl NeoGeo {
         while remaining > 0 && cpu_error.is_none() {
             let chunk = {
                 let mem = self.memory.borrow();
-                mem.cycles_until_irq2_event(remaining as u32)
+                mem.cycles_until_irq2_event_with_overclock(remaining as u32, self.m68k_overclock)
                     .map(|cycles| cycles.max(1).min(remaining as u32) as i32)
                     .unwrap_or(remaining)
             };
@@ -383,9 +428,11 @@ impl NeoGeo {
                     self.last_cpu_cycles += actual;
                     let mut mem = self.memory.borrow_mut();
                     let cycles = actual.max(0) as u32;
-                    mem.advance_rtc(cycles);
+                    let effective_cycles = self.effective_m68k_cycles(cycles);
+                    mem.advance_rtc(effective_cycles);
                     let watchdog_triggered = mem.advance_watchdog(cycles);
-                    let irq2_triggered = mem.tick_irq2_counter(cycles);
+                    let irq2_triggered =
+                        mem.tick_irq2_counter_with_overclock(cycles, self.m68k_overclock);
                     drop(mem);
 
                     if watchdog_triggered {
@@ -565,11 +612,14 @@ impl NeoGeo {
             self.video.reset_sprite_line_buffers();
             let cycles_per_sl = total_budget / SCANLINES_PER_FRAME;
             let extra = (total_budget % SCANLINES_PER_FRAME) as usize;
+            let event_scale = if self.m68k_overclock { 2 } else { 1 };
 
             for i in 0..SCANLINES_PER_FRAME {
                 let budget = cycles_per_sl + if (i as usize) < extra { 1 } else { 0 };
-                let render_cycle = LSPC_RENDER_CYCLE.min(budget);
-                let scanline_advance_cycle = LSPC_SCANLINE_ADVANCE_CYCLE.min(budget);
+                let early_event_cycle = LSPC_EARLY_EVENT_CYCLE * event_scale;
+                let render_cycle = (LSPC_RENDER_CYCLE * event_scale).min(budget);
+                let scanline_advance_cycle =
+                    (LSPC_SCANLINE_ADVANCE_CYCLE * event_scale).min(budget);
                 let mut line_cycles = self.m68k_cycle_debt;
                 self.m68k_cycle_debt = 0;
 
@@ -579,11 +629,9 @@ impl NeoGeo {
                 // games can use the exact interrupt arrival point as part of
                 // their frame counters and pseudo-random sequencing.
                 if i == 8 || i == 249 {
-                    if LSPC_EARLY_EVENT_CYCLE > line_cycles {
-                        let (watchdog_triggered, actual) = self.run_cpu_timing_slice(
-                            LSPC_EARLY_EVENT_CYCLE - line_cycles,
-                            &mut cpu_error,
-                        );
+                    if early_event_cycle > line_cycles {
+                        let (watchdog_triggered, actual) = self
+                            .run_cpu_timing_slice(early_event_cycle - line_cycles, &mut cpu_error);
                         line_cycles += actual.max(0);
                         if watchdog_triggered {
                             break;
@@ -667,9 +715,11 @@ impl NeoGeo {
                     self.last_cpu_cycles += actual;
                     let mut mem = self.memory.borrow_mut();
                     let cycles = actual.max(0) as u32;
-                    mem.advance_rtc(cycles);
+                    let effective_cycles = self.effective_m68k_cycles(cycles);
+                    mem.advance_rtc(effective_cycles);
                     let watchdog_triggered = mem.advance_watchdog(cycles);
-                    let irq2_triggered = mem.tick_irq2_counter(cycles);
+                    let irq2_triggered =
+                        mem.tick_irq2_counter_with_overclock(cycles, self.m68k_overclock);
                     drop(mem);
                     if watchdog_triggered {
                         self.watchdog_reset();
@@ -855,6 +905,24 @@ mod tests {
         assert_eq!(status.pc, neogeo.cpu.snapshot().pc);
         assert_eq!(status.system_port & 0x01, 0);
         assert_eq!(status_a & 0x01, 0);
+    }
+
+    #[test]
+    fn geolith_overclock_doubles_68k_budget_without_accelerating_master_clock() {
+        let mut neogeo = NeoGeo::new();
+        neogeo.set_cpu_overclock(true);
+
+        assert!(neogeo.cpu_overclock());
+        assert_eq!(
+            neogeo.cpu_cycles_per_frame,
+            DEFAULT_CPU_CYCLES_PER_FRAME * 2
+        );
+
+        neogeo.advance_master_clock_for_68k(DEFAULT_CPU_CYCLES_PER_FRAME * 2);
+        assert_eq!(neogeo.master_cycles, MASTER_CYCLES_PER_FRAME);
+
+        neogeo.set_cpu_overclock(false);
+        assert_eq!(neogeo.cpu_cycles_per_frame, DEFAULT_CPU_CYCLES_PER_FRAME);
     }
 
     #[test]

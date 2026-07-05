@@ -1759,6 +1759,11 @@ pub fn draw_settings_menu(
     aspect_ratio: &str,
     auto_save: bool,
     gamepad_enabled: bool,
+    cpu_overclock: bool,
+    sprite_limit: usize,
+    disable_adpcm_wrap: bool,
+    memcard_inserted: bool,
+    memcard_write_protected: bool,
     vol_adjusting: bool,
     ra_logged_in: bool,
     ra_username: &str,
@@ -1983,8 +1988,8 @@ pub fn draw_settings_menu(
             );
         }
         2 => {
-            // SYSTEM tab: Language, ROM Dumps, Auto-save, BIOS Selector
-            let items: [(&str, String, u32); 4] = [
+            // SYSTEM tab: base settings followed by Geolith-compatible hacks.
+            let items: [(&str, String, u32); 9] = [
                 (
                     lang.settings_label_language,
                     if language_is_es {
@@ -2013,6 +2018,65 @@ pub fn draw_settings_menu(
                     if auto_save { TEXT_ON } else { TEXT_OFF },
                 ),
                 (lang.settings_bios_open, ">".to_string(), ACCENT),
+                (
+                    lang.settings_label_cpu_overclock,
+                    if cpu_overclock {
+                        "24 MHz HACK".to_string()
+                    } else {
+                        "12 MHz".to_string()
+                    },
+                    if cpu_overclock { TEXT_OFF } else { TEXT_ON },
+                ),
+                (
+                    lang.settings_label_sprite_limit,
+                    if sprite_limit == 96 {
+                        "96 HW".to_string()
+                    } else {
+                        format!("{} HACK", sprite_limit)
+                    },
+                    if sprite_limit == 96 {
+                        TEXT_ON
+                    } else {
+                        TEXT_OFF
+                    },
+                ),
+                (
+                    lang.settings_label_adpcm_wrap,
+                    if disable_adpcm_wrap {
+                        "OFF HACK".to_string()
+                    } else {
+                        "ON".to_string()
+                    },
+                    if disable_adpcm_wrap {
+                        TEXT_OFF
+                    } else {
+                        TEXT_ON
+                    },
+                ),
+                (
+                    lang.settings_label_memcard,
+                    if memcard_inserted {
+                        lang.profile_on.to_string()
+                    } else {
+                        lang.profile_off.to_string()
+                    },
+                    if memcard_inserted { TEXT_ON } else { TEXT_OFF },
+                ),
+                (
+                    lang.settings_label_memcard_wp,
+                    if !memcard_inserted {
+                        "-".to_string()
+                    } else if memcard_write_protected {
+                        "READ ONLY".to_string()
+                    } else {
+                        "READ/WRITE".to_string()
+                    },
+                    if memcard_inserted && !memcard_write_protected {
+                        TEXT_ON
+                    } else {
+                        TEXT_BODY
+                    },
+                ),
             ];
             for (i, (label, state_text, state_color)) in items.iter().enumerate() {
                 draw_settings_row(
