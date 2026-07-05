@@ -173,16 +173,8 @@ impl Io for Z80Bus {
             // Real Z80 sound drivers poll this to detect BUSY flag clearing.
             PORT_YM2610_A0 => self.ym2610.borrow().read_status(0),
             PORT_YM2610_A1 => self.ym2610.borrow().read_status(1),
-            PORT_YM2610_D0 => {
-                let mut ym = self.ym2610.borrow_mut();
-                ym.write_address(0, self.mem.borrow().ym2610_addr[0]);
-                ym.read_data(0)
-            }
-            PORT_YM2610_D1 => {
-                let mut ym = self.ym2610.borrow_mut();
-                ym.write_address(1, self.mem.borrow().ym2610_addr[1]);
-                ym.read_data(1)
-            }
+            PORT_YM2610_D0 => self.ym2610.borrow_mut().read_data(0),
+            PORT_YM2610_D1 => self.ym2610.borrow_mut().read_data(1),
             // Geolith returns open zero for unhandled sound ports.  Several
             // M1 drivers use the 0x0D/0x0E pair as an auxiliary handshake.
             _ => 0x00,
@@ -210,21 +202,22 @@ impl Io for Z80Bus {
             }
             PORT_YM2610_A0 => {
                 self.mem.borrow_mut().ym2610_addr[0] = data;
+                self.ym2610.borrow_mut().write_address(0, data);
             }
             PORT_YM2610_A1 => {
                 self.mem.borrow_mut().ym2610_addr[1] = data;
+                self.ym2610.borrow_mut().write_address(1, data);
             }
             PORT_YM2610_D0 => {
-                let mut ym = self.ym2610.borrow_mut();
-                ym.write_address(0, self.mem.borrow().ym2610_addr[0]);
-                ym.write_data(0, data);
+                self.ym2610.borrow_mut().write_data(0, data);
             }
             PORT_YM2610_D1 => {
-                let mut ym = self.ym2610.borrow_mut();
-                ym.write_address(1, self.mem.borrow().ym2610_addr[1]);
-                ym.write_data(1, data);
+                self.ym2610.borrow_mut().write_data(1, data);
             }
-            PORT_BANK_W0 => {
+            PORT_BANK_W0 | PORT_BANK_W1 | PORT_BANK_W2 | PORT_BANK_W3 => {
+                // Geolith's geo_z80_port_wr() enables NMI on writes to any
+                // NEO-ZMC bank port (0x08-0x0B). Sound drivers are free to use
+                // whichever decoded port is convenient during startup.
                 self.mem.borrow_mut().z80_nmi_enabled.set(true);
             }
             PORT_NMI_DISABLE => {
@@ -485,30 +478,17 @@ mod tests {
         let mut bus = new_test_z80bus(mem.clone());
         assert!(!mem.borrow().z80_nmi_enabled.get());
 
-        bus.write_io(PORT_BANK_W0, 0x00, 0);
-        assert!(mem.borrow().z80_nmi_enabled.get());
-
-        bus.write_io(PORT_NMI_DISABLE, 0x00, 0);
-        assert!(!mem.borrow().z80_nmi_enabled.get());
-    }
-
-    #[test]
-    fn z80_other_bank_ports_do_not_enable_nmi() {
-        let mem = Rc::new(RefCell::new(Memory::new()));
-        let ym = Rc::new(RefCell::new(Ym2610::new(mem.clone())));
-        let mut bus = Z80Bus {
-            mem: mem.clone(),
-            ym2610: ym,
-        };
-
-        for port in [PORT_BANK_W1, PORT_BANK_W2, PORT_BANK_W3] {
+        for port in [PORT_BANK_W0, PORT_BANK_W1, PORT_BANK_W2, PORT_BANK_W3] {
             mem.borrow().z80_nmi_enabled.set(false);
             bus.write_io(port, 0x00, 0);
             assert!(
-                !mem.borrow().z80_nmi_enabled.get(),
-                "write to port 0x{port:02X} must not enable NMI"
+                mem.borrow().z80_nmi_enabled.get(),
+                "write to port 0x{port:02X} must enable NMI"
             );
         }
+
+        bus.write_io(PORT_NMI_DISABLE, 0x00, 0);
+        assert!(!mem.borrow().z80_nmi_enabled.get());
     }
 
     #[test]
@@ -723,17 +703,18 @@ mod tests {
         bus.write_io(PORT_YM2610_A0, 0x08, 0);
         bus.write_io(PORT_YM2610_D0, 0x0F, 0);
 
-        // Read back by re-latching address
-        mem.borrow_mut().ym2610_addr[0] = 0x08;
+        // The address-port write above must latch immediately in the YM2610,
+        // exactly like Geolith's direct ym2610_write(port, value) path.
         let (val0, _) = bus.read_io(PORT_YM2610_D0, 0);
         assert_eq!(val0, 0x0F, "YM2610 SSG readback failed");
 
         // Port 1 data reads are open zero on YM2610; status is on A1.
         bus.write_io(PORT_YM2610_A1, 0xB0, 0);
         bus.write_io(PORT_YM2610_D1, 0x07, 0);
-        mem.borrow_mut().ym2610_addr[1] = 0xB0;
         let (val1, _) = bus.read_io(PORT_YM2610_D1, 0);
         assert_eq!(val1, 0x00, "YM2610 port 1 data reads should be open zero");
+
+        assert_eq!(mem.borrow().ym2610_addr, [0x08, 0xB0]);
     }
 
     #[test]

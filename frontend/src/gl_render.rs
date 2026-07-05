@@ -2,18 +2,20 @@
 //! vignette + phosphor bloom in a multi-pass shader pipeline.
 //!
 //! Pipeline:
-//!   1. Upload NeoGeo framebuffer → `fb_tex` (320×224)
-//!   2. Bright pass (bloom extraction) → `bloom_bright_tex` (320×224, FBO)
-//!   3. Gaussian blur (9-tap at half-res)  → `bloom_blur_tex` (160×112, FBO)
+//!   1. Crop the 8-pixel horizontal overscan and upload 304×224 → `fb_tex`
+//!   2. Bright pass (bloom extraction) → `bloom_bright_tex` (304×224, FBO)
+//!   3. Gaussian blur (9-tap at half-res)  → `bloom_blur_tex` (152×112, FBO)
 //!   4. Main CRT shader (barrel + scanlines + vignette + bloom composite)
 
 use sdl2::video::Window;
 use std::cell::RefCell;
 use std::ffi::CString;
 
-const FB_WIDTH: u32 = 320;
+const SOURCE_FB_WIDTH: u32 = 320;
+const HORIZONTAL_OVERSCAN: usize = 8;
+const FB_WIDTH: u32 = 304;
 const FB_HEIGHT: u32 = 224;
-const BLOOM_HALF_W: u32 = 160;
+const BLOOM_HALF_W: u32 = 152;
 const BLOOM_HALF_H: u32 = 112;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -375,13 +377,15 @@ impl CrtGlRenderer {
             bright_uni_threshold,
             blur_program,
             blur_uni_texel_size,
-            swizzle_buf: RefCell::new(Vec::with_capacity(320 * 224)),
+            swizzle_buf: RefCell::new(Vec::with_capacity((FB_WIDTH * FB_HEIGHT) as usize)),
         })
     }
 
     /// Upload the NeoGeo framebuffer and render with the current CRT settings.
     ///
-    /// `framebuffer` must be 320×224 ARGB8888 pixels.
+    /// `framebuffer` must be the 320×224 active LSPC image. The renderer
+    /// removes the hardware's 8-pixel horizontal overscan on both sides,
+    /// matching Geolith's 304×224 visible output.
     pub fn render(
         &self,
         framebuffer: &[u32],
@@ -391,8 +395,8 @@ impl CrtGlRenderer {
         output_width: u32,
         output_height: u32,
     ) {
-        assert_eq!(framebuffer.len(), (FB_WIDTH * FB_HEIGHT) as usize);
-        assert_eq!(fb_width, FB_WIDTH);
+        assert_eq!(framebuffer.len(), (SOURCE_FB_WIDTH * FB_HEIGHT) as usize);
+        assert_eq!(fb_width, SOURCE_FB_WIDTH);
         assert_eq!(fb_height, FB_HEIGHT);
 
         unsafe {
@@ -410,13 +414,18 @@ impl CrtGlRenderer {
             {
                 let mut buf = self.swizzle_buf.borrow_mut();
                 buf.clear();
-                buf.extend(framebuffer.iter().map(|&p| {
-                    let a = (p >> 24) & 0xFF;
-                    let r = (p >> 16) & 0xFF;
-                    let g = (p >> 8) & 0xFF;
-                    let b = p & 0xFF;
-                    (a << 24) | (b << 16) | (g << 8) | r
-                }));
+                for row in framebuffer.chunks_exact(SOURCE_FB_WIDTH as usize) {
+                    let visible =
+                        &row[HORIZONTAL_OVERSCAN..SOURCE_FB_WIDTH as usize - HORIZONTAL_OVERSCAN];
+                    buf.extend(visible.iter().map(|&p| {
+                        let a = (p >> 24) & 0xFF;
+                        let r = (p >> 16) & 0xFF;
+                        let g = (p >> 8) & 0xFF;
+                        let b = p & 0xFF;
+                        (a << 24) | (b << 16) | (g << 8) | r
+                    }));
+                }
+                debug_assert_eq!(buf.len(), (FB_WIDTH * FB_HEIGHT) as usize);
                 gl::ActiveTexture(gl::TEXTURE0);
                 gl::BindTexture(gl::TEXTURE_2D, self.fb_tex);
                 gl::TexSubImage2D(
@@ -424,7 +433,7 @@ impl CrtGlRenderer {
                     0,
                     0,
                     0,
-                    fb_width as i32,
+                    FB_WIDTH as i32,
                     fb_height as i32,
                     gl::RGBA,
                     gl::UNSIGNED_BYTE,
@@ -817,6 +826,15 @@ mod tests {
     fn bloom_half_res_dimensions() {
         assert_eq!(FB_WIDTH / 2, BLOOM_HALF_W);
         assert_eq!(FB_HEIGHT / 2, BLOOM_HALF_H);
+    }
+
+    #[test]
+    fn visible_width_matches_geolith_horizontal_overscan_crop() {
+        assert_eq!(
+            SOURCE_FB_WIDTH as usize - HORIZONTAL_OVERSCAN * 2,
+            FB_WIDTH as usize
+        );
+        assert_eq!(FB_WIDTH, 304);
     }
 
     #[test]

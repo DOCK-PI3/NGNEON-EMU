@@ -1,4 +1,5 @@
 use core_emulator::{bios, rom::RomData, EmuAction, NeoGeo};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,8 +39,23 @@ fn run() -> Result<(), String> {
     let standard_stimulus = options.iter().any(|value| value == "stimulus");
     let overclock = options.iter().any(|value| value == "overclock");
     let disable_adpcm_wrap = options.iter().any(|value| value == "nowrap");
+    let trace_z80 = options.iter().any(|value| value == "trace-z80");
 
-    let mut rom = RomData::from_neo(&rom_path)?;
+    let mut rom = match rom_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "neo" => RomData::from_neo(&rom_path)?,
+        "zip" => RomData::from_zip(&rom_path)?,
+        extension => {
+            return Err(format!(
+                "Formato de ROM no soportado para captura: .{extension}"
+            ));
+        }
+    };
     let dirs = [bios_dir.as_path()];
     let bios = bios::load_bios_from_multi(&dirs)?
         .ok_or_else(|| format!("No se encontró BIOS en {:?}", bios_dir))?;
@@ -105,7 +121,48 @@ fn run() -> Result<(), String> {
         ram_path,
         cart_path
     );
+    if trace_z80 {
+        print_z80_diagnostics(&machine);
+    }
     Ok(())
+}
+
+fn print_z80_diagnostics(machine: &NeoGeo) {
+    let (pc, halted, interrupt_state) = (
+        machine.z80_cpu.pc(),
+        machine.z80_cpu.is_halt(),
+        machine.z80_cpu.interrupt_state(),
+    );
+    let memory = machine.memory.borrow();
+    let mut port_counts = BTreeMap::<(u8, u8), usize>::new();
+    for access in memory.z80_io_trace.borrow().iter() {
+        let kind = match access.kind {
+            core_emulator::memory::BusAccessKind::Read => 0,
+            core_emulator::memory::BusAccessKind::Write => 1,
+        };
+        *port_counts
+            .entry((kind, (access.port & 0xFF) as u8))
+            .or_default() += 1;
+    }
+    let ports = port_counts
+        .into_iter()
+        .map(|((kind, port), count)| {
+            let kind = if kind == 0 { "Read" } else { "Write" };
+            format!("{kind}:0x{port:02X}={count}")
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "[NGNEON_Z80] pc=0x{pc:04X} halted={halted} iff1={} iff2={} im={} cart_audio={} nmi_enabled={} nmi_pending={} banks={:X?} recent_ports=[{}]",
+        interrupt_state.0,
+        interrupt_state.1,
+        interrupt_state.2,
+        memory.use_cart_audio,
+        memory.z80_nmi_enabled.get(),
+        memory.z80_nmi_pending.get(),
+        memory.z80_bank,
+        ports
+    );
 }
 
 fn apply_standard_stimulus(machine: &mut NeoGeo, frame: usize, enabled: bool) {

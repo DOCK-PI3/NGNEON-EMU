@@ -1163,10 +1163,6 @@ impl Ym2610 {
     /// Read the status register for the given port.
     /// Port 0: bit 7 = BUSY, bit 1 = Timer B, bit 0 = Timer A
     /// Port 1: latched ADPCM end-of-sample flags masked by register 0x1C
-    ///
-    /// **IMPORTANT**: On real YM2610 hardware, reading the status register
-    /// **clears** the timer A and timer B flags. This is how the Z80 sound
-    /// driver distinguishes which timer fired and processes each ISR path.
     pub fn read_status(&self, port: u8) -> u8 {
         debug_assert!(port <= 1, "YM2610 port must be 0 or 1");
         if self.geolith_backend {
@@ -1185,9 +1181,6 @@ impl Ym2610 {
                 if self.timer_a_flag.get() {
                     status |= 0x01;
                 }
-                // Hardware clears timer flags on status read
-                self.timer_b_flag.set(false);
-                self.timer_a_flag.set(false);
                 status
             }
             1 => self.eos_status & self.eos_mask,
@@ -2472,7 +2465,7 @@ mod tests {
 
     #[test]
     fn ym2610_status_register() {
-        let chip = new_test_ym2610();
+        let mut chip = new_test_ym2610();
 
         // Initial status
         let status = chip.read_status(0);
@@ -2482,6 +2475,15 @@ mod tests {
         chip.timer_a_flag.set(true);
         let status = chip.read_status(0);
         assert!(status & 0x01 != 0);
+        assert_ne!(
+            chip.read_status(0) & 0x01,
+            0,
+            "timer status remains latched until register 0x27 resets it"
+        );
+
+        chip.write_address(0, 0x27);
+        chip.write_data(0, 0x10);
+        assert_eq!(chip.read_status(0) & 0x01, 0);
     }
 
     #[test]

@@ -3000,6 +3000,30 @@ fn run() -> Result<(), String> {
         if !neogeo.emulation_paused {
             pull_frame_audio(&neogeo, &ring_buffer, &mut resampler, status.volume);
         }
+        if status.frame_count.is_multiple_of(300) && std::env::var_os("NGNEON_AUDIO_DIAG").is_some()
+        {
+            let native = neogeo.audio_mixer.samples();
+            let native_nonzero = native.iter().filter(|sample| **sample != 0).count();
+            let native_peak = native
+                .iter()
+                .map(|sample| sample.unsigned_abs())
+                .max()
+                .unwrap_or(0);
+            if let Ok(buffer) = ring_buffer.lock() {
+                println!(
+                    "[AUDIO_DIAG] frame={} native_samples={} native_nonzero={} native_peak={} ring_samples={} overruns={} underruns={} resampler_source_pairs={} resampler_starved_pairs={}",
+                    status.frame_count,
+                    native.len(),
+                    native_nonzero,
+                    native_peak,
+                    buffer.len(),
+                    buffer.overrun_samples(),
+                    buffer.underrun_samples(),
+                    resampler.buffered_source_pairs(),
+                    resampler.starved_output_pairs()
+                );
+            }
+        }
 
         // Draw welcome overlay if no ROM is loaded
         if status.show_welcome {
