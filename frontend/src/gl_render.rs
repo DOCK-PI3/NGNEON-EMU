@@ -21,12 +21,16 @@ const BLOOM_HALF_H: u32 = 112;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayAspect {
     Original4_3,
+    SquarePixels,
+    Par45_44,
     Wide16_9,
 }
 
 impl DisplayAspect {
     pub fn from_config(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
+            "1:1" | "1:1 par" | "square" => Self::SquarePixels,
+            "45:44" | "45:44 par" => Self::Par45_44,
             "16:9" | "wide" | "widescreen" => Self::Wide16_9,
             _ => Self::Original4_3,
         }
@@ -35,6 +39,8 @@ impl DisplayAspect {
     pub fn as_config(self) -> &'static str {
         match self {
             Self::Original4_3 => "4:3",
+            Self::SquarePixels => "1:1",
+            Self::Par45_44 => "45:44",
             Self::Wide16_9 => "16:9",
         }
     }
@@ -46,13 +52,17 @@ impl DisplayAspect {
     fn ratio(self) -> f32 {
         match self {
             Self::Original4_3 => 4.0 / 3.0,
+            Self::SquarePixels => FB_WIDTH as f32 / FB_HEIGHT as f32,
+            Self::Par45_44 => (FB_WIDTH as f32 * 45.0) / (FB_HEIGHT as f32 * 44.0),
             Self::Wide16_9 => 16.0 / 9.0,
         }
     }
 
     pub fn next(self) -> Self {
         match self {
-            Self::Original4_3 => Self::Wide16_9,
+            Self::Original4_3 => Self::SquarePixels,
+            Self::SquarePixels => Self::Par45_44,
+            Self::Par45_44 => Self::Wide16_9,
             Self::Wide16_9 => Self::Original4_3,
         }
     }
@@ -873,5 +883,12 @@ mod tests {
             DisplayAspect::Original4_3
         );
         assert_eq!(DisplayAspect::Wide16_9.as_config(), "16:9");
+        assert_eq!(
+            DisplayAspect::from_config("1:1"),
+            DisplayAspect::SquarePixels
+        );
+        assert_eq!(DisplayAspect::from_config("45:44"), DisplayAspect::Par45_44);
+        assert_eq!(DisplayAspect::SquarePixels.as_config(), "1:1");
+        assert_eq!(DisplayAspect::Par45_44.as_config(), "45:44");
     }
 }

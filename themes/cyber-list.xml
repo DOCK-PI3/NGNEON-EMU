@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Lista cyber inspirada en interfaces arcade tipo Pandora. -->
+<theme version="2" id="cyber-list" name="Cyber List" author="NGNEON-EMU">
+  <canvas width="960" height="540"/>
+  <palette
+    background="#02030A"
+    header="#050714"
+    panel="#D9060812"
+    panel_alt="#E00A1020"
+    primary="#FFB000"
+    primary_dark="#7A3E00"
+    secondary="#087FA4"
+    accent="#23D4FF"
+    warning="#FFD55C"
+    success="#56E39F"
+    text="#F7FAFF"
+    text_soft="#CAD6E8"
+    text_dim="#7889A6"
+    border="#8BDCF4"
+    error="#FF5578"/>
+
+  <component id="library_background" visible="false"/>
+  <component id="header" visible="false"/>
+  <component id="carousel" visible="false"/>
+  <component id="cabinet" visible="false"/>
+  <component id="game_info" visible="false"/>
+  <component id="library_footer" visible="false"/>
+
+  <component id="vertical_list" x="16" y="50" width="466" height="474" z="130" visible="true"/>
+  <component id="game_title" x="500" y="8" width="444" height="110" z="145" visible="true"/>
+  <component id="game_description" x="498" y="410" width="446" height="116" z="145" visible="true"/>
+  <component id="game_metadata" x="498" y="370" width="446" height="36" z="145" visible="true"/>
+  <component id="page_counter" x="16" y="10" width="466" height="32" z="150" visible="true"/>
+
+  <media id="backdrop" source="game.fanart,game.mix,game.image"
+         x="0" y="0" width="960" height="540" z="-100"
+         opacity="0.52" fit="cover" visible="true"/>
+  <media id="logo" source="game.marquee,game.logo,game.wheel"
+         x="502" y="10" width="440" height="106" z="160"
+         opacity="255" fit="cover" visible="true"/>
+  <media id="preview" source="game.video,game.screenshot,game.titleshot,game.mix,game.image"
+         x="498" y="124" width="446" height="242" z="120"
+         opacity="255" fit="contain" visible="true"/>
+</theme>

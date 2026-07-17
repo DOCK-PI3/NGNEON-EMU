@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<theme version="1" id="phosphor" name="Green Phosphor" author="NGNEON-EMU">
+  <canvas width="960" height="540"/>
+  <palette
+    background="#020704"
+    header="#041008"
+    panel="#06150B"
+    panel_alt="#0A2412"
+    primary="#36E56F"
+    primary_dark="#14572B"
+    secondary="#24994C"
+    accent="#7CFFA4"
+    warning="#D7FF7C"
+    success="#53FF8A"
+    text="#E4FFE9"
+    text_soft="#94D9A6"
+    text_dim="#4B7B58"
+    border="#1C5630"
+    error="#FF6F73"/>
+
+  <component id="game_info" x="604" y="66" width="340" height="414" z="120"/>
+</theme>

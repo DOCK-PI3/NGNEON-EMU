@@ -76,7 +76,7 @@ svg {
   right: 0;
   height: 78px;
   display: grid;
-  grid-template-columns: 260px 1fr 260px;
+  grid-template-columns: 260px 1fr minmax(260px, 420px);
   align-items: center;
   gap: 1rem;
   padding: 0 3vw;
@@ -198,6 +198,65 @@ svg {
   font-size: 0.77rem;
 }
 
+.header-actions {
+  justify-self: end;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: end;
+  gap: 0.65rem;
+}
+
+.session-chip {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) 20px;
+  width: 190px;
+  height: 48px;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid rgba(101, 220, 139, 0.42);
+  background: #101a18;
+  color: #f4f7f8;
+  padding: 0 0.7rem;
+  text-align: left;
+}
+
+.session-chip > i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #65dc8b;
+  box-shadow: 0 0 10px rgba(101, 220, 139, 0.58);
+}
+
+.session-chip > span {
+  display: grid;
+  min-width: 0;
+  gap: 0.16rem;
+}
+
+.session-chip strong,
+.session-chip small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-chip strong {
+  font-size: 0.7rem;
+}
+
+.session-chip small {
+  color: #9eaaa8;
+  font-size: 0.6rem;
+}
+
+.session-chip svg {
+  width: 1rem;
+  height: 1rem;
+  color: #ff8795;
+}
+
 .launcher {
   padding-top: 78px;
 }
@@ -298,7 +357,7 @@ svg {
   max-width: 650px;
   margin: 0;
   font: 800 clamp(3.4rem, 7vw, 7rem)/0.85 var(--display);
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -345,7 +404,42 @@ svg {
   display: flex;
   align-items: center;
   gap: 0.8rem;
+}
+
+.launch-panel {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
   margin-top: 1.65rem;
+}
+
+.launch-mode {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 360px;
+  border: 1px solid var(--line);
+  background: rgba(9, 11, 15, 0.66);
+}
+
+.launch-mode button {
+  min-width: 0;
+  height: 34px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  color: #8e98a3;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.launch-mode button:last-child {
+  border-right: 0;
+}
+
+.launch-mode button:hover,
+.launch-mode button.is-active {
+  background: #18313a;
+  color: var(--cyan-strong);
 }
 
 .play-button,
@@ -388,6 +482,11 @@ svg {
 
 .round-button.is-favorite svg {
   fill: currentColor;
+}
+
+.round-button.stop-button {
+  border-color: rgba(255, 101, 119, 0.58);
+  color: #ff8795;
 }
 
 .media-tabs {
@@ -761,17 +860,6 @@ svg {
   text-shadow: 0 2px 7px #000;
 }
 
-.keyboard-hint {
-  color: #69727c;
-  font-size: 0.62rem;
-  text-align: right;
-}
-
-.keyboard-hint span {
-  margin-left: 0.55rem;
-  color: #b6bec6;
-}
-
 .no-results {
   width: 100%;
   padding: 3rem;
@@ -818,7 +906,7 @@ svg {
 .profile-copy h1 {
   margin: 0;
   font: 800 clamp(2.8rem, 6vw, 5.4rem)/0.92 var(--display);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .ra-onboarding p {
@@ -1226,6 +1314,93 @@ svg {
   line-height: 1.4;
 }
 
+.bios-guide {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+}
+
+.bios-pair-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.bios-selected-card {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 0.8rem;
+  align-items: start;
+  border: 1px solid var(--line);
+  background: #0c0f14;
+  padding: 0.85rem;
+}
+
+.bios-selected-card > span,
+.bios-mode-card > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  height: 24px;
+  border: 1px solid rgba(82, 215, 232, 0.35);
+  color: var(--cyan);
+  font: 700 0.72rem/1 var(--display);
+}
+
+.bios-selected-card strong,
+.bios-mode-card strong {
+  display: block;
+  font-size: 0.78rem;
+}
+
+.bios-selected-card small {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.58rem;
+  overflow-wrap: anywhere;
+}
+
+.bios-selected-card p,
+.bios-mode-card p {
+  margin: 0.45rem 0 0;
+  color: #c8d0d8;
+  font-size: 0.64rem;
+  line-height: 1.45;
+}
+
+.bios-selected-card em {
+  display: block;
+  margin-top: 0.55rem;
+  color: var(--cyan);
+  font-size: 0.61rem;
+  font-style: normal;
+  line-height: 1.4;
+}
+
+.bios-selected-card em.is-blocked,
+.bios-unibios > span {
+  color: var(--danger);
+  border-color: rgba(255, 101, 119, 0.45);
+}
+
+.bios-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.bios-mode-card {
+  border: 1px solid var(--line);
+  background: rgba(12, 15, 20, 0.78);
+  padding: 0.72rem;
+}
+
+.bios-mode-card strong {
+  margin-top: 0.55rem;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1621,9 +1796,6 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .keyboard-hint {
-    display: none;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

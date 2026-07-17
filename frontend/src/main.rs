@@ -1,5 +1,6 @@
+use core_emulator::bios::{BiosKind, BiosRegion};
 use core_emulator::{video, EmulationMode, NeoGeo};
-use frontend::{audio, gamepad};
+use frontend::{audio, gamepad, screenshot};
 use rfd::FileDialog;
 use sdl2::audio::AudioSpecDesired;
 use sdl2::event::Event;
@@ -15,14 +16,12 @@ use std::time::{Duration, Instant};
 mod gl_render;
 mod input;
 mod lang;
-mod screenshot;
 mod ui;
 
 const WINDOW_SCALE: u32 = 3;
-const TARGET_FRAME_TIME: Duration = Duration::from_micros(16_896);
 const TITLE_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 const SAVE_SLOTS: usize = 10;
-const SETTINGS_ITEMS: [usize; 6] = [6, 2, 9, 3, 5, 7]; // Video, Audio, System, Controls, Paths, RetroAchievements
+const SETTINGS_ITEMS: [usize; 6] = [7, 2, 11, 3, 5, 7]; // Video, Audio, System, Controls, Paths, RetroAchievements
 const AUDIO_RING_BUFFER_SAMPLES: usize = 32768;
 const SDL_AUDIO_CALLBACK_SAMPLES: u16 = 1024;
 const AUDIO_PREROLL_SAMPLES: usize =
@@ -78,6 +77,36 @@ enum RaAutoLogin {
     Password,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnibiosHardware {
+    Mvs,
+    Aes,
+}
+
+impl UnibiosHardware {
+    fn from_config(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "mvs" => Some(Self::Mvs),
+            "aes" => Some(Self::Aes),
+            _ => None,
+        }
+    }
+
+    fn as_config(self) -> &'static str {
+        match self {
+            Self::Mvs => "mvs",
+            Self::Aes => "aes",
+        }
+    }
+
+    fn toggle(&mut self) {
+        *self = match *self {
+            Self::Mvs => Self::Aes,
+            Self::Aes => Self::Mvs,
+        };
+    }
+}
+
 struct RuntimeStatus {
     lang: lang::Lang,
     label: String,
@@ -93,8 +122,10 @@ struct RuntimeStatus {
     slot_filesizes: [String; SAVE_SLOTS],
     mgr_thumb: Option<Vec<u32>>,
     show_bios_selector: bool,
-    bios_list: Vec<String>,
+    bios_list: Vec<BiosKind>,
     bios_selected_index: usize,
+    bios_region: BiosRegion,
+    unibios_hardware: UnibiosHardware,
     current_bios: String,
     show_gamepad_config: bool,
     gp_selected_action: usize,
@@ -120,6 +151,9 @@ struct RuntimeStatus {
     disable_adpcm_wrap: bool,
     memcard_inserted: bool,
     memcard_write_protected: bool,
+    setting_mode: bool,
+    freeplay: bool,
+    palette_mode: video::PaletteMode,
     // Keyboard config overlay
     show_kb_config: bool,
     kb_selected_action: usize,
@@ -181,6 +215,94 @@ struct RuntimeStatus {
     frame_count: u32,
 }
 
+struct FreezeDiag {
+    enabled: bool,
+    last_hash: u64,
+    same_fb_frames: u32,
+    last_pc: u32,
+    same_pc_frames: u32,
+}
+
+impl FreezeDiag {
+    fn from_env() -> Self {
+        let enabled = std::env::var("NGNEON_FREEZE_DIAG")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON"))
+            .unwrap_or(false);
+        Self {
+            enabled,
+            last_hash: 0,
+            same_fb_frames: 0,
+            last_pc: 0,
+            same_pc_frames: 0,
+        }
+    }
+
+    fn observe(&mut self, frame_count: u32, label: &str, neogeo: &NeoGeo) {
+        if !self.enabled || neogeo.demo_mode {
+            return;
+        }
+
+        let machine = neogeo.status();
+        let hash = framebuffer_hash(&neogeo.video.framebuffer);
+        if frame_count == 0 || hash != self.last_hash {
+            self.same_fb_frames = 0;
+            self.last_hash = hash;
+        } else {
+            self.same_fb_frames = self.same_fb_frames.saturating_add(1);
+        }
+        if frame_count == 0 || machine.pc != self.last_pc {
+            self.same_pc_frames = 0;
+            self.last_pc = machine.pc;
+        } else {
+            self.same_pc_frames = self.same_pc_frames.saturating_add(1);
+        }
+
+        let should_report = frame_count.is_multiple_of(300)
+            || (self.same_fb_frames >= 180 && frame_count.is_multiple_of(60));
+        if !should_report {
+            return;
+        }
+
+        let memory = neogeo.memory.borrow();
+        eprintln!(
+            "[FREEZE_DIAG] frame={} label={} same_fb={} hash={:016X} same_pc={} mode={:?} pc={:06X} sr={:04X} cpu={}/{} lspc={}:{} irq2={:02X}/{:08X}/{:08X} watchdog={} pbank=0x{:X} display={} cart_fix={} cart_audio={} audio_pairs={} p1={:02X} sys={:02X} last_error={}",
+            frame_count,
+            label,
+            self.same_fb_frames,
+            hash,
+            self.same_pc_frames,
+            machine.mode,
+            machine.pc,
+            machine.sr,
+            machine.last_cpu_cycles,
+            machine.target_cpu_cycles,
+            memory.lspc_scanline.get(),
+            memory.lspc_cycle.get(),
+            memory.irq2_ctrl,
+            memory.irq2_reload,
+            memory.irq2_counter,
+            memory.watchdog_cycles,
+            machine.prom_bank_offset,
+            memory.display_enabled,
+            memory.use_cart_fix,
+            memory.use_cart_audio,
+            neogeo.audio_mixer.samples_generated(),
+            machine.p1_port,
+            machine.system_port,
+            machine.last_error.as_deref().unwrap_or("none")
+        );
+    }
+}
+
+fn framebuffer_hash(framebuffer: &[u32]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &pixel in framebuffer {
+        hash ^= pixel as u64;
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    hash
+}
+
 impl RuntimeStatus {
     fn new(
         label: &str,
@@ -192,7 +314,7 @@ impl RuntimeStatus {
         // Scan available BIOS files from both bios/ and roms/ directories
         let dirs = [bios_dir, &rom_dir.to_string_lossy()];
         let bios_list = core_emulator::bios::list_available_bios_multi(&dirs).unwrap_or_default();
-        let bios_labels: Vec<String> = bios_list.iter().map(|b| b.label.clone()).collect();
+        let bios_kinds = core_emulator::bios::available_bios_kinds(&bios_list);
 
         let mut status = Self {
             lang: language,
@@ -209,8 +331,10 @@ impl RuntimeStatus {
             slot_filesizes: Default::default(),
             mgr_thumb: None,
             show_bios_selector: false,
-            bios_list: bios_labels,
+            bios_list: bios_kinds,
             bios_selected_index: 0,
+            bios_region: load_config_bios_region().unwrap_or(BiosRegion::Europe),
+            unibios_hardware: load_config_unibios_hardware(),
             current_bios: String::from("Diagnóstica interna"),
             show_gamepad_config: false,
             gp_selected_action: 0,
@@ -235,6 +359,9 @@ impl RuntimeStatus {
             disable_adpcm_wrap: false,
             memcard_inserted: true,
             memcard_write_protected: false,
+            setting_mode: false,
+            freeplay: false,
+            palette_mode: video::PaletteMode::ResistorNetwork,
             show_kb_config: false,
             kb_selected_action: 0,
             kb_listening: false,
@@ -519,7 +646,7 @@ fn reload_ra_after_rom_change(neogeo: &mut NeoGeo, status: &mut RuntimeStatus) {
 
 fn open_rom_browser(status: &mut RuntimeStatus, neogeo: &mut NeoGeo) {
     let rom_dir = resolve_rom_directory();
-    status.media_dir = resolve_media_directory();
+    status.media_dir = resolve_media_directory(&rom_dir);
     status.rom_entries = scan_rom_directory(&rom_dir, &status.media_dir);
     status.show_rom_browser = true;
     status.rom_browser_selected = 0;
@@ -906,6 +1033,9 @@ fn run() -> Result<(), String> {
     // Collect all CLI args upfront so we can filter diagnostic-dump flags
     // before passing them to the single-argument ROM parser.
     let raw_args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let clean_start = raw_args
+        .iter()
+        .any(|arg| arg.to_string_lossy() == "--clean-start");
 
     // Resolve diagnostic dump toggle: CLI > config > default (off)
     let diag_dumps = resolve_diagnostic_dumps(&raw_args);
@@ -916,10 +1046,10 @@ fn run() -> Result<(), String> {
         println!("[INFO] Diagnostic ROM bank dumps: OFF");
     }
 
-    // Filter out diagnostic-dump flags before parsing the ROM request
+    // Filter launcher/session flags before parsing the single ROM argument.
     let filtered_args = raw_args.iter().filter(|a| {
         let s = a.to_string_lossy();
-        s != "--dump-rom-banks" && s != "--no-dump-rom-banks"
+        s != "--dump-rom-banks" && s != "--no-dump-rom-banks" && s != "--clean-start"
     });
     let initial_request = parse_initial_rom_request(filtered_args.cloned())?;
     if initial_request == InitialRomRequest::Help {
@@ -1014,15 +1144,40 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("No se pudo abrir dispositivo de audio: {e}"))?;
 
     let mut neogeo = NeoGeo::new();
+    neogeo.set_persistent_data_enabled(!clean_start);
+    if clean_start {
+        println!("[INFO] Sesión limpia: SRAM y tarjeta aisladas del almacenamiento persistente.");
+    }
     // Initialize RetroAchievements session
     neogeo.init_retroachievements();
     let mut crt_gl = gl_render::CrtGlConfig::default();
     let bios_dir = resolve_bios_directory();
     let bios_dir_str = bios_dir.to_string_lossy().to_string();
     let rom_dir = resolve_rom_directory();
-    let media_dir = resolve_media_directory();
+    let media_dir = resolve_media_directory(&rom_dir);
     let _ = std::fs::create_dir_all(&media_dir);
-    let bios_label = load_default_bios(&mut neogeo, &bios_dir_str, &rom_dir)?;
+    let mut bios_label = load_default_bios(&mut neogeo, &bios_dir_str, &rom_dir)?;
+    if let Some(saved_bios) = load_config_bios() {
+        if apply_bios_label(&mut neogeo, &saved_bios)? {
+            println!(
+                "[INFO] Config: BIOS '{}' restaurada antes de cargar la ROM.",
+                saved_bios
+            );
+            bios_label = saved_bios;
+        } else {
+            println!(
+                "[INFO] Config: BIOS '{}' no encontrada en disco, usando predeterminada.",
+                saved_bios
+            );
+        }
+    }
+    let startup_unibios_hardware = load_config_unibios_hardware();
+    apply_system_profile(
+        &mut neogeo,
+        &mut resampler,
+        &bios_label,
+        startup_unibios_hardware,
+    );
     let mut initial_rom = load_initial_rom(initial_request)?;
     let initial_ra_hash = apply_loaded_rom(
         &mut neogeo,
@@ -1062,38 +1217,9 @@ fn run() -> Result<(), String> {
         );
     }
 
-    // --- Load saved config and override BIOS if a preference exists ---
-    if let Some(saved_bios) = load_config_bios() {
-        let dirs = [&bios_dir_str as &str, &rom_dir.to_string_lossy()];
-        if let Ok(bios_list) = core_emulator::bios::list_available_bios_multi(&dirs) {
-            if let Some(found) = bios_list.iter().find(|b| b.label == saved_bios) {
-                println!(
-                    "[INFO] Config: BIOS '{}' restaurada desde archivo de configuración.",
-                    saved_bios
-                );
-                neogeo.set_bios(found.data.clone());
-                if let Ok(Some(zoom_rom)) =
-                    core_emulator::bios::load_zoom_rom_for_bios_from_multi(&dirs, &saved_bios)
-                {
-                    neogeo.set_zoom_rom(zoom_rom.data);
-                }
-                if let Ok(Some(sfix_rom)) =
-                    core_emulator::bios::load_sfix_rom_for_bios_from_multi(&dirs, &saved_bios)
-                {
-                    neogeo.set_sfix_rom(sfix_rom.data);
-                }
-                if let Ok(Some(sm1_rom)) =
-                    core_emulator::bios::load_sm1_rom_for_bios_from_multi(&dirs, &saved_bios)
-                {
-                    neogeo.set_sm1_rom(sm1_rom.data);
-                }
-                status.current_bios = saved_bios;
-            } else {
-                println!(
-                    "[INFO] Config: BIOS '{}' no encontrada en disco, usando predeterminada.",
-                    saved_bios
-                );
-            }
+    if load_config_bios_region().is_none() {
+        if let Some(region) = core_emulator::bios::bios_region(&status.current_bios) {
+            status.bios_region = region;
         }
     }
 
@@ -1131,6 +1257,23 @@ fn run() -> Result<(), String> {
     status.disable_adpcm_wrap = load_config_bool("disable_adpcm_wrap", false);
     status.memcard_inserted = load_config_bool("memcard", true);
     status.memcard_write_protected = load_config_bool("memcard_write_protect", false);
+    status.setting_mode = load_config_bool("setting_mode", false);
+    status.freeplay = load_config_bool("freeplay", false);
+    status.palette_mode = match load_config_key("palette_mode").as_deref() {
+        Some("raw") => video::PaletteMode::Raw,
+        _ => video::PaletteMode::ResistorNetwork,
+    };
+    if clean_start {
+        status.auto_save = false;
+        status.cpu_overclock = false;
+        status.sprite_limit = core_emulator::video::HARDWARE_SPRITES_PER_SCANLINE;
+        status.disable_adpcm_wrap = false;
+        status.setting_mode = false;
+        status.freeplay = false;
+        println!(
+            "[INFO] Sesión limpia: sin autoestado/perfil y con timing, sprites y ADPCM de hardware."
+        );
+    }
     if status.ra_hardcore {
         if ensure_hardcore_safe_bios(&mut status, &mut neogeo)? {
             disable_emulation_hacks_for_hardcore(&mut status, &mut neogeo);
@@ -1144,12 +1287,20 @@ fn run() -> Result<(), String> {
             );
         }
     }
+    apply_system_profile(
+        &mut neogeo,
+        &mut resampler,
+        &status.current_bios,
+        status.unibios_hardware,
+    );
     apply_emulation_hacks(&status, &mut neogeo);
     neogeo.set_memory_card_state(status.memcard_inserted, status.memcard_write_protected);
+    neogeo.set_dip_options(status.setting_mode, false, status.freeplay);
+    neogeo.set_palette_mode(status.palette_mode);
     neogeo.ra_set_hardcore(status.ra_hardcore);
     if status.ra_hardcore {
         // A Hardcore session must always start from a clean machine state.
-        neogeo.reset();
+        neogeo.reset_for_bios_change();
     }
     let mut ra_auto_login_pending = if !status.ra_token.is_empty() {
         status.ra_token_fallback_attempted = false;
@@ -1168,9 +1319,11 @@ fn run() -> Result<(), String> {
     input::set_global_mapping(kb_mapping.clone());
     status.keyboard_mapping = kb_mapping;
     // Apply per-game CRT overrides (scanlines, curvature, bloom)
-    apply_game_config(&initial_rom.label, &mut crt_gl);
+    if !clean_start {
+        apply_game_config(&initial_rom.label, &mut crt_gl);
+    }
     let game_profile = profile_path(&initial_rom.label);
-    if std::path::Path::new(&game_profile).exists() {
+    if !clean_start && std::path::Path::new(&game_profile).exists() {
         println!(
             "[INFO] Perfil de juego personalizado aplicado para '{}'",
             initial_rom.label
@@ -1179,10 +1332,12 @@ fn run() -> Result<(), String> {
 
     // --- Auto-load state from slot 0 for seamless session resume ---
     // Skip auto-load for the demo ROM (no persistent saves for demos).
-    if !neogeo.demo_mode && !status.ra_hardcore {
+    if !neogeo.demo_mode && !status.ra_hardcore && status.auto_save {
         auto_load_state(&mut neogeo, &status.label);
         // Refresh slot availability after auto-load
         status.scan_slots();
+    } else if !status.auto_save {
+        println!("[INFO] Auto-load omitido: Auto-save está desactivado.");
     } else if status.ra_hardcore {
         println!("[INFO] Auto-load omitido: RetroAchievements Hardcore está activo.");
     }
@@ -1200,8 +1355,10 @@ fn run() -> Result<(), String> {
         .event_pump()
         .map_err(|e| format!("No se pudo crear event pump SDL2: {e}"))?;
     let mut reported_cpu_fault = false;
+    let mut freeze_diag = FreezeDiag::from_env();
     let mut save_counter: u32 = 0;
-    let mut next_frame_deadline = Instant::now() + TARGET_FRAME_TIME;
+    let mut next_frame_deadline =
+        Instant::now() + system_timing_for_bios(&status.current_bios).frame_duration();
     'running: loop {
         for event in event_pump.poll_iter() {
             match event {
@@ -1894,12 +2051,7 @@ fn run() -> Result<(), String> {
                     // Ctrl+B toggles the BIOS selector
                     status.show_bios_selector = !status.show_bios_selector;
                     if status.show_bios_selector {
-                        // Find current BIOS index in the list
-                        status.bios_selected_index = status
-                            .bios_list
-                            .iter()
-                            .position(|b| b == &status.current_bios)
-                            .unwrap_or(0);
+                        select_current_bios_kind(&mut status);
                         println!(
                             "[INFO] BIOS Selector abierto. {} BIOS disponibles.",
                             status.bios_list.len()
@@ -2191,11 +2343,9 @@ fn run() -> Result<(), String> {
                     repeat: false,
                     ..
                 } if status.show_bios_selector => {
-                    // Apply the selected BIOS
-                    let idx = status.bios_selected_index;
-                    if idx < status.bios_list.len() {
-                        let label = status.bios_list[idx].clone();
-                        if status.ra_hardcore && core_emulator::bios::is_unibios_label(&label) {
+                    // Apply the selected BIOS profile and region.
+                    if let Some(kind) = selected_bios_kind(&status) {
+                        if status.ra_hardcore && matches!(kind, BiosKind::Unibios) {
                             let msg = if status.lang.language == lang::Language::Es {
                                 "UniBIOS bloqueada en RA Hardcore"
                             } else {
@@ -2214,33 +2364,41 @@ fn run() -> Result<(), String> {
                         let dirs = [&bios_dir_str as &str, &rom_dir.to_string_lossy()];
                         if let Ok(bios_list) = core_emulator::bios::list_available_bios_multi(&dirs)
                         {
-                            if let Some(found) = bios_list.iter().find(|b| b.label == label) {
-                                neogeo.set_bios(found.data.clone());
-                                if let Ok(Some(zoom_rom)) =
-                                    core_emulator::bios::load_zoom_rom_for_bios_from_multi(
-                                        &dirs, &label,
-                                    )
-                                {
-                                    neogeo.set_zoom_rom(zoom_rom.data);
+                            if let Some(found) =
+                                core_emulator::bios::select_bios_for_kind_and_region(
+                                    &bios_list,
+                                    kind,
+                                    status.bios_region,
+                                )
+                            {
+                                let label = found.label.clone();
+                                if !apply_bios_label(&mut neogeo, &label)? {
+                                    status.show_bios_selector = false;
+                                    continue;
                                 }
-                                if let Ok(Some(sfix_rom)) =
-                                    core_emulator::bios::load_sfix_rom_for_bios_from_multi(
-                                        &dirs, &label,
-                                    )
-                                {
-                                    neogeo.set_sfix_rom(sfix_rom.data);
-                                }
-                                if let Ok(Some(sm1_rom)) =
-                                    core_emulator::bios::load_sm1_rom_for_bios_from_multi(
-                                        &dirs, &label,
-                                    )
-                                {
-                                    neogeo.set_sm1_rom(sm1_rom.data);
-                                }
-                                neogeo.reset();
+                                apply_system_profile(
+                                    &mut neogeo,
+                                    &mut resampler,
+                                    &label,
+                                    status.unibios_hardware,
+                                );
+                                clear_audio_pipeline(&ring_buffer, &mut resampler);
+                                neogeo.reset_for_bios_change();
                                 status.current_bios = label.clone();
+                                if !core_emulator::bios::bios_label_supports_region(
+                                    &label,
+                                    status.bios_region,
+                                ) {
+                                    if let Some(region) = core_emulator::bios::bios_region(&label) {
+                                        status.bios_region = region;
+                                    }
+                                }
                                 save_config_bios(&label);
-                                let msg = status.lang.notif_bios_changed.replacen("{}", &label, 1);
+                                save_config_bios_region(status.bios_region);
+                                let display =
+                                    bios_display_name(kind, status.bios_region, &status.lang);
+                                let msg =
+                                    status.lang.notif_bios_changed.replacen("{}", &display, 1);
                                 println!("[INFO] {msg}");
                                 ui::draw_notification(
                                     &mut neogeo.video.framebuffer,
@@ -2253,6 +2411,36 @@ fn run() -> Result<(), String> {
                     status.show_bios_selector = false;
                 }
                 // ── Settings Menu navigation ──────────────────────
+                Event::KeyDown {
+                    keycode: Some(Keycode::Left),
+                    repeat: false,
+                    ..
+                } if status.show_bios_selector
+                    && selected_bios_kind(&status)
+                        .is_some_and(core_emulator::bios::bios_kind_supports_region) =>
+                {
+                    status.bios_region = cycle_bios_region(status.bios_region, -1);
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Right),
+                    repeat: false,
+                    ..
+                } if status.show_bios_selector
+                    && selected_bios_kind(&status)
+                        .is_some_and(core_emulator::bios::bios_kind_supports_region) =>
+                {
+                    status.bios_region = cycle_bios_region(status.bios_region, 1);
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Left | Keycode::Right),
+                    repeat: false,
+                    ..
+                } if status.show_bios_selector
+                    && matches!(selected_bios_kind(&status), Some(BiosKind::Unibios)) =>
+                {
+                    status.unibios_hardware.toggle();
+                    save_config_key("unibios_hardware", status.unibios_hardware.as_config());
+                }
                 Event::KeyDown {
                     keycode: Some(Keycode::Left),
                     repeat: false,
@@ -2794,6 +2982,7 @@ fn run() -> Result<(), String> {
                 reported_cpu_fault = true;
             }
         }
+        freeze_diag.observe(status.frame_count, &status.label, &neogeo);
 
         // --- RetroAchievements: process events each frame ---
         for event in neogeo.ra_take_events() {
@@ -2924,7 +3113,7 @@ fn run() -> Result<(), String> {
                     if status.ra_hardcore_reset_applied {
                         status.ra_hardcore_reset_applied = false;
                     } else {
-                        neogeo.reset();
+                        neogeo.reset_for_bios_change();
                         clear_audio_pipeline(&ring_buffer, &mut resampler);
                     }
                     status.ra_last_status = String::from("RA: sistema reiniciado");
@@ -3083,6 +3272,8 @@ fn run() -> Result<(), String> {
                 neogeo.video.width,
                 &status.bios_list,
                 status.bios_selected_index,
+                status.bios_region,
+                matches!(status.unibios_hardware, UnibiosHardware::Mvs),
                 &status.current_bios,
                 &status.lang,
             );
@@ -3105,6 +3296,10 @@ fn run() -> Result<(), String> {
                 status.muted,
                 status.window_scale,
                 crt_gl.display_aspect.label(),
+                match status.palette_mode {
+                    video::PaletteMode::Raw => "RAW",
+                    video::PaletteMode::ResistorNetwork => "RESNET",
+                },
                 status.auto_save,
                 status.gamepad_enabled,
                 status.cpu_overclock,
@@ -3112,6 +3307,8 @@ fn run() -> Result<(), String> {
                 status.disable_adpcm_wrap,
                 status.memcard_inserted,
                 status.memcard_write_protected,
+                status.setting_mode,
+                status.freeplay,
                 status.settings_vol_adjusting,
                 status.ra_logged_in,
                 &status.ra_username,
@@ -3286,7 +3483,10 @@ fn run() -> Result<(), String> {
         }
 
         update_window_title(&mut window, &mut status, &neogeo)?;
-        sleep_to_frame_target(&mut next_frame_deadline);
+        sleep_to_frame_target(
+            &mut next_frame_deadline,
+            system_timing_for_bios(&status.current_bios).frame_duration(),
+        );
     }
 
     // Save persistent data and auto-save state to slot 0 before exiting
@@ -3331,31 +3531,42 @@ fn load_default_bios(
     } else {
         println!("[INFO] BIOS activa: diagnóstica interna");
     }
-    if let Some(zoom_rom) =
-        core_emulator::bios::load_zoom_rom_for_bios_from_multi(&dirs, &bios_label)?
-    {
-        println!("[INFO] Tabla L0 activa: {}", zoom_rom.label);
-        neogeo.set_zoom_rom(zoom_rom.data);
-    } else {
-        println!("[INFO] Tabla L0 activa: aproximación interna");
-    }
-    if let Some(sfix_rom) =
-        core_emulator::bios::load_sfix_rom_for_bios_from_multi(&dirs, &bios_label)?
-    {
-        println!("[INFO] SFIX activa: {}", sfix_rom.label);
-        neogeo.set_sfix_rom(sfix_rom.data);
-    } else {
-        println!("[INFO] SFIX activa: no encontrada, usando S-ROM de cartucho");
-    }
-    if let Some(sm1_rom) =
-        core_emulator::bios::load_sm1_rom_for_bios_from_multi(&dirs, &bios_label)?
-    {
-        println!("[INFO] SM1 activa: {}", sm1_rom.label);
-        neogeo.set_sm1_rom(sm1_rom.data);
-    } else {
-        println!("[INFO] SM1 activa: no encontrada, usando M-ROM de cartucho");
+    if !matches!(
+        core_emulator::bios::bios_kind(&bios_label),
+        BiosKind::Diagnostic
+    ) {
+        apply_bios_auxiliary_roms(neogeo, &dirs, &bios_label)?;
     }
     Ok(bios_label)
+}
+
+fn apply_bios_auxiliary_roms(
+    neogeo: &mut NeoGeo,
+    dirs: &[&str],
+    bios_label: &str,
+) -> Result<(), String> {
+    let zoom_rom = core_emulator::bios::load_zoom_rom_for_bios_from_multi(dirs, bios_label)?
+        .ok_or_else(|| format!("La BIOS '{bios_label}' no incluye 000-lo.lo"))?;
+    println!("[INFO] Tabla L0 activa: {}", zoom_rom.label);
+    neogeo.set_zoom_rom(zoom_rom.data);
+
+    neogeo.set_sfix_rom(Vec::new());
+    neogeo.set_sm1_rom(Vec::new());
+    if matches!(core_emulator::bios::bios_kind(bios_label), BiosKind::Aes) {
+        println!("[INFO] AES: usando S-ROM y M-ROM del cartucho (sin SFIX/SM1 de placa)");
+        return Ok(());
+    }
+
+    let sfix_rom = core_emulator::bios::load_sfix_rom_for_bios_from_multi(dirs, bios_label)?
+        .ok_or_else(|| format!("La BIOS '{bios_label}' no incluye sfix.sfix"))?;
+    println!("[INFO] SFIX activa: {}", sfix_rom.label);
+    neogeo.set_sfix_rom(sfix_rom.data);
+
+    let sm1_rom = core_emulator::bios::load_sm1_rom_for_bios_from_multi(dirs, bios_label)?
+        .ok_or_else(|| format!("La BIOS '{bios_label}' no incluye sm1.sm1"))?;
+    println!("[INFO] SM1 activa: {}", sm1_rom.label);
+    neogeo.set_sm1_rom(sm1_rom.data);
+    Ok(())
 }
 
 fn apply_bios_label(neogeo: &mut NeoGeo, label: &str) -> Result<bool, String> {
@@ -3370,16 +3581,104 @@ fn apply_bios_label(neogeo: &mut NeoGeo, label: &str) -> Result<bool, String> {
     };
 
     neogeo.set_bios(found.data.clone());
-    if let Some(zoom_rom) = core_emulator::bios::load_zoom_rom_for_bios_from_multi(&dirs, label)? {
-        neogeo.set_zoom_rom(zoom_rom.data);
-    }
-    if let Some(sfix_rom) = core_emulator::bios::load_sfix_rom_for_bios_from_multi(&dirs, label)? {
-        neogeo.set_sfix_rom(sfix_rom.data);
-    }
-    if let Some(sm1_rom) = core_emulator::bios::load_sm1_rom_for_bios_from_multi(&dirs, label)? {
-        neogeo.set_sm1_rom(sm1_rom.data);
-    }
+    apply_bios_auxiliary_roms(neogeo, &dirs, label)?;
     Ok(true)
+}
+
+fn system_timing_for_bios(label: &str) -> audio::SystemTiming {
+    if matches!(core_emulator::bios::bios_kind(label), BiosKind::Aes) {
+        audio::SystemTiming::Aes
+    } else {
+        // Geolith exposes MVS timing for both MVS and UniBIOS.
+        audio::SystemTiming::Mvs
+    }
+}
+
+fn system_is_mvs_for_bios(label: &str, _unibios_hardware: UnibiosHardware) -> bool {
+    match core_emulator::bios::bios_kind(label) {
+        BiosKind::Aes => false,
+        BiosKind::Mvs | BiosKind::Unibios | BiosKind::Diagnostic | BiosKind::Unknown => true,
+    }
+}
+
+fn coin_slots_34_high_for_bios(label: &str, unibios_hardware: UnibiosHardware) -> bool {
+    match core_emulator::bios::bios_kind(label) {
+        BiosKind::Aes => false,
+        BiosKind::Unibios => matches!(unibios_hardware, UnibiosHardware::Mvs),
+        BiosKind::Mvs | BiosKind::Diagnostic | BiosKind::Unknown => true,
+    }
+}
+
+fn apply_system_profile(
+    neogeo: &mut NeoGeo,
+    resampler: &mut audio::Resampler,
+    label: &str,
+    unibios_hardware: UnibiosHardware,
+) {
+    let is_mvs = system_is_mvs_for_bios(label, unibios_hardware);
+    let coin_slots_34_high = coin_slots_34_high_for_bios(label, unibios_hardware);
+    let timing = system_timing_for_bios(label);
+    neogeo.set_system_is_mvs(is_mvs);
+    neogeo.set_coin_slots_34_high(coin_slots_34_high);
+    resampler.set_system_timing(timing);
+    println!(
+        "[INFO] Perfil de sistema: status_b={} coin34={} timing={:?} ({:.6} Hz)",
+        if is_mvs { "MVS" } else { "AES" },
+        if coin_slots_34_high { "MVS" } else { "AES" },
+        timing,
+        timing.frame_rate()
+    );
+}
+
+fn selected_bios_kind(status: &RuntimeStatus) -> Option<BiosKind> {
+    status
+        .bios_list
+        .get(status.bios_selected_index)
+        .copied()
+        .or_else(|| status.bios_list.first().copied())
+}
+
+fn select_current_bios_kind(status: &mut RuntimeStatus) {
+    let current_kind = core_emulator::bios::bios_kind(&status.current_bios);
+    status.bios_selected_index = status
+        .bios_list
+        .iter()
+        .position(|kind| *kind == current_kind)
+        .unwrap_or(0);
+}
+
+fn cycle_bios_region(current: BiosRegion, delta: isize) -> BiosRegion {
+    let regions = BiosRegion::ALL;
+    let current_index = regions
+        .iter()
+        .position(|region| *region == current)
+        .unwrap_or(0);
+    let next_index = (current_index as isize + delta).rem_euclid(regions.len() as isize) as usize;
+    regions[next_index]
+}
+
+fn bios_display_name(kind: BiosKind, region: BiosRegion, lang: &lang::Lang) -> String {
+    let kind_name = match kind {
+        BiosKind::Aes => lang.bios_kind_aes,
+        BiosKind::Mvs => lang.bios_kind_mvs,
+        BiosKind::Unibios => lang.bios_kind_unibios,
+        BiosKind::Diagnostic => lang.bios_kind_diagnostic,
+        BiosKind::Unknown => lang.bios_kind_unknown,
+    };
+    if core_emulator::bios::bios_kind_supports_region(kind) {
+        format!("{} {}", kind_name, bios_region_display_name(region, lang))
+    } else {
+        kind_name.to_string()
+    }
+}
+
+fn bios_region_display_name(region: BiosRegion, lang: &lang::Lang) -> &'static str {
+    match region {
+        BiosRegion::Usa => lang.bios_region_usa,
+        BiosRegion::Japan => lang.bios_region_japan,
+        BiosRegion::Asia => lang.bios_region_asia,
+        BiosRegion::Europe => lang.bios_region_europe,
+    }
 }
 
 /// Replaces UniBIOS with the first available official BIOS before Hardcore.
@@ -3412,6 +3711,10 @@ fn ensure_hardcore_safe_bios(
     }
 
     status.current_bios = label.clone();
+    if let Some(region) = core_emulator::bios::bios_region(&label) {
+        status.bios_region = region;
+        save_config_bios_region(region);
+    }
     save_config_bios(&label);
     println!("[RA] Hardcore: UniBIOS sustituida por BIOS segura '{label}'.");
     Ok(true)
@@ -3649,19 +3952,19 @@ fn update_window_title(
         .map_err(|e| format!("No se pudo actualizar el título: {e}"))
 }
 
-fn sleep_to_frame_target(next_deadline: &mut Instant) {
+fn sleep_to_frame_target(next_deadline: &mut Instant, frame_time: Duration) {
     let now = Instant::now();
     if now < *next_deadline {
         std::thread::sleep(*next_deadline - now);
     }
 
     let after_sleep = Instant::now();
-    *next_deadline += TARGET_FRAME_TIME;
+    *next_deadline += frame_time;
 
     // Dialogs, breakpoints, or a heavily loaded system can leave the deadline
     // far behind. Reset instead of running many catch-up frames without delay.
-    if after_sleep.saturating_duration_since(*next_deadline) >= TARGET_FRAME_TIME {
-        *next_deadline = after_sleep + TARGET_FRAME_TIME;
+    if after_sleep.saturating_duration_since(*next_deadline) >= frame_time {
+        *next_deadline = after_sleep + frame_time;
     }
 }
 
@@ -3780,7 +4083,8 @@ fn handle_settings_enter(
 ) {
     match status.settings_tab {
         0 => {
-            // VIDEO tab: Scanlines(0), Curvature(1), Bloom(2), Fullscreen(3), Aspect(4), Window Scale(5)
+            // VIDEO tab: Scanlines(0), Curvature(1), Bloom(2), Fullscreen(3),
+            // Aspect(4), Palette(5), Window Scale(6).
             match status.settings_selected_index {
                 0 => {
                     crt_gl.scanlines = !crt_gl.scanlines;
@@ -3829,6 +4133,21 @@ fn handle_settings_enter(
                     ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, &msg);
                 }
                 5 => {
+                    status.palette_mode = match status.palette_mode {
+                        video::PaletteMode::Raw => video::PaletteMode::ResistorNetwork,
+                        video::PaletteMode::ResistorNetwork => video::PaletteMode::Raw,
+                    };
+                    neogeo.set_palette_mode(status.palette_mode);
+                    let value = match status.palette_mode {
+                        video::PaletteMode::Raw => "raw",
+                        video::PaletteMode::ResistorNetwork => "resnet",
+                    };
+                    save_config_key("palette_mode", value);
+                    let msg = format!("Palette: {}", value.to_ascii_uppercase());
+                    println!("[INFO] {msg}");
+                    ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, &msg);
+                }
+                6 => {
                     // Cycle window scale: 2x -> 3x -> 4x -> 2x
                     status.window_scale = match status.window_scale {
                         2 => 3,
@@ -3891,8 +4210,9 @@ fn handle_settings_enter(
         }
         2 => {
             // SYSTEM tab: Language(0), ROM Dumps(1), Auto-save(2), BIOS(3),
-            // CPU overclock(4), sprite limit(5), disable ADPCM wrap(6),
-            // memory card inserted(7), memory card write protect(8).
+            // MVS Setting Mode(4), MVS Freeplay(5), CPU overclock(6),
+            // sprite limit(7), disable ADPCM wrap(8), memory card inserted(9),
+            // memory card write protect(10).
             match status.settings_selected_index {
                 0 => {
                     // Toggle language
@@ -3947,14 +4267,34 @@ fn handle_settings_enter(
                     // Open BIOS Selector
                     status.show_settings = false;
                     status.show_bios_selector = true;
-                    status.bios_selected_index = status
-                        .bios_list
-                        .iter()
-                        .position(|b| b == &status.current_bios)
-                        .unwrap_or(0);
+                    select_current_bios_kind(status);
                     println!("[INFO] BIOS Selector abierto desde configuración.");
                 }
                 4 => {
+                    status.setting_mode = !status.setting_mode;
+                    neogeo.set_dip_options(status.setting_mode, false, status.freeplay);
+                    save_config_bool("setting_mode", status.setting_mode);
+                    let msg = if status.setting_mode {
+                        "MVS Setting Mode: ON"
+                    } else {
+                        "MVS Setting Mode: OFF"
+                    };
+                    println!("[INFO] {msg}");
+                    ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, msg);
+                }
+                5 => {
+                    status.freeplay = !status.freeplay;
+                    neogeo.set_dip_options(status.setting_mode, false, status.freeplay);
+                    save_config_bool("freeplay", status.freeplay);
+                    let msg = if status.freeplay {
+                        "MVS Freeplay: ON"
+                    } else {
+                        "MVS Freeplay: OFF"
+                    };
+                    println!("[INFO] {msg}");
+                    ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, msg);
+                }
+                6 => {
                     if status.ra_hardcore {
                         notify_hack_blocked_by_hardcore(status, neogeo);
                     } else {
@@ -3974,7 +4314,7 @@ fn handle_settings_enter(
                         );
                     }
                 }
-                5 => {
+                7 => {
                     if status.ra_hardcore {
                         notify_hack_blocked_by_hardcore(status, neogeo);
                     } else {
@@ -3995,7 +4335,7 @@ fn handle_settings_enter(
                         );
                     }
                 }
-                6 => {
+                8 => {
                     if status.ra_hardcore {
                         notify_hack_blocked_by_hardcore(status, neogeo);
                     } else {
@@ -4015,7 +4355,7 @@ fn handle_settings_enter(
                         );
                     }
                 }
-                7 => {
+                9 => {
                     status.memcard_inserted = !status.memcard_inserted;
                     if !status.memcard_inserted {
                         status.memcard_write_protected = false;
@@ -4034,7 +4374,7 @@ fn handle_settings_enter(
                     println!("[INFO] {msg}");
                     ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, msg);
                 }
-                8 if status.memcard_inserted => {
+                10 if status.memcard_inserted => {
                     status.memcard_write_protected = !status.memcard_write_protected;
                     neogeo.set_memory_card_state(
                         status.memcard_inserted,
@@ -4188,7 +4528,7 @@ fn handle_settings_enter(
                         // Apply the mandatory reset before another emulated
                         // frame can run. The queued rcheevos reset event is
                         // treated as an acknowledgement.
-                        neogeo.reset();
+                        neogeo.reset_for_bios_change();
                         clear_audio_pipeline(ring_buffer, resampler);
                         status.ra_hardcore_reset_applied = reset_event_expected;
                         status.ra_hardcore = true;
@@ -4307,6 +4647,10 @@ fn save_config_bios(bios_label: &str) {
     save_config_key("bios", bios_label);
 }
 
+fn save_config_bios_region(region: BiosRegion) {
+    save_config_key("bios_region", region.as_config_str());
+}
+
 /// Save the current UI language (backward-compatible convenience).
 fn save_config_language(lang: lang::Language) {
     save_config_key("lang", lang.as_config_str());
@@ -4315,6 +4659,19 @@ fn save_config_language(lang: lang::Language) {
 /// Load the saved BIOS label (backward-compatible convenience).
 fn load_config_bios() -> Option<String> {
     load_config_key("bios")
+}
+
+fn load_config_bios_region() -> Option<BiosRegion> {
+    load_config_key("bios_region")
+        .as_deref()
+        .and_then(BiosRegion::from_config_str)
+}
+
+fn load_config_unibios_hardware() -> UnibiosHardware {
+    load_config_key("unibios_hardware")
+        .as_deref()
+        .and_then(UnibiosHardware::from_config)
+        .unwrap_or(UnibiosHardware::Mvs)
 }
 
 /// Load the saved UI language, returning a fully built `Lang`.
@@ -4459,7 +4816,7 @@ fn pull_frame_audio(
     resampler.push(native_samples);
 
     // Pull resampled output at the SDL2 rate
-    let output_samples = resampler.next_mvs_output_pairs();
+    let output_samples = resampler.next_output_pairs();
     let mut resampled = vec![0i16; output_samples * 2];
     resampler.pull(&mut resampled);
 
@@ -4558,44 +4915,26 @@ fn resolve_rom_directory() -> PathBuf {
     fallback
 }
 
-/// Return the directory to scan for ROM browser artwork.
-/// Priority: (1) `media_dir` in config, (2) `media/` relative to executable,
-/// (3) `media/` relative to CWD, (4) ancestor `media/`, (5) fallback `media/`.
-fn resolve_media_directory() -> PathBuf {
-    if let Some(config_dir) = load_config_key("media_dir") {
-        let path = PathBuf::from(&config_dir);
-        println!("[INFO] Media directory (config): {:?}", path);
-        return path;
+/// Return the global media root shared by both frontend surfaces.
+///
+/// `auto`, `default`, an empty value or a missing key resolve to
+/// `<rom_dir>/media`; an explicit path remains untouched.
+fn configured_media_directory(configured: Option<&str>, rom_dir: &Path) -> PathBuf {
+    let configured = configured.unwrap_or_default().trim();
+    if configured.is_empty()
+        || configured.eq_ignore_ascii_case("auto")
+        || configured.eq_ignore_ascii_case("default")
+    {
+        return rom_dir.join("media");
     }
+    PathBuf::from(configured)
+}
 
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-
-    if let Some(ref dir) = exe_dir {
-        let exe_media = dir.join("media");
-        if exe_media.is_dir() {
-            println!("[INFO] Media directory: {:?}", exe_media);
-            return exe_media;
-        }
-    }
-
-    let cwd_media = PathBuf::from("media");
-    if cwd_media.is_dir() {
-        println!("[INFO] Media directory: {:?}", cwd_media);
-        return cwd_media;
-    }
-
-    if let Some(ref dir) = exe_dir {
-        if let Some(ancestor_media) = find_ancestor_dir(dir, "media") {
-            println!("[INFO] Media directory (ancestor): {:?}", ancestor_media);
-            return ancestor_media;
-        }
-    }
-
-    let fallback = exe_dir.map_or_else(|| PathBuf::from("media"), |d| d.join("media"));
-    println!("[INFO] Media directory (fallback): {:?}", fallback);
-    fallback
+fn resolve_media_directory(rom_dir: &Path) -> PathBuf {
+    let configured = load_config_key("media_dir");
+    let path = configured_media_directory(configured.as_deref(), rom_dir);
+    println!("[INFO] Media directory: {:?}", path);
+    path
 }
 
 /// Walk up from `start` looking for a subdirectory called `target`.
@@ -4696,9 +5035,8 @@ fn scan_rom_directory(dir: &Path, media_dir: &Path) -> Vec<RomEntry> {
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
-        // Check for matching box art in the configured media directory.
-        let box_art_path = media_dir.join(format!("{}.png", &name));
-        let has_thumbnail = box_art_path.exists();
+        // Accept the legacy flat directory and the conventional catalog roots.
+        let has_thumbnail = rom_browser_art_path(media_dir, &name).is_some();
         // Determine NGH (and thus BIOS recommendation) from ROM headers or filename.
         let (ngh, recommended_bios) = if ext == "neo" {
             // Read NGH from the .neo file header (4 bytes LE at offset 0x28)
@@ -4758,13 +5096,24 @@ fn load_visible_thumbnails(entries: &mut [RomEntry], scroll: usize, media_dir: &
         if !entry.has_thumbnail {
             continue;
         }
-        let thumb_path = media_dir.join(format!("{}.png", &entry.name));
+        let Some(thumb_path) = rom_browser_art_path(media_dir, &entry.name) else {
+            entry.has_thumbnail = false;
+            continue;
+        };
         match screenshot::load_png_thumbnail(&thumb_path, THUMB_W, THUMB_H) {
             Ok(pixels) => entry.thumbnail = Some(pixels),
             Err(_) => entry.has_thumbnail = false,
         }
     }
 }
+
+fn rom_browser_art_path(media_dir: &Path, rom_name: &str) -> Option<PathBuf> {
+    ["", "box2d", "box3d", "mix", "screenshots"]
+        .into_iter()
+        .map(|subdir| media_dir.join(subdir).join(format!("{rom_name}.png")))
+        .find(|path| path.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4853,8 +5202,73 @@ mod tests {
     }
 
     #[test]
+    fn automatic_media_directory_is_relative_to_the_rom_library() {
+        let rom_dir = Path::new("D:/NeoGeoRoms");
+        for configured in [None, Some(""), Some("auto"), Some("DEFAULT")] {
+            assert_eq!(
+                configured_media_directory(configured, rom_dir),
+                rom_dir.join("media")
+            );
+        }
+        assert_eq!(
+            configured_media_directory(Some("D:/Media/NeoGeo"), rom_dir),
+            PathBuf::from("D:/Media/NeoGeo")
+        );
+    }
+
+    #[test]
+    fn rom_browser_uses_box2d_from_the_shared_media_catalog() {
+        let directory =
+            std::env::temp_dir().join(format!("ngneon-rom-browser-art-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("box2d")).unwrap();
+        let artwork = directory.join("box2d/aof.png");
+        std::fs::write(&artwork, []).unwrap();
+
+        assert_eq!(rom_browser_art_path(&directory, "aof"), Some(artwork));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn mouse_cursor_is_hidden_only_for_loaded_roms() {
         assert!(should_hide_mouse_cursor(false));
         assert!(!should_hide_mouse_cursor(true));
+    }
+
+    #[test]
+    fn bios_profile_selects_geolith_hardware_and_timing() {
+        assert!(!system_is_mvs_for_bios(
+            "aes.zip:neo-epo.bin",
+            UnibiosHardware::Mvs
+        ));
+        assert!(system_is_mvs_for_bios(
+            "neogeo.zip:sp-s2.sp1",
+            UnibiosHardware::Aes
+        ));
+        assert!(system_is_mvs_for_bios(
+            "neogeo.zip:uni-bios_4_0.rom",
+            UnibiosHardware::Aes
+        ));
+        assert!(system_is_mvs_for_bios(
+            "neogeo.zip:uni-bios_4_0.rom",
+            UnibiosHardware::Mvs
+        ));
+        assert!(!coin_slots_34_high_for_bios(
+            "neogeo.zip:uni-bios_4_0.rom",
+            UnibiosHardware::Aes
+        ));
+        assert!(coin_slots_34_high_for_bios(
+            "neogeo.zip:uni-bios_4_0.rom",
+            UnibiosHardware::Mvs
+        ));
+
+        assert_eq!(
+            system_timing_for_bios("aes.zip:neo-epo.bin"),
+            audio::SystemTiming::Aes
+        );
+        assert_eq!(
+            system_timing_for_bios("neogeo.zip:uni-bios_4_0.rom"),
+            audio::SystemTiming::Mvs
+        );
     }
 }

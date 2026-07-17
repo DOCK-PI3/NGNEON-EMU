@@ -13,6 +13,46 @@ pub struct BiosImage {
     pub label: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiosKind {
+    Aes,
+    Mvs,
+    Unibios,
+    Diagnostic,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiosRegion {
+    Usa,
+    Japan,
+    Asia,
+    Europe,
+}
+
+impl BiosRegion {
+    pub const ALL: [Self; 4] = [Self::Usa, Self::Japan, Self::Asia, Self::Europe];
+
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Usa => "usa",
+            Self::Japan => "japan",
+            Self::Asia => "asia",
+            Self::Europe => "europe",
+        }
+    }
+
+    pub fn from_config_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "us" | "usa" | "u" => Some(Self::Usa),
+            "jp" | "japan" | "j" => Some(Self::Japan),
+            "as" | "asia" | "a" => Some(Self::Asia),
+            "eu" | "eur" | "europe" | "e" => Some(Self::Europe),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZoomRom {
     pub data: Vec<u8>,
@@ -31,8 +71,8 @@ pub struct Sm1Rom {
     pub label: String,
 }
 
-/// Scan the bios directory and return all BIOS candidates, sorted by priority
-/// (best match first: MVS > region-specific > AES > UniBIOS).
+/// Scan the bios directory and return all BIOS candidates, sorted by startup
+/// priority.
 pub fn list_available_bios<P: AsRef<Path>>(dir: P) -> Result<Vec<BiosImage>, String> {
     let dir = dir.as_ref();
     if !dir.exists() {
@@ -63,8 +103,8 @@ pub fn list_available_bios<P: AsRef<Path>>(dir: P) -> Result<Vec<BiosImage>, Str
 /// Load the best BIOS from the given directory (used on startup).
 ///
 /// When `NGNEON_BIOS_HINT` is not set, returns the highest-priority BIOS
-/// (MVS `sp-s2.sp1` first). When set, the hint string is matched against
-/// BIOS labels (substring search) — matching candidates are promoted to
+/// (see `bios_priority`). When set, the hint string is matched against BIOS
+/// labels (substring search) — matching candidates are promoted to
 /// the front while preserving `bios_priority` order within both groups.
 pub fn load_bios_from_dir<P: AsRef<Path>>(dir: P) -> Result<Option<BiosImage>, String> {
     let mut candidates = list_available_bios(dir)?;
@@ -166,6 +206,124 @@ pub fn is_unibios_label(label: &str) -> bool {
     lower.contains("uni-bios") || lower.contains("unibios")
 }
 
+/// Returns whether a BIOS label identifies a home-console AES BIOS.
+pub fn is_aes_label(label: &str) -> bool {
+    matches!(bios_kind(label), BiosKind::Aes)
+}
+
+/// Returns whether a BIOS label identifies an arcade MVS BIOS.
+pub fn is_mvs_label(label: &str) -> bool {
+    matches!(bios_kind(label), BiosKind::Mvs)
+}
+
+/// Classify a stored BIOS label such as `aes.zip:neo-epo.bin`.
+pub fn bios_kind(label: &str) -> BiosKind {
+    let lower = label.to_ascii_lowercase();
+    if lower.contains("diagn") {
+        BiosKind::Diagnostic
+    } else if is_unibios_label(&lower) {
+        BiosKind::Unibios
+    } else if lower.contains("aes.zip")
+        || lower.contains("neo-epo.bin")
+        || lower.contains("neo-po.bin")
+    {
+        BiosKind::Aes
+    } else if lower.contains("neogeo.zip")
+        || lower.contains("sp-s2.sp1")
+        || lower.contains("sp-s.sp1")
+        || lower.contains("sp-u")
+        || lower.contains("sp1-u")
+        || lower.contains("sp-e")
+        || lower.contains("sp-j")
+        || lower.contains("sp1.jipan")
+        || lower.contains("japan")
+        || lower.contains("asia-s")
+        || lower.contains("vs-bios.rom")
+    {
+        BiosKind::Mvs
+    } else {
+        BiosKind::Unknown
+    }
+}
+
+/// Returns the hardware region implied by a BIOS label when it is encoded in
+/// the filename. UniBIOS is intentionally regionless here because its own menu
+/// controls region and AES/MVS mode after boot.
+pub fn bios_region(label: &str) -> Option<BiosRegion> {
+    let lower = label.to_ascii_lowercase();
+    if is_unibios_label(&lower) {
+        return None;
+    }
+
+    if lower.contains("neo-po.bin")
+        || lower.contains("japan")
+        || lower.contains("sp-j")
+        || lower.contains("sp1-j")
+        || lower.contains("sp1.jipan")
+    {
+        Some(BiosRegion::Japan)
+    } else if lower.contains("sp-45.sp1") || lower.contains("asia-s") {
+        Some(BiosRegion::Asia)
+    } else if lower.contains("neo-epo.bin") || lower.contains("sp-u") || lower.contains("sp1-u") {
+        Some(BiosRegion::Usa)
+    } else if lower.contains("sp-s2.sp1")
+        || lower.contains("sp-s.sp1")
+        || lower.contains("sp-s3.sp1")
+        || lower.contains("sp-e")
+    {
+        Some(BiosRegion::Europe)
+    } else {
+        None
+    }
+}
+
+pub fn bios_label_supports_region(label: &str, region: BiosRegion) -> bool {
+    let lower = label.to_ascii_lowercase();
+    if lower.contains("neo-epo.bin") {
+        // Geolith uses neo-epo.bin for every non-Japanese AES region.
+        return matches!(
+            region,
+            BiosRegion::Usa | BiosRegion::Asia | BiosRegion::Europe
+        );
+    }
+    bios_region(label) == Some(region)
+}
+
+pub fn bios_kind_supports_region(kind: BiosKind) -> bool {
+    matches!(kind, BiosKind::Aes | BiosKind::Mvs)
+}
+
+pub fn available_bios_kinds(candidates: &[BiosImage]) -> Vec<BiosKind> {
+    let mut kinds = Vec::new();
+    for wanted in [BiosKind::Mvs, BiosKind::Aes, BiosKind::Unibios] {
+        if candidates
+            .iter()
+            .any(|candidate| bios_kind(&candidate.label) == wanted)
+        {
+            kinds.push(wanted);
+        }
+    }
+    kinds
+}
+
+pub fn select_bios_for_kind_and_region(
+    candidates: &[BiosImage],
+    kind: BiosKind,
+    region: BiosRegion,
+) -> Option<&BiosImage> {
+    let mut matching_kind = candidates
+        .iter()
+        .filter(|candidate| bios_kind(&candidate.label) == kind);
+
+    if bios_kind_supports_region(kind) {
+        // An official BIOS profile must not silently boot another region.
+        return matching_kind
+            .find(|candidate| bios_label_supports_region(&candidate.label, region));
+    }
+
+    matching_kind.next()
+}
+
 /// Load the ZOOM ROM from multiple directories (tries each dir in order).
 pub fn load_zoom_rom_from_multi<P: AsRef<Path>>(dirs: &[P]) -> Result<Option<ZoomRom>, String> {
     for dir in dirs {
@@ -186,9 +344,7 @@ pub fn load_zoom_rom_for_bios_from_multi<P: AsRef<Path>>(
         let mut candidates = Vec::new();
         collect_zoom_rom_candidates(&path, &mut candidates)?;
         candidates.sort_by(|a, b| a.label.cmp(&b.label));
-        if let Some(zoom) = candidates.into_iter().next() {
-            return Ok(Some(zoom));
-        }
+        return Ok(candidates.into_iter().next());
     }
 
     load_zoom_rom_from_multi(dirs)
@@ -214,9 +370,7 @@ pub fn load_sfix_rom_for_bios_from_multi<P: AsRef<Path>>(
         let mut candidates = Vec::new();
         collect_sfix_rom_candidates(&path, &mut candidates)?;
         candidates.sort_by(|a, b| a.label.cmp(&b.label));
-        if let Some(sfix) = candidates.into_iter().next() {
-            return Ok(Some(sfix));
-        }
+        return Ok(candidates.into_iter().next());
     }
 
     load_sfix_rom_from_multi(dirs)
@@ -242,9 +396,7 @@ pub fn load_sm1_rom_for_bios_from_multi<P: AsRef<Path>>(
         let mut candidates = Vec::new();
         collect_sm1_rom_candidates(&path, &mut candidates)?;
         candidates.sort_by(|a, b| a.label.cmp(&b.label));
-        if let Some(sm1) = candidates.into_iter().next() {
-            return Ok(Some(sm1));
-        }
+        return Ok(candidates.into_iter().next());
     }
 
     load_sm1_rom_from_multi(dirs)
@@ -767,6 +919,96 @@ mod tests {
         assert!(is_unibios_label("unibios.zip:uni-bios_3_3.rom"));
         assert!(!is_unibios_label("neogeo.zip:sp-s2.sp1"));
         assert!(!is_unibios_label("aes.zip:neo-epo.bin"));
+    }
+
+    #[test]
+    fn bios_labels_are_classified_by_system_type() {
+        assert_eq!(bios_kind("aes.zip:neo-epo.bin"), BiosKind::Aes);
+        assert_eq!(bios_kind("aes.zip:neo-po.bin"), BiosKind::Aes);
+        assert_eq!(bios_kind("neogeo.zip:sp-s2.sp1"), BiosKind::Mvs);
+        assert_eq!(bios_kind("neogeo.zip:japan-j3.bin"), BiosKind::Mvs);
+        assert_eq!(bios_kind("neogeo.zip:uni-bios_4_0.rom"), BiosKind::Unibios);
+        assert_eq!(bios_kind("Diagnóstica interna"), BiosKind::Diagnostic);
+        assert_eq!(bios_kind("custom.bin"), BiosKind::Unknown);
+        assert!(is_aes_label("aes.zip:neo-epo.bin"));
+        assert!(is_mvs_label("neogeo.zip:sp-s2.sp1"));
+    }
+
+    #[test]
+    fn bios_regions_are_detected_from_common_mame_names() {
+        assert_eq!(bios_region("aes.zip:neo-epo.bin"), Some(BiosRegion::Usa));
+        assert_eq!(bios_region("aes.zip:neo-po.bin"), Some(BiosRegion::Japan));
+        assert_eq!(bios_region("neogeo.zip:sp-u2.sp1"), Some(BiosRegion::Usa));
+        assert_eq!(
+            bios_region("neogeo.zip:japan-j3.bin"),
+            Some(BiosRegion::Japan)
+        );
+        assert_eq!(bios_region("neogeo.zip:sp-45.sp1"), Some(BiosRegion::Asia));
+        assert_eq!(
+            bios_region("neogeo.zip:sp-s2.sp1"),
+            Some(BiosRegion::Europe)
+        );
+        assert_eq!(bios_region("neogeo.zip:uni-bios_4_0.rom"), None);
+    }
+
+    #[test]
+    fn bios_profile_selection_requires_requested_official_region() {
+        let candidates = vec![
+            BiosImage {
+                data: vec![0],
+                label: "neogeo.zip:sp-s2.sp1".to_string(),
+            },
+            BiosImage {
+                data: vec![1],
+                label: "neogeo.zip:sp-45.sp1".to_string(),
+            },
+            BiosImage {
+                data: vec![2],
+                label: "aes.zip:neo-epo.bin".to_string(),
+            },
+            BiosImage {
+                data: vec![3],
+                label: "aes.zip:neo-po.bin".to_string(),
+            },
+            BiosImage {
+                data: vec![4],
+                label: "neogeo.zip:uni-bios_4_0.rom".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            select_bios_for_kind_and_region(&candidates, BiosKind::Mvs, BiosRegion::Asia)
+                .unwrap()
+                .label,
+            "neogeo.zip:sp-45.sp1"
+        );
+        assert_eq!(
+            select_bios_for_kind_and_region(&candidates, BiosKind::Aes, BiosRegion::Japan)
+                .unwrap()
+                .label,
+            "aes.zip:neo-po.bin"
+        );
+        assert_eq!(
+            select_bios_for_kind_and_region(&candidates, BiosKind::Aes, BiosRegion::Europe)
+                .unwrap()
+                .label,
+            "aes.zip:neo-epo.bin"
+        );
+        assert_eq!(
+            select_bios_for_kind_and_region(&candidates, BiosKind::Unibios, BiosRegion::Europe)
+                .unwrap()
+                .label,
+            "neogeo.zip:uni-bios_4_0.rom"
+        );
+        assert_eq!(
+            select_bios_for_kind_and_region(&candidates, BiosKind::Aes, BiosRegion::Asia)
+                .unwrap()
+                .label,
+            "aes.zip:neo-epo.bin"
+        );
+        assert!(
+            select_bios_for_kind_and_region(&candidates, BiosKind::Mvs, BiosRegion::Usa).is_none()
+        );
     }
 
     #[test]

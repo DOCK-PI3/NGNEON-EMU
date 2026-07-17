@@ -36,25 +36,21 @@ extern "C" {
     pub fn m68k_set_irq(level: u32);
     pub fn m68k_set_virq(level: u32, active: u32);
     pub fn m68k_get_virq(level: u32) -> u32;
-    pub fn m68k_set_int_ack_callback(callback: Option<unsafe extern "C" fn(i32) -> i32>);
     pub fn m68k_get_reg(ctx: *mut u8, reg: M68kReg) -> u32;
     pub fn m68k_set_reg(reg: M68kReg, value: u32);
+    pub fn ng_m68k_get_int_level() -> u32;
+    pub fn ng_m68k_get_virq_state() -> u32;
+    pub fn ng_m68k_get_nmi_pending() -> u32;
+    pub fn ng_m68k_set_runtime_state(int_level: u32, virq_state: u32, nmi_pending: u32);
 }
 
 // M68K_INT_ACK_AUTOVECTOR = -1
 pub const M68K_INT_ACK_AUTOVECTOR: i32 = -1;
 
-/// Interrupt acknowledge callback: clears the virq bit for the serviced
-/// level so that the next-highest pending interrupt can be asserted.
-///
-/// # Safety
-///
-/// Called only by Musashi while the emulator has installed this callback.
-/// `int_level` must be a valid Musashi interrupt level.
-pub unsafe extern "C" fn m68k_int_ack_callback(int_level: i32) -> i32 {
-    // Clear the virq line for this level; m68k_set_virq will
-    // re-assert the next-highest active level if any remain.
-    m68k_set_virq(int_level as u32, 0);
+/// Geolith keeps cartridge IRQ lines asserted until REG_IRQACK clears them.
+/// Musashi calls this compile-time handler only to select the autovector.
+#[no_mangle]
+pub extern "C" fn geo_m68k_int_ack(_int_level: i32) -> i32 {
     M68K_INT_ACK_AUTOVECTOR
 }
 
@@ -91,6 +87,9 @@ pub const M68K_REG_VBR: M68kReg = 24;
 pub const M68K_REG_CACR: M68kReg = 25;
 pub const M68K_REG_CAAR: M68kReg = 26;
 pub const M68K_REG_PREF_ADDR: M68kReg = 27;
+pub const M68K_REG_PREF_DATA: M68kReg = 28;
+pub const M68K_REG_PPC: M68kReg = 29;
+pub const M68K_REG_IR: M68kReg = 30;
 
 // ─── Memory callbacks (implemented in Rust, called from C) ──────────────
 

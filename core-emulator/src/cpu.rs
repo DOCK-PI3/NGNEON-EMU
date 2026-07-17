@@ -31,6 +31,13 @@ pub struct CpuSnapshot {
     pub usp: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CpuRuntimeState {
+    pub int_level: u32,
+    pub virq_state: u32,
+    pub nmi_pending: u32,
+}
+
 // ─── CPU wrapper ────────────────────────────────────────────────────────
 
 pub struct Cpu {
@@ -51,9 +58,6 @@ impl Cpu {
                 musashi_ffi::m68k_init();
                 // Explicitly set plain 68000 mode (value 1 = M68K_CPU_TYPE_68000 from m68k.h)
                 musashi_ffi::m68k_set_cpu_type(1);
-                // Wire up interrupt acknowledge callback so that virq state
-                // is properly cleared when an interrupt is serviced.
-                musashi_ffi::m68k_set_int_ack_callback(Some(musashi_ffi::m68k_int_ack_callback));
             }
         }
 
@@ -116,6 +120,26 @@ impl Cpu {
         Ok(())
     }
 
+    /// Deassert one Neo Geo interrupt source after REG_IRQACK is written.
+    pub fn clear_interrupt(&mut self, level: u8) -> Result<(), String> {
+        #[cfg(test)]
+        let _guard = MUSASHI_LOCK.lock().unwrap();
+        if !(1..=7).contains(&level) {
+            return Err(format!("Nivel de interrupción inválido: {level}"));
+        }
+        unsafe {
+            musashi_ffi::m68k_set_virq(level as u32, 0);
+        }
+        Ok(())
+    }
+
+    pub fn interrupt_pending(&self, level: u8) -> bool {
+        if !(1..=7).contains(&level) {
+            return false;
+        }
+        unsafe { musashi_ffi::m68k_get_virq(level as u32) != 0 }
+    }
+
     /// Single-step (1 cycle).
     pub fn step(&mut self) -> Result<i32, String> {
         self.run_cycles(1)
@@ -164,6 +188,30 @@ impl Cpu {
         self.deserialize_regs_from(data);
     }
 
+    pub fn runtime_state(&self) -> CpuRuntimeState {
+        #[cfg(test)]
+        let _guard = MUSASHI_LOCK.lock().unwrap();
+        unsafe {
+            CpuRuntimeState {
+                int_level: musashi_ffi::ng_m68k_get_int_level(),
+                virq_state: musashi_ffi::ng_m68k_get_virq_state(),
+                nmi_pending: musashi_ffi::ng_m68k_get_nmi_pending(),
+            }
+        }
+    }
+
+    pub fn restore_runtime_state(&mut self, state: CpuRuntimeState) {
+        #[cfg(test)]
+        let _guard = MUSASHI_LOCK.lock().unwrap();
+        unsafe {
+            musashi_ffi::ng_m68k_set_runtime_state(
+                state.int_level,
+                state.virq_state,
+                state.nmi_pending,
+            );
+        }
+    }
+
     /// Read a register directly (for debugging / state inspection).
     pub fn get_reg(&self, reg: musashi_ffi::M68kReg) -> u32 {
         #[cfg(test)]
@@ -185,7 +233,7 @@ impl Cpu {
     /// All Musashi registers that we track for save/restore.
     /// Order must stay in sync between serialize and deserialize.
     /// Includes D0-D7, A0-A7, PC, SR, USP, ISP, SFC, DFC, VBR, and prefetch address.
-    const REGS: [musashi_ffi::M68kReg; 24] = [
+    const REGS: [musashi_ffi::M68kReg; 29] = [
         musashi_ffi::M68K_REG_D0,
         musashi_ffi::M68K_REG_D1,
         musashi_ffi::M68K_REG_D2,
@@ -210,14 +258,16 @@ impl Cpu {
         musashi_ffi::M68K_REG_DFC,
         musashi_ffi::M68K_REG_VBR,
         musashi_ffi::M68K_REG_PREF_ADDR,
+        musashi_ffi::M68K_REG_SP,
+        musashi_ffi::M68K_REG_MSP,
+        musashi_ffi::M68K_REG_PPC,
+        musashi_ffi::M68K_REG_IR,
+        musashi_ffi::M68K_REG_PREF_DATA,
     ];
 
     fn deserialize_regs_from(&mut self, data: &[u8]) {
-        let count = Self::REGS.len();
-        if data.len() < count * 4 {
-            return;
-        }
-        for (i, reg) in Self::REGS.iter().enumerate() {
+        let count = (data.len() / 4).min(Self::REGS.len());
+        for (i, reg) in Self::REGS.iter().take(count).enumerate() {
             let off = i * 4;
             let val = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
             unsafe {

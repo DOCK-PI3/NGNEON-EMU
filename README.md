@@ -1,6 +1,6 @@
 # NGNEON-EMU
 
-Emulador NeoGeo nativo y multiplataforma en Rust. El proyecto evita tecnologías web: el frontend actual usa SDL2 y el núcleo de emulación se mantiene separado en `core-emulator`.
+Emulador NeoGeo nativo y multiplataforma en Rust. La emulación y la presentación usan SDL2/OpenGL; el núcleo se mantiene separado en `core-emulator`. La distribución incluye un frontend SDL2 independiente para biblioteca, configuración y arranque de juegos.
 
 ## Ejecutar
 
@@ -19,17 +19,65 @@ Tras compilar en release, también se puede ejecutar el binario directamente:
 ```powershell
 target\release\ngneon-emu.exe --demo
 target\release\ngneon-emu.exe roms\aof.neo
+target\release\ngneon-emu.exe --clean-start roms\aof.neo
 target\release\ngneon-emu.exe --no-dump-rom-banks roms\aof.neo
 target\release\ngneon-emu.exe --help
 ```
 
 Si no pasas argumentos, se abre un selector de archivos. Si cancelas el selector, arranca la demo interna.
 
-## BIOSEl emulador busca BIOS reales de forma opcional en el directorio configurado con la clave `bios_dir` (por defecto `bios/`). Acepta archivos sueltos `.bin`, `.rom`, `.sp1` y ZIPs como `neogeo.zip` o `aes.zip`.
+## Frontend nativo
+
+Ejecuta `iniciar-ngneon.bat` o `ngneon-frontend.exe` para abrir la biblioteca nativa. No usa navegador, Edge, Chrome, Node ni servidor web. Lee `gamelist.xml`, muestra la media local del catálogo, configura el emulador y lanza `ngneon-emu.exe` como un proceso separado.
+
+El nombre antiguo `configurar-ngneon.bat` se conserva como acceso compatible, pero abre el mismo frontend SDL2.
+
+Modos de sesión:
+
+- `Normal`: usa la configuración y el autoestado habituales.
+- `Sesión limpia`: omite autoestado, perfil por juego y datos persistentes del host; usa timing, límite de sprites y ADPCM de hardware sin borrar ni sobrescribir los saves existentes.
+- `Diagnóstico`: usa exactamente el mismo estado limpio y añade registros CPU, LSPC, IRQ2, watchdog y audio en `logs/session-*.log`.
+
+Los cambios se guardan directamente en `config/ngneon.conf`. Cada arranque crea además `logs/launch-*-<modo>.log` con ROM, BIOS, región, argumentos y opciones no sensibles; nunca incluye credenciales de RetroAchievements. Al cerrar el juego, se vuelve a la biblioteca y el frontend no permanece dentro del proceso de emulación.
+
+La carpeta `musica/` admite ficheros `.mp3` para la música de fondo del frontend. Las pistas se reproducen en orden aleatorio, completando una vuelta antes de repetir. La canción se pausa al lanzar un juego y continúa desde el mismo punto cuando el emulador se cierra. **Ajustes → Música del frontend** permite activarla o desactivarla y `Ctrl+N` salta a otra canción.
+
+Abre **Ajustes** con `S` o `F2`. Las flechas arriba/abajo o la rueda del ratón recorren sus 27 opciones; izquierda/derecha cambia el valor. Desde esta pantalla se pueden configurar BIOS, región, hardware MVS/AES de UniBIOS, modo de sesión, pantalla y efectos CRT, relación de aspecto, paleta, escala, volumen, música de fondo, idioma, auto-guardado, volcados, DIP MVS (`setting_mode` y `freeplay`), hacks compatibles con Geolith, Memory Card, gamepad, RetroAchievements Hardcore, el tema del frontend y el directorio global de media. Las sesiones limpia/diagnóstico y Hardcore muestran y fuerzan los valores seguros que correspondan. Las confirmaciones correctas desaparecen automáticamente tras tres segundos; los errores permanecen visibles.
+
+### Temas externos del frontend
+
+La biblioteca `ngneon-frontend.exe` carga temas editables desde `themes/*.xml`. Junto al diseño integrado incluye **NGNEON Neon**, **Amber Arcade**, **Green Phosphor**, **Cyber List** y **Console Showcase**, seleccionables en **Ajustes → Tema frontend**. Los dos últimos son layouts completos y muestran el marquee del juego sobre la preview, conservando logo/wheel como fallback: Cyber List usa una lista vertical de siete logos; Console Showcase coloca caja y cartucho en marcos adaptados, presenta el vídeo central a pantalla completa dentro de su recuadro y usa un carrusel horizontal donde el nombre sólo aparece si falta el logo. La selección persiste en:
+
+```ini
+frontend_theme_dir=themes
+frontend_theme=themes/neon.xml
+```
+
+Los temas XML v1 siguen siendo compatibles. La versión 2 añade layouts realmente distintos mediante los componentes `vertical_list`, `horizontal_list`, `game_title`, `game_description`, `game_metadata` y `page_counter`, además de los bloques anteriores (`header`, `carousel`, `cabinet`, `game_info`, `settings`, etc.). Todos se pueden mover, escalar, mostrar/ocultar y ordenar con `x`, `y`, `width`, `height`, `visible` y `z`; el dibujo y los hitboxes comparten la misma transformación.
+
+Un tema v2 también puede declarar slots `<media>` con fuentes semánticas ordenadas, por ejemplo `game.video,game.screenshot,game.mix`. Así reutiliza vídeo, fanart, capturas, logos/wheels, cajas y cartuchos del juego seleccionado sin fijar rutas específicas en el XML. Las capas estáticas aceptan PNG/JPEG/WebP relativos al tema y los modos `contain`, `cover` y `stretch`. El vídeo se reproduce en streaming, silenciado y en bucle; el backend integrado admite MP4/H.264 y recurre a la siguiente imagen de la lista cuando el clip falta o no se puede decodificar.
+
+Por defecto `media_dir=auto`: el frontend busca `gamelist.xml` en la carpeta de ROMs y toda la media en su subcarpeta `media/` (`<rom_path>/media/videos`, `marquees`, `logos`, `screenshots`, etc.). **Ajustes → Directorio de media** o `F4` permite elegir otra carpeta global; izquierda sobre ese ajuste restaura el modo automático. Todos los temas usan la misma ruta y los paths locales válidos declarados por `gamelist.xml` siguen teniendo prioridad.
+
+Pulsa `F6` para recargar el XML y sus imágenes sin recompilar ni reiniciar. Si el XML activo queda mal formado, el frontend conserva el tema anterior; si un tema no puede cargarse durante el arranque, usa el tema Neon integrado. La referencia completa de los 16 componentes, las 15 fuentes `game.*`, atributos, subdirectorios, fallbacks y ejemplos está en [`themes/README.md`](themes/README.md); la plantilla editable es [`themes/theme-template.xml.example`](themes/theme-template.xml.example).
+
+## BIOS
+
+El emulador busca BIOS reales de forma opcional en el directorio configurado con la clave `bios_dir` (por defecto `bios/`). Acepta archivos sueltos `.bin`, `.rom`, `.sp1` y ZIPs como `neogeo.zip` o `aes.zip`.
 
 **Resolución del directorio BIOS**: `resolve_bios_directory()` busca en orden: `bios_dir` de `config/ngneon.conf` → `<exe_dir>/bios` → `./bios` → fallback `bios/`. La pestaña PATHS del menú de configuración (Ctrl+S) muestra la ruta resuelta.
 
-Si encuentra varias BIOS, prioriza una BIOS oficial MVS como `sp-s2.sp1`; si no encuentra ninguna, usa la BIOS diagnóstica interna para mantener las pruebas sintéticas funcionando.
+Tipos principales:
+
+| BIOS | Modo | Uso recomendado |
+|---|---|---|
+| NeoGeo / MVS (`neogeo.zip`) | Arcade/cabina | Monedas, DIP/test y juegos o bootlegs que esperen comportamiento arcade. |
+| AES (`aes.zip`) | Consola doméstica | Modo home sin monedas y variantes domésticas del cartucho. |
+| UniBIOS | BIOS comunitaria | Menú propio para región/modo y diagnóstico. Se bloquea en RetroAchievements Hardcore. |
+
+El selector del emulador y el frontend nativo muestran solo los perfiles `NeoGeo`, `AES` y `UniBIOS`; el archivo interno real se elige automáticamente según `bios_region` (`usa`, `japan`, `asia`, `europe`) cuando el perfil lo permite. Si encuentra varias BIOS, usa la prioridad interna del core o la BIOS guardada en `config/ngneon.conf`; si no encuentra ninguna, usa la BIOS diagnóstica interna para mantener las pruebas sintéticas funcionando.
+
+RetroAchievements identifica el juego por la ROM. AES no es un requisito general para desbloquear logros y MVS no los impide por sí mismo; para Hardcore debe usarse una BIOS oficial reconocida, nunca UniBIOS.
 
 Al arrancar `frontend` o `probe_rom`, la consola muestra la BIOS activa:
 
@@ -131,6 +179,7 @@ La ROM generada contiene una P-ROM mínima con vector reset 68000 válido. El pr
   - `Enter`: aplicar la BIOS seleccionada y reiniciar la CPU (persiste en config).
   - Flechas `↑`/`↓`: navegar la lista.
   - `Esc`: cerrar.
+- El selector muestra si la BIOS es AES, MVS o UniBIOS, su uso principal y si es compatible con RetroAchievements Hardcore.
 
 ### Idioma
 - `Ctrl+L`: alternar entre Español/Inglés (persiste en config).
@@ -202,21 +251,30 @@ rutas locales y credenciales de RetroAchievements.
 
 ```
 bios=neogeo.zip:sp-s2.sp1
+bios_region=europe
+unibios_hardware=mvs
+frontend_session=normal
+frontend_theme_dir=themes
+frontend_theme=themes/neon.xml
 bios_dir=bios
-media_dir=media
+media_dir=auto
 lang=es
 scanlines=on
 curvature=off
 bloom=on
 fullscreen=off
 aspect_ratio=4:3
+palette_mode=resnet
 rom_path=roms/
 volume=100
+frontend_music=on
 diagnostic_dumps=off
 window_scale=3
 auto_save=on
 muted=off
 gamepad=off
+setting_mode=off
+freeplay=off
 cpu_overclock=off
 sprite_limit=96
 disable_adpcm_wrap=off
@@ -228,7 +286,11 @@ ra_username=
 ra_hardcore=off
 ```
 
-> **Nota**: `bios` guarda el **label** de BIOS (ej. `neogeo.zip:sp-s2.sp1`), mientras que `bios_dir` define el **directorio** donde buscar los archivos de BIOS. Si `bios_dir` no existe o no se especifica, el emulador busca en `<exe_dir>/bios`, `./bios`, y finalmente `bios/`.
+> **Nota**: `bios` guarda el **label** de BIOS real (ej. `neogeo.zip:sp-s2.sp1`), `bios_region` guarda la región preferida para perfiles regionales, `unibios_hardware` el perfil `mvs`/`aes` usado por UniBIOS, y `bios_dir` define el **directorio** donde buscar los archivos de BIOS. Si `bios_dir` no existe o no se especifica, el emulador busca en `<exe_dir>/bios`, `./bios`, y finalmente `bios/`.
+>
+> **Media del frontend**: `media_dir=auto` usa `<rom_path>/media`. También se puede guardar una ruta absoluta o relativa personalizada desde **Ajustes → Directorio de media**. El `gamelist.xml` se busca primero en `rom_path`.
+>
+> **Música del frontend**: `frontend_music=on/off` controla la reproducción de los MP3 de `musica/`; `Ctrl+N` cambia de pista.
 >
 > Las claves `ra_token`, `ra_password`, `ra_username` y `ra_hardcore` configuran la integración con [RetroAchievements](https://retroachievements.org). Si hay `ra_token`, se prefiere sobre `ra_password`.
 >
@@ -422,12 +484,15 @@ Todo el texto visible está centralizado en `frontend/src/lang.rs`:
 # Compilar todo en release (genera target/release/ngneon-emu.exe)
 cargo build --release --workspace
 
-# Ejecutar todos los tests (260 tests actualmente)
+# Ejecutar todos los tests
 cargo test --workspace
 
 # Formateo y linting
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
+
+# Crear el paquete nativo en NGNEON-EMU/
+.\package_ngneon_release.bat
 
 # Tests específicos
 cargo test -p frontend -- ui::tests           # UI (notificaciones, overlays, fuente)
@@ -442,6 +507,7 @@ Tras compilar en release, los ejecutables están en `target/release/`:
 
 | Binario | Descripción |
 |---|---|
+| `ngneon-frontend.exe` | Biblioteca/configurador SDL2 que lanza el emulador como proceso separado |
 | `ngneon-emu.exe` | Emulador principal con frontend SDL2+OpenGL (4.5 MB) |
 | `probe_rom.exe` | Sonda headless para diagnóstico de ROMs |
 | `diagnose_rom.exe` | Diagnóstico detallado de bancos ROM `.neo` y `.zip` |
@@ -449,14 +515,7 @@ Tras compilar en release, los ejecutables están en `target/release/`:
 | `render_test_neo.exe` | Renderiza la ROM de prueba sin GUI |
 | `profile_resampler.exe` | Benchmark del resampler de audio |
 
-### Resumen de tests
-
-```
-core-emulator (lib):  178 passed
-frontend (lib):        30 passed
-ngneon-emu (bin):      52 passed
-Total:                260 passed, 0 failed
-```
+El empaquetador aborta antes de limpiar una carpeta `NGNEON-EMU/` que contenga ROMs, media, saves, capturas, logs o configuración modificada. Los ficheros ya existentes en `themes/` se preservan y solo se copian los temas incluidos que falten. Para una limpieza intencionada debe definirse explícitamente `NGNEON_ALLOW_PACKAGE_CLEAN=1` antes de ejecutarlo.
 
 ## Estado actual
 

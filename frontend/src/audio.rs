@@ -9,6 +9,7 @@
 
 use sdl2::audio::AudioCallback;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Target output sample rate (44.1 kHz is universally supported by SDL2).
 pub const AUDIO_OUTPUT_RATE: i32 = 44100;
@@ -17,9 +18,45 @@ pub const AUDIO_CHANNELS: u8 = 2;
 /// Short fade used when the host audio callback briefly outruns emulation.
 const UNDERRUN_FADE_SAMPLES: usize = 512;
 const MVS_MASTER_CLOCK_HZ: u64 = 24_000_000;
-const MVS_MASTER_CYCLES_PER_FRAME: u64 = 405_504;
+const AES_MASTER_CLOCK_HZ: u64 = 24_167_829;
+const MASTER_CYCLES_PER_FRAME: u64 = 405_504;
 const MVS_Z80_CLOCK_HZ: f64 = 4_000_000.0;
+const AES_YM2610_RATE_HZ: f64 = 55_943.49;
 const YM2610_TSTATES_PER_SAMPLE: f64 = 72.0;
+
+/// Host cadence selected by Geolith for cartridge systems.
+///
+/// UniBIOS uses the MVS cadence in Geolith even when its hardware bit is set
+/// to AES, so the frontend chooses `Mvs` for UniBIOS separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemTiming {
+    Mvs,
+    Aes,
+}
+
+impl SystemTiming {
+    pub fn frame_rate(self) -> f64 {
+        self.master_clock_hz() as f64 / MASTER_CYCLES_PER_FRAME as f64
+    }
+
+    pub fn frame_duration(self) -> Duration {
+        Duration::from_secs_f64(1.0 / self.frame_rate())
+    }
+
+    fn master_clock_hz(self) -> u64 {
+        match self {
+            Self::Mvs => MVS_MASTER_CLOCK_HZ,
+            Self::Aes => AES_MASTER_CLOCK_HZ,
+        }
+    }
+
+    fn source_rate_hz(self) -> f64 {
+        match self {
+            Self::Mvs => MVS_Z80_CLOCK_HZ / YM2610_TSTATES_PER_SAMPLE,
+            Self::Aes => AES_YM2610_RATE_HZ,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 //  Manual fixed-size ring buffer (power-of-2 capacity)
@@ -268,8 +305,10 @@ pub struct Resampler {
     /// Whether the CPU supports FMA3 (fused multiply-add).
     /// Detected once at construction via `is_x86_feature_detected!("fma")`.
     has_fma: bool,
-    /// Fractional SDL output cadence carried between MVS video frames.
+    /// Fractional SDL output cadence carried between video frames.
     output_frame_accumulator: u64,
+    target_rate: u64,
+    output_master_clock_hz: u64,
     /// Output stereo pairs that could not be reconstructed from source data.
     starved_output_pairs: usize,
     /// Fixed startup history used by the exact MVS stream so the Lanczos
@@ -336,6 +375,8 @@ impl Resampler {
             lanczos2_hits: 0,
             linear_hits: 0,
             output_frame_accumulator: 0,
+            target_rate: target_rate.max(1) as u64,
+            output_master_clock_hz: MVS_MASTER_CLOCK_HZ,
             starved_output_pairs: 0,
             startup_history_pairs: 0,
             startup_history_primed: false,
@@ -359,14 +400,28 @@ impl Resampler {
     /// constant (55_555 Hz) would accumulate roughly 2_000 source pairs per
     /// hour and eventually force the internal FIFO to overwrite audio.
     pub fn new_mvs(target_rate: i32) -> Self {
+        Self::new_for_system(SystemTiming::Mvs, target_rate)
+    }
+
+    pub fn new_for_system(timing: SystemTiming, target_rate: i32) -> Self {
         let target_rate = target_rate.max(1);
-        let mut resampler = Self::new(55_556, target_rate);
-        resampler.step = (MVS_Z80_CLOCK_HZ / YM2610_TSTATES_PER_SAMPLE) / target_rate as f64;
+        let mut resampler = Self::new(timing.source_rate_hz().round() as u32, target_rate);
+        resampler.step = timing.source_rate_hz() / target_rate as f64;
+        resampler.output_master_clock_hz = timing.master_clock_hz();
         // Four native pairs are only 72 µs at the YM2610 rate. Repeating the
         // first frame here gives the six-tap filter permanent boundary
         // headroom without inserting periodic silence or accumulating drift.
         resampler.startup_history_pairs = 4;
         resampler
+    }
+
+    /// Switch system cadence after a BIOS change and discard samples generated
+    /// under the previous clock ratio.
+    pub fn set_system_timing(&mut self, timing: SystemTiming) {
+        self.reset();
+        self.step = timing.source_rate_hz() / self.target_rate as f64;
+        self.output_master_clock_hz = timing.master_clock_hz();
+        self.startup_history_pairs = 4;
     }
 
     /// Feed interleaved stereo source samples at the native rate.
@@ -381,15 +436,20 @@ impl Resampler {
         self.buffer.extend(samples);
     }
 
-    /// Return the exact integer number of stereo pairs due for the next MVS
-    /// frame while preserving the fractional remainder between frames.
-    pub fn next_mvs_output_pairs(&mut self) -> usize {
+    /// Return the exact integer number of stereo pairs due for the next frame,
+    /// preserving the fractional remainder for the selected system clock.
+    pub fn next_output_pairs(&mut self) -> usize {
         self.output_frame_accumulator = self
             .output_frame_accumulator
-            .saturating_add(AUDIO_OUTPUT_RATE as u64 * MVS_MASTER_CYCLES_PER_FRAME);
-        let pairs = self.output_frame_accumulator / MVS_MASTER_CLOCK_HZ;
-        self.output_frame_accumulator %= MVS_MASTER_CLOCK_HZ;
+            .saturating_add(self.target_rate * MASTER_CYCLES_PER_FRAME);
+        let pairs = self.output_frame_accumulator / self.output_master_clock_hz;
+        self.output_frame_accumulator %= self.output_master_clock_hz;
         pairs as usize
+    }
+
+    /// Backward-compatible MVS cadence helper used by focused tests/tools.
+    pub fn next_mvs_output_pairs(&mut self) -> usize {
+        self.next_output_pairs()
     }
 
     /// Pull `out.len()` output samples (interleaved stereo).
@@ -742,7 +802,7 @@ mod tests {
         let mut resampler = Resampler::new(55_555, AUDIO_OUTPUT_RATE);
         let frames = 10_000usize;
         let produced: usize = (0..frames).map(|_| resampler.next_mvs_output_pairs()).sum();
-        let expected = (frames as u64 * AUDIO_OUTPUT_RATE as u64 * MVS_MASTER_CYCLES_PER_FRAME
+        let expected = (frames as u64 * AUDIO_OUTPUT_RATE as u64 * MASTER_CYCLES_PER_FRAME
             / MVS_MASTER_CLOCK_HZ) as usize;
 
         assert_eq!(produced, expected);
@@ -758,6 +818,25 @@ mod tests {
         resampler.reset();
 
         assert_eq!(resampler.next_mvs_output_pairs(), first);
+    }
+
+    #[test]
+    fn aes_output_cadence_matches_geolith_clock() {
+        let mut resampler = Resampler::new_for_system(SystemTiming::Aes, AUDIO_OUTPUT_RATE);
+        let frames = 10_000usize;
+        let produced: usize = (0..frames).map(|_| resampler.next_output_pairs()).sum();
+        let expected = (frames as u64 * AUDIO_OUTPUT_RATE as u64 * MASTER_CYCLES_PER_FRAME
+            / AES_MASTER_CLOCK_HZ) as usize;
+
+        assert_eq!(produced, expected);
+        assert!(produced > 739 * frames);
+        assert!(produced < 740 * frames);
+    }
+
+    #[test]
+    fn system_frame_rates_match_geolith() {
+        assert!((SystemTiming::Mvs.frame_rate() - 59.185606).abs() < 0.000001);
+        assert!((SystemTiming::Aes.frame_rate() - 59.599484).abs() < 0.000001);
     }
 
     #[test]

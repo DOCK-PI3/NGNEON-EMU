@@ -59,13 +59,41 @@ fn main() -> Result<(), String> {
 
     let mut neogeo = NeoGeo::new();
     let mut bios_label = String::from("Diagnóstica interna");
-    if let Some(bios) = bios::load_bios_from_dir("bios")? {
+    let requested_bios = std::env::var("NGNEON_PROBE_BIOS_LABEL").ok();
+    let selected_bios = if let Some(label) = requested_bios.as_deref() {
+        let candidates = bios::list_available_bios_multi(&["bios"])?;
+        Some(
+            candidates
+                .into_iter()
+                .find(|candidate| candidate.label == label)
+                .ok_or_else(|| format!("BIOS solicitada no encontrada: {label}"))?,
+        )
+    } else {
+        bios::load_bios_from_dir("bios")?
+    };
+    if let Some(bios) = selected_bios {
         println!("[INFO] BIOS activa: {}", bios.label);
         bios_label = bios.label.clone();
         neogeo.set_bios(bios.data);
     } else {
         println!("[INFO] BIOS activa: diagnóstica interna");
     }
+    let unibios_is_mvs = std::env::var("NGNEON_PROBE_UNIBIOS_HARDWARE")
+        .map(|value| !value.eq_ignore_ascii_case("aes"))
+        .unwrap_or(true);
+    let system_is_mvs = !matches!(bios::bios_kind(&bios_label), bios::BiosKind::Aes);
+    let coin_slots_34_high = match bios::bios_kind(&bios_label) {
+        bios::BiosKind::Aes => false,
+        bios::BiosKind::Unibios => unibios_is_mvs,
+        _ => true,
+    };
+    neogeo.set_system_is_mvs(system_is_mvs);
+    neogeo.set_coin_slots_34_high(coin_slots_34_high);
+    println!(
+        "[INFO] Hardware anunciado: STATUS_B={} coin34={}",
+        if system_is_mvs { "MVS" } else { "AES" },
+        if coin_slots_34_high { "MVS" } else { "AES" }
+    );
     let dirs = ["bios"];
     if let Some(zoom_rom) = bios::load_zoom_rom_for_bios_from_multi(&dirs, &bios_label)? {
         println!("[INFO] Tabla L0 activa: {}", zoom_rom.label);
@@ -73,17 +101,21 @@ fn main() -> Result<(), String> {
     } else {
         println!("[INFO] Tabla L0 activa: aproximación interna");
     }
-    if let Some(sfix_rom) = bios::load_sfix_rom_for_bios_from_multi(&dirs, &bios_label)? {
-        println!("[INFO] SFIX activa: {}", sfix_rom.label);
-        neogeo.set_sfix_rom(sfix_rom.data);
+    if !matches!(bios::bios_kind(&bios_label), bios::BiosKind::Aes) {
+        if let Some(sfix_rom) = bios::load_sfix_rom_for_bios_from_multi(&dirs, &bios_label)? {
+            println!("[INFO] SFIX activa: {}", sfix_rom.label);
+            neogeo.set_sfix_rom(sfix_rom.data);
+        } else {
+            println!("[INFO] SFIX activa: no encontrada, usando S-ROM de cartucho");
+        }
+        if let Some(sm1_rom) = bios::load_sm1_rom_for_bios_from_multi(&dirs, &bios_label)? {
+            println!("[INFO] SM1 activa: {}", sm1_rom.label);
+            neogeo.set_sm1_rom(sm1_rom.data);
+        } else {
+            println!("[INFO] SM1 activa: no encontrada, usando M-ROM de cartucho");
+        }
     } else {
-        println!("[INFO] SFIX activa: no encontrada, usando S-ROM de cartucho");
-    }
-    if let Some(sm1_rom) = bios::load_sm1_rom_for_bios_from_multi(&dirs, &bios_label)? {
-        println!("[INFO] SM1 activa: {}", sm1_rom.label);
-        neogeo.set_sm1_rom(sm1_rom.data);
-    } else {
-        println!("[INFO] SM1 activa: no encontrada, usando M-ROM de cartucho");
+        println!("[INFO] AES: usando S-ROM y M-ROM del cartucho (sin SFIX/SM1 de placa)");
     }
     neogeo.load_rom_and_connect(&mut rom);
     if let Some(path) = load_state_path {

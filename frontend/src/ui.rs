@@ -981,17 +981,84 @@ pub fn draw_save_state_manager(
 // BIOS Selector Overlay
 // ---------------------------------------------------------------------------
 
+fn bios_kind_label(kind: core_emulator::bios::BiosKind, lang: &super::lang::Lang) -> &'static str {
+    match kind {
+        core_emulator::bios::BiosKind::Aes => lang.bios_kind_aes,
+        core_emulator::bios::BiosKind::Mvs => lang.bios_kind_mvs,
+        core_emulator::bios::BiosKind::Unibios => lang.bios_kind_unibios,
+        core_emulator::bios::BiosKind::Diagnostic => lang.bios_kind_diagnostic,
+        core_emulator::bios::BiosKind::Unknown => lang.bios_kind_unknown,
+    }
+}
+
+fn bios_profile_label(kind: core_emulator::bios::BiosKind) -> &'static str {
+    match kind {
+        core_emulator::bios::BiosKind::Aes => "AES",
+        core_emulator::bios::BiosKind::Mvs => "NEOGEO",
+        core_emulator::bios::BiosKind::Unibios => "UNIBIOS",
+        core_emulator::bios::BiosKind::Diagnostic => "DIAG",
+        core_emulator::bios::BiosKind::Unknown => "BIOS",
+    }
+}
+
+fn bios_usage_label(kind: core_emulator::bios::BiosKind, lang: &super::lang::Lang) -> &'static str {
+    match kind {
+        core_emulator::bios::BiosKind::Aes => lang.bios_usage_aes,
+        core_emulator::bios::BiosKind::Mvs => lang.bios_usage_mvs,
+        core_emulator::bios::BiosKind::Unibios => lang.bios_usage_unibios,
+        core_emulator::bios::BiosKind::Diagnostic => lang.bios_usage_diagnostic,
+        core_emulator::bios::BiosKind::Unknown => lang.bios_usage_unknown,
+    }
+}
+
+fn bios_ra_label(kind: core_emulator::bios::BiosKind, lang: &super::lang::Lang) -> &'static str {
+    match kind {
+        core_emulator::bios::BiosKind::Aes => lang.bios_ra_aes,
+        core_emulator::bios::BiosKind::Mvs => lang.bios_ra_mvs,
+        core_emulator::bios::BiosKind::Unibios => lang.bios_ra_unibios,
+        core_emulator::bios::BiosKind::Diagnostic | core_emulator::bios::BiosKind::Unknown => {
+            lang.bios_ra_unknown
+        }
+    }
+}
+
+fn bios_hardcore_label(
+    kind: core_emulator::bios::BiosKind,
+    lang: &super::lang::Lang,
+) -> &'static str {
+    if matches!(kind, core_emulator::bios::BiosKind::Unibios) {
+        lang.bios_hardcore_blocked
+    } else {
+        lang.bios_hardcore_ok
+    }
+}
+
+fn bios_region_label(
+    region: core_emulator::bios::BiosRegion,
+    lang: &super::lang::Lang,
+) -> &'static str {
+    match region {
+        core_emulator::bios::BiosRegion::Usa => lang.bios_region_usa,
+        core_emulator::bios::BiosRegion::Japan => lang.bios_region_japan,
+        core_emulator::bios::BiosRegion::Asia => lang.bios_region_asia,
+        core_emulator::bios::BiosRegion::Europe => lang.bios_region_europe,
+    }
+}
+
 /// Draw the BIOS selector overlay (full-screen, dimmed background).
 ///
-/// `bios_list` — list of available BIOS labels (from `list_available_bios`).
-/// `selected` — index of the currently highlighted BIOS.
+/// `bios_list` — list of available high-level BIOS profiles.
+/// `selected` — index of the currently highlighted BIOS profile.
+/// `selected_region` — region used when the highlighted profile supports it.
 /// `current_bios` — the currently active BIOS label.
 /// `lang` — language strings for localisation.
 pub fn draw_bios_selector(
     framebuffer: &mut [u32],
     width: usize,
-    bios_list: &[String],
+    bios_list: &[core_emulator::bios::BiosKind],
     selected: usize,
+    selected_region: core_emulator::bios::BiosRegion,
+    unibios_hardware_is_mvs: bool,
     current_bios: &str,
     lang: &super::lang::Lang,
 ) {
@@ -1000,6 +1067,7 @@ pub fn draw_bios_selector(
         return;
     }
 
+    const CHAR_W: usize = 6;
     const CHAR_H: usize = 7;
     const ACCENT: u32 = 0xFF00BBFF;
     const TEXT_BODY: u32 = 0xFFAAAAAA;
@@ -1066,21 +1134,123 @@ pub fn draw_bios_selector(
         }
     }
 
-    // --- Current BIOS info ---
-    let current_line = format!("{} {}", lang.bios_current_label, current_bios);
+    let max_chars = width.saturating_sub(8) / CHAR_W;
+    let bottom_sep_y = height.saturating_sub(CHAR_H + 2 + 2);
+    let selected_index = selected.min(bios_list.len().saturating_sub(1));
+    let selected_kind = bios_list
+        .get(selected_index)
+        .or_else(|| bios_list.first())
+        .copied()
+        .unwrap_or_else(|| core_emulator::bios::bios_kind(current_bios));
+    let current_kind = core_emulator::bios::bios_kind(current_bios);
+    let current_region = core_emulator::bios::bios_region(current_bios).unwrap_or(selected_region);
+
+    // --- Current BIOS info and selected BIOS guide ---
+    let current_display = if core_emulator::bios::bios_kind_supports_region(current_kind) {
+        format!(
+            "{} {}",
+            bios_profile_label(current_kind),
+            bios_region_label(current_region, lang)
+        )
+    } else {
+        bios_profile_label(current_kind).to_string()
+    };
+    let current_line = truncate_chars(
+        &format!("{} {}", lang.bios_current_label, current_display),
+        max_chars,
+    );
     draw_text(framebuffer, width, 4, sep_y + 2, TEXT_DIM, &current_line);
 
-    let list_y = sep_y + 2 + CHAR_H + 4;
+    let info_y = sep_y + 2 + CHAR_H + 2;
+    let mode_line = truncate_chars(
+        &format!(
+            "{}  {}",
+            bios_kind_label(selected_kind, lang),
+            bios_hardcore_label(selected_kind, lang)
+        ),
+        max_chars,
+    );
+    let usage_line = truncate_chars(bios_usage_label(selected_kind, lang), max_chars);
+    let ra_line = truncate_chars(bios_ra_label(selected_kind, lang), max_chars);
+    let region_line = if core_emulator::bios::bios_kind_supports_region(selected_kind) {
+        format!(
+            "{} < {} >",
+            lang.bios_region_label,
+            bios_region_label(selected_region, lang)
+        )
+    } else if matches!(selected_kind, core_emulator::bios::BiosKind::Unibios) {
+        format!(
+            "{} < {} >",
+            lang.bios_hardware_label,
+            if unibios_hardware_is_mvs {
+                "MVS"
+            } else {
+                "AES"
+            }
+        )
+    } else {
+        format!(
+            "{} {}",
+            lang.bios_region_label, lang.bios_region_unavailable
+        )
+    };
+    let region_line = truncate_chars(&region_line, max_chars);
+
+    let hardcore_color = if matches!(selected_kind, core_emulator::bios::BiosKind::Unibios) {
+        TEXT_WARN
+    } else {
+        ACCENT
+    };
+    draw_text(framebuffer, width, 4, info_y, hardcore_color, &mode_line);
+    draw_text(
+        framebuffer,
+        width,
+        4,
+        info_y + CHAR_H + 1,
+        TEXT_BODY,
+        &usage_line,
+    );
+    draw_text(
+        framebuffer,
+        width,
+        4,
+        info_y + (CHAR_H + 1) * 2,
+        TEXT_BODY,
+        &ra_line,
+    );
+    draw_text(
+        framebuffer,
+        width,
+        4,
+        info_y + (CHAR_H + 1) * 3,
+        TEXT_DIM,
+        &region_line,
+    );
+
+    let list_y = info_y + (CHAR_H + 1) * 4 + 4;
+    let row_step = CHAR_H + 2;
+    let visible_rows = bottom_sep_y.saturating_sub(list_y).max(row_step) / row_step;
+    let first_visible = if selected_index >= visible_rows {
+        selected_index + 1 - visible_rows
+    } else {
+        0
+    };
 
     // --- BIOS list ---
-    for (i, label) in bios_list.iter().enumerate() {
-        let row_y = list_y + i * (CHAR_H + 1);
-        if row_y + CHAR_H >= height.saturating_sub(CHAR_H + 4) {
-            break; // Leave room for bottom action bar
+    for (row, (i, kind)) in bios_list
+        .iter()
+        .enumerate()
+        .skip(first_visible)
+        .take(visible_rows)
+        .enumerate()
+    {
+        let row_y = list_y + row * row_step;
+        if row_y + CHAR_H >= bottom_sep_y {
+            break;
         }
 
-        let is_selected = i == selected;
-        let is_active = label == current_bios;
+        let is_selected = i == selected_index;
+        let is_active = *kind == current_kind;
 
         let prefix = if is_selected { "> " } else { "  " };
         let suffix = if is_active {
@@ -1088,12 +1258,17 @@ pub fn draw_bios_selector(
         } else {
             ""
         };
-        let line = format!("{}{}{}", prefix, label, suffix);
+        let line = truncate_chars(
+            &format!("{}{}{}", prefix, bios_profile_label(*kind), suffix),
+            max_chars,
+        );
 
         let (color, bg_color) = if is_selected {
             (TEXT_HIGHLIGHT, Some(HIGHLIGHT_BG))
         } else if is_active {
             (ACCENT, None)
+        } else if matches!(*kind, core_emulator::bios::BiosKind::Unibios) {
+            (TEXT_WARN, None)
         } else {
             (TEXT_BODY, None)
         };
@@ -1117,13 +1292,13 @@ pub fn draw_bios_selector(
                         let r = ((pixel >> 16) & 0xFF) as u32;
                         let g = ((pixel >> 8) & 0xFF) as u32;
                         let b = (pixel & 0xFF) as u32;
-                        let br = ((bg >> 16) & 0xFF) as u32;
-                        let bg = ((bg >> 8) & 0xFF) as u32;
-                        let bb = (bg & 0xFF) as u32;
+                        let bg_r = ((bg >> 16) & 0xFF) as u32;
+                        let bg_g = ((bg >> 8) & 0xFF) as u32;
+                        let bg_b = (bg & 0xFF) as u32;
                         framebuffer[idx] = 0xFF000000
-                            | (((br * 7 + r * 3) / 10) << 16)
-                            | (((bg * 7 + g * 3) / 10) << 8)
-                            | ((bb * 7 + b * 3) / 10);
+                            | (((bg_r * 7 + r * 3) / 10) << 16)
+                            | (((bg_g * 7 + g * 3) / 10) << 8)
+                            | ((bg_b * 7 + b * 3) / 10);
                     }
                 }
             }
@@ -1133,7 +1308,6 @@ pub fn draw_bios_selector(
     }
 
     // --- Bottom action bar ---
-    let bottom_sep_y = height.saturating_sub(CHAR_H + 2 + 2);
     for x in 0..width {
         let idx = bottom_sep_y * width + x;
         if idx < framebuffer.len() {
@@ -1757,6 +1931,7 @@ pub fn draw_settings_menu(
     muted: bool,
     window_scale: u32,
     aspect_ratio: &str,
+    palette_mode: &str,
     auto_save: bool,
     gamepad_enabled: bool,
     cpu_overclock: bool,
@@ -1764,6 +1939,8 @@ pub fn draw_settings_menu(
     disable_adpcm_wrap: bool,
     memcard_inserted: bool,
     memcard_write_protected: bool,
+    setting_mode: bool,
+    freeplay: bool,
     vol_adjusting: bool,
     ra_logged_in: bool,
     ra_username: &str,
@@ -1878,9 +2055,9 @@ pub fn draw_settings_menu(
     // --- Tab items ---
     match selected_tab {
         0 => {
-            // VIDEO tab: Scanlines, Curvature, Bloom, Fullscreen, Aspect Ratio, Window Scale
+            // VIDEO tab: Scanlines, Curvature, Bloom, Fullscreen, Aspect Ratio, Palette, Window Scale
             let scale_str = format!("{}x", window_scale);
-            let items: [(&str, String, u32); 6] = [
+            let items: [(&str, String, u32); 7] = [
                 (
                     lang.settings_label_scanlines,
                     if scanlines {
@@ -1920,6 +2097,11 @@ pub fn draw_settings_menu(
                 (
                     lang.settings_label_aspect_ratio,
                     aspect_ratio.to_string(),
+                    ACCENT,
+                ),
+                (
+                    lang.settings_label_palette,
+                    palette_mode.to_string(),
                     ACCENT,
                 ),
                 (lang.settings_label_window_scale, scale_str, ACCENT),
@@ -1989,7 +2171,7 @@ pub fn draw_settings_menu(
         }
         2 => {
             // SYSTEM tab: base settings followed by Geolith-compatible hacks.
-            let items: [(&str, String, u32); 9] = [
+            let items: [(&str, String, u32); 11] = [
                 (
                     lang.settings_label_language,
                     if language_is_es {
@@ -2018,6 +2200,16 @@ pub fn draw_settings_menu(
                     if auto_save { TEXT_ON } else { TEXT_OFF },
                 ),
                 (lang.settings_bios_open, ">".to_string(), ACCENT),
+                (
+                    lang.settings_label_setting_mode,
+                    if setting_mode { "ON" } else { "OFF" }.to_string(),
+                    if setting_mode { TEXT_ON } else { TEXT_OFF },
+                ),
+                (
+                    lang.settings_label_freeplay,
+                    if freeplay { "ON" } else { "OFF" }.to_string(),
+                    if freeplay { TEXT_ON } else { TEXT_OFF },
+                ),
                 (
                     lang.settings_label_cpu_overclock,
                     if cpu_overclock {

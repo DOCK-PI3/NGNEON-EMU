@@ -26,12 +26,16 @@ const FIRST_RENDERABLE_SPRITE: usize = 1;
 const SPRITE_PARSE_END: usize = 382;
 const RENDERABLE_SPRITE_COUNT: usize = SPRITE_PARSE_END - FIRST_RENDERABLE_SPRITE;
 const ALL_RENDERABLE_SPRITES: [u16; RENDERABLE_SPRITE_COUNT] = all_renderable_sprites();
-const DIAGNOSTIC_PALETTE: [u32; 16] = [
-    0xFF000000, 0xFF00F0FF, 0xFFFF2A8A, 0xFFFFD166, 0xFF9BFF6A, 0xFF6A7DFF, 0xFFFFFFFF, 0xFF606060,
-    0xFF003040, 0xFF007080, 0xFF7A0050, 0xFF806000, 0xFF2D8A34, 0xFF272E88, 0xFFCCCCCC, 0xFF202020,
-];
 type PaletteLuts = ([u8; 64], [u8; 64]);
 static PALETTE_LUTS: OnceLock<PaletteLuts> = OnceLock::new();
+static RAW_PALETTE_LUTS: OnceLock<PaletteLuts> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaletteMode {
+    Raw,
+    #[default]
+    ResistorNetwork,
+}
 
 const fn all_renderable_sprites() -> [u16; RENDERABLE_SPRITE_COUNT] {
     let mut sprites = [0; RENDERABLE_SPRITE_COUNT];
@@ -117,6 +121,7 @@ pub struct Video {
     sprite_line_buffers: [[u16; SCREEN_WIDTH]; 2],
     sprite_line_buffer_active: usize,
     sprites_per_scanline: usize,
+    palette_mode: PaletteMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,9 +143,7 @@ pub struct VramDebugStats {
 #[derive(Debug, Clone, Copy)]
 struct SpriteDrawParams {
     x: isize,
-    y: isize,
     h_flip: bool,
-    v_flip: bool,
     transparent_zero: bool,
     width: usize,
     height: usize,
@@ -179,6 +182,14 @@ impl Video {
         self.sprites_per_scanline
     }
 
+    pub fn set_palette_mode(&mut self, mode: PaletteMode) {
+        self.palette_mode = mode;
+    }
+
+    pub fn palette_mode(&self) -> PaletteMode {
+        self.palette_mode
+    }
+
     /// Clear the framebuffer (public — called by the emulation loop at frame start).
     pub fn clear_framebuffer(&mut self) {
         self.clear();
@@ -200,7 +211,7 @@ impl Video {
             return;
         }
 
-        let backdrop = backdrop_color(memory);
+        let backdrop = backdrop_color(memory, self.palette_mode);
         let buffer_index = self.sprite_line_buffer_active;
         let fb_base = scanline * self.width;
         for x in 0..SCREEN_WIDTH {
@@ -208,7 +219,7 @@ impl Video {
             self.framebuffer[fb_base + x] = if palette_index == 0 {
                 backdrop
             } else {
-                palette_index_color(memory, palette_index)
+                palette_index_color(memory, palette_index, self.palette_mode)
             };
             self.sprite_line_buffers[buffer_index][x] = 0;
         }
@@ -282,6 +293,7 @@ impl Video {
                 palette_base,
                 palette_bank,
                 memory.palette_shadow,
+                self.palette_mode,
             );
             let fb_base = scanline * self.width + col * FIX_TILE_WIDTH;
             let tile_base = in_tile_y * FIX_TILE_WIDTH;
@@ -355,6 +367,7 @@ impl Video {
             sprite_line_buffers: [[0; SCREEN_WIDTH]; 2],
             sprite_line_buffer_active: 0,
             sprites_per_scanline: HARDWARE_SPRITES_PER_SCANLINE,
+            palette_mode: PaletteMode::ResistorNetwork,
         }
     }
 
@@ -374,25 +387,18 @@ impl Video {
             self.clear();
             return;
         }
-        self.clear_with_color(backdrop_color(memory));
+        self.clear_with_color(backdrop_color(memory, self.palette_mode));
         self.reset_sprite_line_buffers();
 
         // Mirror the live Geolith-like scanline path even when rendering a
         // whole frame at once (pause, diagnostics, small-budget tests).
-        let mut drawn_sprites = 0;
-        drawn_sprites += self.calculate_buffered_sprites_scanline_all(memory, 0);
-        drawn_sprites += self.calculate_buffered_sprites_scanline_all(memory, 1);
+        self.calculate_buffered_sprites_scanline_all(memory, 0);
+        self.calculate_buffered_sprites_scanline_all(memory, 1);
         for scanline in 0..self.height {
             self.present_buffered_sprites_scanline(memory, scanline);
             let future_scanline = scanline + 2;
-            drawn_sprites += self.calculate_buffered_sprites_scanline_all(memory, future_scanline);
+            self.calculate_buffered_sprites_scanline_all(memory, future_scanline);
             self.render_fix_scanline(memory, scanline);
-        }
-
-        if drawn_sprites == 0 {
-            self.clear_with_color(backdrop_color(memory));
-            render_crom_diagnostic_matrix(self, memory);
-            render_fix_layer(self, memory);
         }
     }
 }
@@ -486,9 +492,7 @@ fn render_scanline_sprites(
                 scanline,
                 SpriteDrawParams {
                     x: x as isize,
-                    y: 0,
                     h_flip: false,
-                    v_flip: false,
                     transparent_zero: true,
                     width: tile_width,
                     height: SPRITE_TILE_HEIGHT,
@@ -577,9 +581,7 @@ fn render_scanline_sprites_to_line_buffer(
                 sprite,
                 SpriteDrawParams {
                     x: x as isize,
-                    y: 0,
                     h_flip: false,
-                    v_flip: false,
                     transparent_zero: true,
                     width: tile_width,
                     height: SPRITE_TILE_HEIGHT,
@@ -618,9 +620,7 @@ fn draw_sprite_scanline(
     } else {
         source_row
     };
-    let Some(tile_row) =
-        decode_sprite_tile_row(&memory.crom, tile_index, memory.lspc_rom_size, decoded_row)
-    else {
+    let Some(tile_row) = decode_sprite_tile_row(&memory.crom, tile_index, decoded_row) else {
         return 0;
     };
 
@@ -631,6 +631,7 @@ fn draw_sprite_scanline(
         palette_base,
         palette_bank,
         memory.palette_shadow,
+        video.palette_mode,
     );
     draw_sprite_row_scanline(
         video,
@@ -666,9 +667,7 @@ fn draw_sprite_scanline_to_line_buffer(
     } else {
         source_row
     };
-    let Some(tile_row) =
-        decode_sprite_tile_row(&memory.crom, tile_index, memory.lspc_rom_size, decoded_row)
-    else {
+    let Some(tile_row) = decode_sprite_tile_row(&memory.crom, tile_index, decoded_row) else {
         return 0;
     };
 
@@ -683,91 +682,6 @@ fn draw_sprite_scanline_to_line_buffer(
             ..params
         },
     )
-}
-
-fn render_crom_diagnostic_matrix(video: &mut Video, memory: &crate::memory::Memory) {
-    let crom = &memory.crom;
-    if crom.is_empty() {
-        return;
-    }
-
-    let tiles_x = video.width / SPRITE_TILE_WIDTH;
-    let tiles_y = video.height / SPRITE_TILE_HEIGHT;
-    let palette_base = active_palette_base(memory);
-    let palette = if palette_bank_initialized(&memory.palette_ram, palette_base, 0) {
-        decode_palette_bank(&memory.palette_ram, palette_base, 0, memory.palette_shadow)
-    } else {
-        DIAGNOSTIC_PALETTE
-    };
-
-    for ty in 0..tiles_y {
-        for tx in 0..tiles_x {
-            let tile_idx = ty * tiles_x + tx;
-            let Some(tile) = decode_sprite_tile(crom, tile_idx, memory.lspc_rom_size) else {
-                continue;
-            };
-            draw_sprite_tile(
-                video,
-                &tile,
-                &palette,
-                SpriteDrawParams {
-                    x: (tx * SPRITE_TILE_WIDTH) as isize,
-                    y: (ty * SPRITE_TILE_HEIGHT) as isize,
-                    h_flip: false,
-                    v_flip: false,
-                    transparent_zero: false,
-                    width: SPRITE_TILE_WIDTH,
-                    height: SPRITE_TILE_HEIGHT,
-                },
-            );
-        }
-    }
-}
-
-fn render_fix_layer(video: &mut Video, memory: &crate::memory::Memory) -> usize {
-    let fix_rom = active_fix_rom(memory);
-    if fix_rom.is_empty() {
-        return 0;
-    }
-
-    let fix_stats = fix_debug_stats(memory, fix_rom);
-    if fix_stats.drawable_tiles == 0 {
-        return 0;
-    }
-
-    let palette_base = active_palette_base(memory);
-    let mut pixels = 0;
-    for row in 0..FIX_VISIBLE_ROWS {
-        let map_row = row + FIX_HIDDEN_TOP_ROWS;
-        for col in 0..FIX_MAP_COLUMNS {
-            let map_address = fix_map_address(col, map_row);
-            let entry = read_vram_word(memory, map_address);
-            if entry == 0 || skip_fix_entry(memory, entry) {
-                continue;
-            }
-            let base_tile_index = fix_tile_index(memory, entry, map_row, col);
-            let palette_bank = ((entry >> 12) & 0x000F) as usize;
-
-            let Some(tile) = decode_fix_tile(fix_rom, base_tile_index) else {
-                continue;
-            };
-            let palette = decode_palette_bank(
-                &memory.palette_ram,
-                palette_base,
-                palette_bank,
-                memory.palette_shadow,
-            );
-            pixels += draw_fix_tile(
-                video,
-                &tile,
-                &palette,
-                col * FIX_TILE_WIDTH,
-                row * FIX_TILE_HEIGHT,
-            );
-        }
-    }
-
-    pixels
 }
 
 fn fix_tile_index(
@@ -840,83 +754,6 @@ fn fix_line_bank(memory: &crate::memory::Memory, visible_row: usize) -> usize {
     }
 
     bank
-}
-
-fn draw_fix_tile(
-    video: &mut Video,
-    tile: &[u8; FIX_TILE_WIDTH * FIX_TILE_HEIGHT],
-    palette: &[u32; 16],
-    x: usize,
-    y: usize,
-) -> usize {
-    let mut pixels = 0;
-    for tile_y in 0..FIX_TILE_HEIGHT {
-        for tile_x in 0..FIX_TILE_WIDTH {
-            let color_index = tile[tile_y * FIX_TILE_WIDTH + tile_x] as usize;
-            // Color 0 is transparent for fix tiles (matches Geolith and
-            // NeoGeo hardware behavior). Allows sprites behind the fix
-            // layer to show through.
-            if color_index == 0 {
-                continue;
-            }
-
-            let fb_x = x + tile_x;
-            let fb_y = y + tile_y;
-            if fb_x >= video.width || fb_y >= video.height {
-                continue;
-            }
-
-            video.framebuffer[fb_y * video.width + fb_x] = palette[color_index];
-            pixels += 1;
-        }
-    }
-
-    pixels
-}
-
-fn draw_sprite_tile(
-    video: &mut Video,
-    tile: &[u8; 256],
-    palette: &[u32; 16],
-    params: SpriteDrawParams,
-) -> usize {
-    if params.width == 0 || params.height == 0 {
-        return 0;
-    }
-
-    let mut pixels = 0;
-    for dest_y in 0..params.height {
-        for dest_x in 0..params.width {
-            let unflipped_x = dest_x * SPRITE_TILE_WIDTH / params.width;
-            let unflipped_y = dest_y * SPRITE_TILE_HEIGHT / params.height;
-            let src_x = if params.h_flip {
-                SPRITE_TILE_WIDTH - 1 - unflipped_x
-            } else {
-                unflipped_x
-            };
-            let src_y = if params.v_flip {
-                SPRITE_TILE_HEIGHT - 1 - unflipped_y
-            } else {
-                unflipped_y
-            };
-            let color_index = tile[src_y * SPRITE_TILE_WIDTH + src_x] as usize;
-            if params.transparent_zero && color_index == 0 {
-                continue;
-            }
-
-            let fb_x = params.x + dest_x as isize;
-            let fb_y = params.y + dest_y as isize;
-            if fb_x < 0 || fb_y < 0 || fb_x >= video.width as isize || fb_y >= video.height as isize
-            {
-                continue;
-            }
-
-            video.framebuffer[fb_y as usize * video.width + fb_x as usize] = palette[color_index];
-            pixels += 1;
-        }
-    }
-
-    pixels
 }
 
 /// Draw an already-decoded C-ROM row.
@@ -1026,69 +863,7 @@ pub fn calc_crom_mask(crom_size: usize) -> usize {
     tiles.next_power_of_two() - 1
 }
 
-/// Convierte el valor del registro LSPC RomSize (0x3C000C) a una
-/// máscara de tiles C-ROM, replicando la lógica de Geolith.
-///
-/// En el hardware NeoGeo, el registro RomSize codifica el tamaño
-/// del espacio de direcciones C-ROM: cada unidad representa un
-/// rango de 512KB, por lo que la máscara es `(1 << (rom_size + 12)) - 1`
-/// donde 12 = log2(512KB / 128 bytes por tile) = log2(4096).
-///
-/// Ejemplos:
-/// - rom_size = 0 (512KB)  → mask = (1 << 12) - 1 = 4095  (0xFFF)
-/// - rom_size = 3 (4MB)    → mask = (1 << 15) - 1 = 32767 (0x7FFF)
-/// - rom_size = 5 (16MB)   → mask = (1 << 17) - 1 = 131071 (0x1FFFF)
-pub fn register_to_crom_mask(rom_size: u16) -> usize {
-    let bits = ((rom_size as usize & 0x1F) + 12).min(usize::BITS as usize - 1);
-    if bits >= usize::BITS as usize {
-        return !0; // All bits set = wrap around entire address space
-    }
-    (1usize << bits) - 1
-}
-
-/// Verifica que el registro LSPC RomSize (0x3C000C) sea compatible
-/// con la máscara C-ROM calculada a partir del tamaño real de datos.
-///
-/// Esto replica la verificación que Geolith hace en `geo_lspc_postload`:
-/// después de cargar la ROM, comprueba que el valor escrito por el juego
-/// en el registro RomSize coincida con el tamaño real del C-ROM.
-///
-/// Devuelve `true` si son compatibles, o si el registro aún no ha sido
-/// inicializado (rom_size == 0). Imprime un warning en stderr si
-/// detecta una discrepancia.
-pub fn verify_crom_mask_register(memory: &crate::memory::Memory) -> bool {
-    if memory.lspc_rom_size == 0 || memory.crom.is_empty() {
-        return true; // Register not yet written by the game, can't verify
-    }
-
-    let data_mask = calc_crom_mask(memory.crom.len());
-    let reg_mask = register_to_crom_mask(memory.lspc_rom_size);
-
-    // The data mask should be >= the register mask. If the game programmed
-    // a smaller window, it simply can't address all tiles. If it programmed
-    // a larger window, the extra addresses wrap (which our crom_mask handles).
-    if data_mask >= reg_mask {
-        return true;
-    }
-
-    // Data mask < register mask: the game expects more C-ROM than we have.
-    // This is a soft warning — the game may still work if it doesn't access
-    // tiles beyond the actual C-ROM.
-    eprintln!(
-        "[WARN] LSPC RomSize mismatch: reg=0x{:04X} (mask 0x{:X}) but data crom_mask=0x{:X} ({:.1}MB)",
-        memory.lspc_rom_size,
-        reg_mask,
-        data_mask,
-        memory.crom.len() as f64 / (1024.0 * 1024.0),
-    );
-    false
-}
-
-pub fn decode_sprite_tile(
-    crom: &[u8],
-    tile_index: usize,
-    _lspc_rom_size: u16,
-) -> Option<[u8; 256]> {
+pub fn decode_sprite_tile(crom: &[u8], tile_index: usize) -> Option<[u8; 256]> {
     let tile_data = sprite_tile_data(crom, tile_index)?;
     let mut pixels = [0u8; SPRITE_TILE_WIDTH * SPRITE_TILE_HEIGHT];
 
@@ -1141,7 +916,6 @@ fn decode_sprite_tile_row_data(tile_data: &[u8], row: usize) -> [u8; SPRITE_TILE
 pub fn decode_sprite_tile_row(
     crom: &[u8],
     tile_index: usize,
-    _lspc_rom_size: u16,
     row: usize,
 ) -> Option<[u8; SPRITE_TILE_WIDTH]> {
     if row >= SPRITE_TILE_HEIGHT {
@@ -1189,17 +963,18 @@ fn decode_palette_bank(
     active_base: usize,
     bank: usize,
     shadow: bool,
+    mode: PaletteMode,
 ) -> [u32; 16] {
     let start = active_base.saturating_add(bank.saturating_mul(32));
     let Some(bank_data) = palette_ram.get(start..start + 32) else {
-        return DIAGNOSTIC_PALETTE;
+        return [0xFF000000; 16];
     };
 
     let mut palette = [0xFF000000; 16];
     for (i, color_slot) in palette.iter_mut().enumerate() {
         let base = i * 2;
         let color = u16::from_be_bytes([bank_data[base], bank_data[base + 1]]);
-        *color_slot = decode_palette_color_with_shadow(color, shadow);
+        *color_slot = decode_palette_color_with_mode(color, shadow, mode);
     }
 
     palette
@@ -1216,27 +991,33 @@ fn active_palette_base(memory: &crate::memory::Memory) -> usize {
     memory.palette_bank as usize * crate::memory::PALETTE_RAM_BANK_SIZE
 }
 
-fn backdrop_color(memory: &crate::memory::Memory) -> u32 {
+fn backdrop_color(memory: &crate::memory::Memory, mode: PaletteMode) -> u32 {
     let offset = active_palette_base(memory).saturating_add(4095 * 2);
     let Some(color_data) = memory.palette_ram.get(offset..offset + 2) else {
         return 0xFF000000;
     };
 
-    decode_palette_color_with_shadow(
+    decode_palette_color_with_mode(
         u16::from_be_bytes([color_data[0], color_data[1]]),
         memory.palette_shadow,
+        mode,
     )
 }
 
-fn palette_index_color(memory: &crate::memory::Memory, palette_index: u16) -> u32 {
+fn palette_index_color(
+    memory: &crate::memory::Memory,
+    palette_index: u16,
+    mode: PaletteMode,
+) -> u32 {
     let offset = (palette_index as usize).saturating_mul(2);
     let Some(color_data) = memory.palette_ram.get(offset..offset + 2) else {
         return 0xFF000000;
     };
 
-    decode_palette_color_with_shadow(
+    decode_palette_color_with_mode(
         u16::from_be_bytes([color_data[0], color_data[1]]),
         memory.palette_shadow,
+        mode,
     )
 }
 
@@ -1400,11 +1181,16 @@ fn decode_palette_color(color: u16) -> u32 {
     decode_palette_color_with_shadow(color, false)
 }
 
+#[cfg(test)]
 fn decode_palette_color_with_shadow(color: u16, shadow: bool) -> u32 {
+    decode_palette_color_with_mode(color, shadow, PaletteMode::ResistorNetwork)
+}
+
+fn decode_palette_color_with_mode(color: u16, shadow: bool, mode: PaletteMode) -> u32 {
     // Geolith-compatible NeoGeo palette words:
     // D0 R1 G1 B1 R5 R4 R3 R2 G5 G4 G3 G2 B5 B4 B3 B2.
     // The dark bit is folded into bit 0 of each LUT index.
-    let luts = palette_luts();
+    let luts = palette_luts(mode);
     let lut = if shadow { &luts.1 } else { &luts.0 };
     let r = (((color >> 6) & 0x3C) | ((color >> 13) & 0x02) | ((color >> 15) & 0x01)) as usize;
     let g = (((color >> 2) & 0x3C) | ((color >> 12) & 0x02) | ((color >> 15) & 0x01)) as usize;
@@ -1413,8 +1199,23 @@ fn decode_palette_color_with_shadow(color: u16, shadow: bool) -> u32 {
     0xFF000000 | ((lut[r] as u32) << 16) | ((lut[g] as u32) << 8) | lut[b] as u32
 }
 
-fn palette_luts() -> &'static PaletteLuts {
-    PALETTE_LUTS.get_or_init(generate_geolith_palette_luts)
+fn palette_luts(mode: PaletteMode) -> &'static PaletteLuts {
+    match mode {
+        PaletteMode::Raw => RAW_PALETTE_LUTS.get_or_init(generate_geolith_raw_palette_luts),
+        PaletteMode::ResistorNetwork => PALETTE_LUTS.get_or_init(generate_geolith_palette_luts),
+    }
+}
+
+fn generate_geolith_raw_palette_luts() -> PaletteLuts {
+    let mut normal = [0; 64];
+    let mut shadow = [0; 64];
+    for i in 0..64 {
+        let raw = i ^ 0x01;
+        let value = ((raw * 259 + 33) >> 6) as u8;
+        normal[i] = value;
+        shadow[i] = value >> 1;
+    }
+    (normal, shadow)
 }
 
 fn generate_geolith_palette_luts() -> PaletteLuts {
@@ -1762,14 +1563,15 @@ mod tests {
     }
 
     #[test]
-    fn crom_without_palette_uses_diagnostic_colors() {
+    fn crom_without_palette_renders_hardware_black() {
         let mut video = Video::new();
         let mut memory = crate::memory::Memory::new();
         memory.crom = vec![0xFF; BYTES_PER_TILE];
+        configure_test_sprite(&mut memory, 0, 0);
 
         video.render_frame(&memory);
 
-        assert_eq!(video.framebuffer[0], DIAGNOSTIC_PALETTE[15]);
+        assert_eq!(video.framebuffer[0], 0xFF000000);
     }
 
     #[test]
@@ -1778,6 +1580,7 @@ mod tests {
         let mut memory = crate::memory::Memory::new();
         memory.crom = solid_sprite_tile(3);
         memory.palette_ram[6..8].copy_from_slice(&0x4F00_u16.to_be_bytes());
+        configure_test_sprite(&mut memory, 0, 0);
 
         video.render_frame(&memory);
 
@@ -1794,6 +1597,7 @@ mod tests {
         memory.palette_ram[bank_1_color_3..bank_1_color_3 + 2]
             .copy_from_slice(&0x20F0_u16.to_be_bytes());
         memory.palette_bank = 1;
+        configure_test_sprite(&mut memory, 0, 0);
 
         video.render_frame(&memory);
 
@@ -1825,11 +1629,6 @@ mod tests {
         let mut video = Video::new();
         let mut memory = crate::memory::Memory::new();
         memory.crom = solid_sprite_tile(3);
-        // Agrandar C-ROM a 512 tiles para evitar mask=0 (que haría que la
-        // matriz de diagnóstico llene toda la pantalla con tile 0).
-        // Con mask >= 511, los tiles más allá del primer tile son ceros
-        // y no afectan el resultado del test.
-        memory.crom.resize(512 * BYTES_PER_TILE, 0);
         let backdrop_offset = 4095 * 2;
         memory.palette_ram[backdrop_offset..backdrop_offset + 2]
             .copy_from_slice(&0x20F0_u16.to_be_bytes());
@@ -1940,9 +1739,7 @@ mod tests {
             &palette,
             SpriteDrawParams {
                 x: 40,
-                y: 0,
                 h_flip: false,
-                v_flip: false,
                 transparent_zero: true,
                 width: 2,
                 height: SPRITE_TILE_HEIGHT,
@@ -2360,23 +2157,23 @@ mod tests {
         }
 
         // tile_index 0 → tile 0 válido
-        let tile0 = decode_sprite_tile(&crom, 0, 0).unwrap();
+        let tile0 = decode_sprite_tile(&crom, 0).unwrap();
         assert_eq!(tile0[0], 0x01); // plane0 → color 1
 
         // tile_index 1 → tile 1 válido
-        let tile1 = decode_sprite_tile(&crom, 1, 0).unwrap();
+        let tile1 = decode_sprite_tile(&crom, 1).unwrap();
         assert_eq!(tile1[0], 0x01); // solo plane0 → color 1
 
         // tile_index 2 (out of bounds) → máscara 2 & 1 = 0 → tile 0
-        let wrapped = decode_sprite_tile(&crom, 2, 0).unwrap();
+        let wrapped = decode_sprite_tile(&crom, 2).unwrap();
         assert_eq!(wrapped[0], 0x01);
 
         // tile_index 3 → máscara 3 & 1 = 1 → tile 1 (solo plane0 → color 1)
-        let wrapped3 = decode_sprite_tile(&crom, 3, 0).unwrap();
+        let wrapped3 = decode_sprite_tile(&crom, 3).unwrap();
         assert_eq!(wrapped3[0], 0x01);
 
         // tile_index 1000000 → máscara 1000000 & 1 = 0 → tile 0
-        let wrapped_big = decode_sprite_tile(&crom, 1_000_000, 0).unwrap();
+        let wrapped_big = decode_sprite_tile(&crom, 1_000_000).unwrap();
         assert_eq!(wrapped_big[0], 0x01);
     }
 
@@ -2395,10 +2192,10 @@ mod tests {
         // Three tiles produce a power-of-two mask of 3, but Geolith still
         // applies byte offset modulo the real C-ROM size. Index 5 masks to 1,
         // while index 6 masks to 2 and must land on the third tile.
-        let masked_to_tile_two = decode_sprite_tile(&crom, 6, 0).unwrap();
+        let masked_to_tile_two = decode_sprite_tile(&crom, 6).unwrap();
         assert_eq!(masked_to_tile_two[0], 0x02);
 
-        let modulo_to_tile_two = decode_sprite_tile(&crom, 5, 0x0000).unwrap();
+        let modulo_to_tile_two = decode_sprite_tile(&crom, 5).unwrap();
         assert_eq!(modulo_to_tile_two[0], 0x00);
     }
 
@@ -2416,7 +2213,7 @@ mod tests {
 
         // With a register-derived mask, index 4 would wrap to tile 1 in this
         // 3-tile ROM. Geolith uses the data mask: 4 & 3 = 0.
-        let tile = decode_sprite_tile(&crom, 4, 1).unwrap();
+        let tile = decode_sprite_tile(&crom, 4).unwrap();
 
         assert_eq!(tile[0], 0x01);
     }
@@ -2430,7 +2227,7 @@ mod tests {
         crom[64] = 0x01; // row 0, displayed left half, plane 0 — LSB set = pixel x=0
         crom[66] = 0x01; // row 0, displayed left half, plane 1 — LSB set = pixel x=0
 
-        let tile = decode_sprite_tile(&crom, 0, 0).unwrap();
+        let tile = decode_sprite_tile(&crom, 0).unwrap();
 
         // pixel 0: plane0=1, plane2=0, plane1=1, plane3=0 => 0b0011 = 3
         assert_eq!(tile[0], 0x03);
@@ -2448,15 +2245,15 @@ mod tests {
             *byte = (index as u8).wrapping_mul(37).wrapping_add(11);
         }
 
-        let tile = decode_sprite_tile(&crom, 0, 0).unwrap();
+        let tile = decode_sprite_tile(&crom, 0).unwrap();
         for row in 0..SPRITE_TILE_HEIGHT {
-            let decoded_row = decode_sprite_tile_row(&crom, 0, 0, row).unwrap();
+            let decoded_row = decode_sprite_tile_row(&crom, 0, row).unwrap();
             assert_eq!(
                 decoded_row.as_slice(),
                 &tile[row * SPRITE_TILE_WIDTH..(row + 1) * SPRITE_TILE_WIDTH]
             );
         }
-        assert!(decode_sprite_tile_row(&crom, 0, 0, SPRITE_TILE_HEIGHT).is_none());
+        assert!(decode_sprite_tile_row(&crom, 0, SPRITE_TILE_HEIGHT).is_none());
     }
 
     #[test]
@@ -2532,60 +2329,6 @@ mod tests {
     }
 
     #[test]
-    fn register_to_crom_mask_converts_lspc_romsize_correctly() {
-        // rom_size = 0 → 512KB → mask 4095 (0xFFF)
-        assert_eq!(register_to_crom_mask(0), 0xFFF);
-        // rom_size = 1 → 1MB → mask 8191 (0x1FFF)
-        assert_eq!(register_to_crom_mask(1), 0x1FFF);
-        // rom_size = 2 → 2MB → mask 16383 (0x3FFF)
-        assert_eq!(register_to_crom_mask(2), 0x3FFF);
-        // rom_size = 3 → 4MB → mask 32767 (0x7FFF)
-        assert_eq!(register_to_crom_mask(3), 0x7FFF);
-        // rom_size = 4 → 8MB → mask 65535 (0xFFFF)
-        assert_eq!(register_to_crom_mask(4), 0xFFFF);
-        // rom_size = 5 → 16MB → mask 131071 (0x1FFFF)
-        assert_eq!(register_to_crom_mask(5), 0x1FFFF);
-        // rom_size = 7 → 64MB → mask 524287 (0x7FFFF)
-        assert_eq!(register_to_crom_mask(7), 0x7FFFF);
-    }
-
-    #[test]
-    fn verify_crom_mask_register_passes_when_match() {
-        let mut memory = crate::memory::Memory::new();
-        // 4MB C-ROM → calc_crom_mask = 32767 = register_to_crom_mask(3)
-        memory.crom = vec![0; 4 * 1024 * 1024];
-        memory.lspc_rom_size = 3;
-        assert!(verify_crom_mask_register(&memory));
-    }
-
-    #[test]
-    fn verify_crom_mask_register_passes_when_register_not_set() {
-        let memory = crate::memory::Memory::new();
-        // lspc_rom_size == 0 → register not yet written
-        assert!(verify_crom_mask_register(&memory));
-    }
-
-    #[test]
-    fn verify_crom_mask_register_passes_when_register_smaller_than_data() {
-        let mut memory = crate::memory::Memory::new();
-        // 4MB C-ROM (mask 32767) but register says 1MB (mask 8191)
-        // This is fine: the game restricts itself to 1MB window.
-        memory.crom = vec![0; 4 * 1024 * 1024];
-        memory.lspc_rom_size = 1;
-        assert!(verify_crom_mask_register(&memory));
-    }
-
-    #[test]
-    fn verify_crom_mask_register_warns_when_register_exceeds_data() {
-        let mut memory = crate::memory::Memory::new();
-        // 1MB C-ROM (mask 8191) but register says 4MB (mask 32767)
-        // The game expects more C-ROM than we have → warning.
-        memory.crom = vec![0; 1024 * 1024];
-        memory.lspc_rom_size = 3;
-        assert!(!verify_crom_mask_register(&memory));
-    }
-
-    #[test]
     fn decodes_neogeo_palette_word_layout() {
         assert_eq!(decode_palette_color(0x8000), 0xFF000000);
         assert_eq!(decode_palette_color(0x4F00), 0xFFFF0000);
@@ -2600,6 +2343,17 @@ mod tests {
         assert_eq!(decode_palette_color_with_shadow(0x4F00, false), 0xFFFF0000);
         assert_eq!(decode_palette_color_with_shadow(0x4F00, true), 0xFF8E0000);
         assert_eq!(decode_palette_color_with_shadow(0x7FFF, true), 0xFF8E8E8E);
+    }
+
+    #[test]
+    fn raw_palette_lut_matches_geolith_integer_scaling() {
+        let (normal, shadow) = generate_geolith_raw_palette_luts();
+        for i in 0..64usize {
+            let raw = i ^ 1;
+            let expected = ((raw * 259 + 33) >> 6) as u8;
+            assert_eq!(normal[i], expected);
+            assert_eq!(shadow[i], expected >> 1);
+        }
     }
 
     fn solid_sprite_tile(color: u8) -> Vec<u8> {
@@ -2649,5 +2403,14 @@ mod tests {
         let [hi, lo] = value.to_be_bytes();
         memory.vram[offset] = hi;
         memory.vram[offset + 1] = lo;
+    }
+
+    fn configure_test_sprite(memory: &mut crate::memory::Memory, x: usize, visible_y: usize) {
+        let y_position = (0x200usize + visible_y).wrapping_sub(16) & 0x01ff;
+        write_vram_word_raw(memory, scb1_addr(1, 0), 0);
+        write_vram_word_raw(memory, scb1_attr_addr(1, 0), 0);
+        write_vram_word_raw(memory, scb2_addr(1), 0x0fff);
+        write_vram_word_raw(memory, scb3_addr(1), (y_position as u16) << 7 | 1);
+        write_vram_word_raw(memory, scb4_addr(1), (x as u16) << 7);
     }
 }

@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copia este archivo como themes/mi-tema.xml.
+  Referencia completa: themes/README.md
+-->
+<theme version="2" id="mi-tema" name="Mi tema" author="Tu nombre">
+  <!-- Todas las coordenadas se normalizan al framebuffer 960x540. -->
+  <canvas width="960" height="540"/>
+
+  <!-- Los colores omitidos heredan la paleta Neon integrada. -->
+  <palette
+    background="#05070B"
+    header="#080D15"
+    panel="#E00B111B"
+    panel_alt="#121B29"
+    primary="#EA3357"
+    primary_dark="#65182A"
+    secondary="#4C6FFF"
+    accent="#22D3EE"
+    warning="#F2C94C"
+    success="#4DD68A"
+    text="#F5F7FB"
+    text_soft="#AAB4C3"
+    text_dim="#657083"
+    border="#25344A"
+    error="#FF6B7D"/>
+
+  <!-- Oculta los bloques clásicos si vas a construir un layout completo. -->
+  <component id="library_background" visible="false"/>
+  <component id="header" visible="false"/>
+  <component id="carousel" visible="false"/>
+  <component id="cabinet" visible="false"/>
+  <component id="game_info" visible="false"/>
+  <component id="library_footer" visible="false"/>
+
+  <!-- Lista vertical y ficha del juego. -->
+  <component id="vertical_list"
+             x="16" y="50" width="466" height="474"
+             z="130" visible="true"/>
+  <component id="game_title"
+             x="500" y="8" width="444" height="100"
+             z="145" visible="true"/>
+  <component id="game_description"
+             x="498" y="410" width="446" height="116"
+             z="145" visible="true"/>
+  <component id="game_metadata"
+             x="498" y="370" width="446" height="36"
+             z="145" visible="true"/>
+  <component id="page_counter"
+             x="16" y="10" width="466" height="32"
+             z="150" visible="true"/>
+
+  <!--
+    La primera fuente existente gana. Si es vídeo, las imágenes siguientes
+    sirven de fallback mientras arranca o cuando el MP4/H.264 no es válido.
+  -->
+  <media id="backdrop"
+         source="game.fanart,game.mix,game.image"
+         x="0" y="0" width="960" height="540"
+         z="-100" opacity="0.35" fit="cover" visible="true"/>
+
+  <media id="logo"
+         source="game.marquee,game.logo,game.wheel"
+         x="502" y="8" width="440" height="100"
+         z="160" opacity="255" fit="contain" visible="true"/>
+
+  <media id="preview"
+         source="game.video,game.screenshot,game.titleshot,game.mix,game.image"
+         x="498" y="116" width="446" height="246"
+         z="120" opacity="255" fit="cover" visible="true"/>
+
+  <!-- Ejemplos opcionales de caja y cartucho:
+  <media id="box"
+         source="game.box2d,game.box3d,game.boxart,game.thumbnail"
+         x="30" y="100" width="190" height="290"
+         z="140" fit="contain"/>
+
+  <media id="cartridge"
+         source="game.cartridge2d,game.cartridge"
+         x="740" y="180" width="180" height="120"
+         z="140" fit="contain"/>
+  -->
+
+  <!-- Asset propio del tema, relativo a este XML:
+  <layer id="frame"
+         source="assets/frame.png"
+         x="0" y="0" width="960" height="540"
+         z="200" opacity="1.0" fit="contain"
+         view="library" visible="true"/>
+  -->
+</theme>

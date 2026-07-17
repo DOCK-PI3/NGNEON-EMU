@@ -2,6 +2,7 @@ import "./styles.css";
 
 type ConfigValue = string | boolean | number;
 type ViewName = "library" | "achievements" | "settings";
+type LaunchMode = "normal" | "clean" | "diagnostic";
 type MediaKey =
   | "video"
   | "fanart"
@@ -69,6 +70,7 @@ type LibraryResponse = {
   };
   roms: RomItem[];
   biosArchives: string[];
+  biosOptions?: BiosOption[];
   mediaCount: number;
   mediaMatched: number;
 };
@@ -117,6 +119,19 @@ type RaAchievement = {
   badge: string;
 };
 
+type BiosKind = "aes" | "mvs" | "unibios" | "unknown";
+type BiosProfile = "neogeo" | "aes" | "unibios";
+type BiosRegion = "usa" | "japan" | "asia" | "europe";
+
+type BiosOption = {
+  label: string;
+  kind: BiosKind;
+  title: string;
+  purpose: string;
+  raNote: string;
+  hardcoreSafe: boolean;
+};
+
 type RaDashboard = {
   available: boolean;
   connected?: boolean;
@@ -131,6 +146,22 @@ type RaDashboard = {
   refreshedAt?: string;
 };
 
+type EmulatorSession = {
+  running: boolean;
+  pid: number;
+  mode: LaunchMode;
+  romPath: string;
+  logPath: string;
+  startedAt: string;
+  endedAt: string;
+  exitCode: number | null;
+  signal: string;
+};
+
+type SessionResponse = {
+  session: EmulatorSession;
+};
+
 const booleanKeys = new Set([
   "scanlines",
   "curvature",
@@ -141,6 +172,12 @@ const booleanKeys = new Set([
   "ra_hardcore",
   "diagnostic_dumps",
   "gamepad",
+  "cpu_overclock",
+  "disable_adpcm_wrap",
+  "memcard",
+  "memcard_write_protect",
+  "setting_mode",
+  "freeplay",
 ]);
 
 const labels: Record<string, string> = {
@@ -153,6 +190,13 @@ const labels: Record<string, string> = {
   diagnostic_dumps: "Dumps de diagnóstico",
   gamepad: "Gamepad SDL2",
   ra_hardcore: "Modo hardcore",
+  bios_region: "Región BIOS",
+  cpu_overclock: "CPU 68K a 24 MHz",
+  disable_adpcm_wrap: "Desactivar ADPCM wrap",
+  memcard: "Tarjeta de memoria",
+  memcard_write_protect: "Proteger tarjeta",
+  setting_mode: "Modo configuración MVS",
+  freeplay: "Freeplay MVS",
 };
 
 const mediaLabels: Partial<Record<MediaKey, string>> = {
@@ -164,6 +208,33 @@ const mediaLabels: Partial<Record<MediaKey, string>> = {
   box3d: "Caja 3D",
   cartridge: "Cartucho",
   manual: "Manual",
+};
+
+const biosGuide: Record<BiosKind, Omit<BiosOption, "label" | "kind">> = {
+  aes: {
+    title: "AES consola doméstica",
+    purpose: "Modo doméstico sin monedas, con las variantes y menús de consola que incluya el cartucho.",
+    raNote: "RetroAchievements identifica la ROM; AES no es un requisito general. La BIOS oficial sí es válida en Hardcore.",
+    hardcoreSafe: true,
+  },
+  mvs: {
+    title: "NeoGeo MVS arcade",
+    purpose: "Modo cabina: monedas, DIP, test y bookkeeping. Es el hardware original de los sets arcade.",
+    raNote: "RetroAchievements identifica la ROM; MVS no impide logros por sí mismo y su BIOS oficial es válida en Hardcore.",
+    hardcoreSafe: true,
+  },
+  unibios: {
+    title: "UniBIOS",
+    purpose: "BIOS comunitaria con menú de región, modo AES/MVS y extras de diagnóstico.",
+    raNote: "No usar para RetroAchievements Hardcore; NGNEON la bloquea en ese modo.",
+    hardcoreSafe: false,
+  },
+  unknown: {
+    title: "BIOS detectada",
+    purpose: "El configurador no reconoce el modo por el nombre. Verifica el archivo antes de usar RA.",
+    raNote: "Para Hardcore usa una BIOS oficial reconocida. El tipo AES/MVS no sustituye la identificación de la ROM.",
+    hardcoreSafe: true,
+  },
 };
 
 const favoritesStorageKey = "ngneon-launcher-favorites-v1";
@@ -184,8 +255,10 @@ const state: {
   response: ConfigResponse | null;
   library: LibraryResponse | null;
   ra: RaDashboard | null;
+  session: EmulatorSession | null;
   selectedRomPath: string;
   mediaMode: MediaKey;
+  launchMode: LaunchMode;
   search: string;
   filter: "all" | "favorites" | "recent";
   draft: Record<string, ConfigValue>;
@@ -207,8 +280,10 @@ const state: {
   response: null,
   library: null,
   ra: null,
+  session: null,
   selectedRomPath: "",
   mediaMode: "video",
+  launchMode: "normal",
   search: "",
   filter: "all",
   draft: {},
@@ -252,8 +327,11 @@ function getNumber(key: string, fallback: number): number {
 function initDraft(response: ConfigResponse): Record<string, ConfigValue> {
   const draft: Record<string, ConfigValue> = { ...response.config };
   for (const key of booleanKeys) draft[key] = parseBool(response.config[key]);
+  if (response.config.memcard === undefined) draft.memcard = true;
   draft.volume = Number(response.config.volume ?? 100);
   draft.window_scale = Number(response.config.window_scale ?? 3);
+  draft.bios_region =
+    response.config.bios_region || biosRegionFromLabel(response.config.bios || "") || "europe";
   return draft;
 }
 
@@ -283,7 +361,7 @@ async function loadConfig() {
     state.draft = initDraft(response);
     state.loaded = true;
     state.dirty = false;
-    await Promise.all([loadLibrary(false), loadRa(false)]);
+    await Promise.all([loadLibrary(false), loadRa(false), loadSession(false)]);
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);
   }
@@ -319,6 +397,20 @@ async function loadRa(withRender = true) {
   } finally {
     state.raLoading = false;
     if (withRender) render();
+  }
+}
+
+async function loadSession(withRender = true) {
+  try {
+    const previous = JSON.stringify(state.session);
+    const response = await api<SessionResponse>("/api/session");
+    state.session = response.session;
+    if (withRender || previous !== JSON.stringify(state.session)) render();
+  } catch (error) {
+    if (withRender) {
+      state.error = error instanceof Error ? error.message : String(error);
+      render();
+    }
   }
 }
 
@@ -404,24 +496,51 @@ async function disconnectRetroAchievements() {
 
 async function launchEmulator() {
   const rom = selectedRom();
-  if (!rom) return;
+  if (!rom || state.session?.running) return;
   state.launching = true;
   state.error = null;
   render();
   try {
-    await api("/api/launch", {
+    if (state.dirty) {
+      await api("/api/config", {
+        method: "POST",
+        body: JSON.stringify({ config: serializeDraft(), secrets: serializeSecretDraft() }),
+      });
+      state.secretDraft = {};
+      state.dirty = false;
+    }
+    const response = await api<SessionResponse>("/api/launch", {
       method: "POST",
-      body: JSON.stringify({ romPath: rom.path }),
+      body: JSON.stringify({ romPath: rom.path, mode: state.launchMode }),
     });
+    state.session = response.session;
     state.recents = [rom.path, ...state.recents.filter((item) => item !== rom.path)].slice(0, 20);
     persistLocalLists();
-    state.toast = `${rom.title} iniciado`;
+    state.toast = `${rom.title} iniciado · ${launchModeLabel(state.launchMode)}`;
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);
   } finally {
     state.launching = false;
     render();
   }
+}
+
+async function stopEmulator() {
+  if (!state.session?.running) return;
+  try {
+    await api<SessionResponse>("/api/stop", { method: "POST", body: "{}" });
+    state.toast = "Cerrando sesión";
+    window.setTimeout(() => void loadSession(), 300);
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+function launchModeLabel(mode: LaunchMode): string {
+  if (mode === "clean") return "Sesión limpia";
+  if (mode === "diagnostic") return "Diagnóstico";
+  return "Normal";
 }
 
 function escapeHtml(value: string): string {
@@ -431,6 +550,194 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+function biosKindFromLabel(label: string): BiosKind {
+  const lower = label.toLowerCase();
+  if (lower.includes("uni-bios") || lower.includes("unibios")) return "unibios";
+  if (lower.includes("aes.zip") || lower.includes("neo-epo.bin") || lower.includes("neo-po.bin")) return "aes";
+  if (
+    lower.includes("neogeo.zip") ||
+    lower.includes("sp-s2.sp1") ||
+    lower.includes("sp-s.sp1") ||
+    lower.includes("sp-u") ||
+    lower.includes("sp1-u") ||
+    lower.includes("sp-e") ||
+    lower.includes("sp-j") ||
+    lower.includes("sp1.jipan") ||
+    lower.includes("japan") ||
+    lower.includes("asia-s") ||
+    lower.includes("vs-bios.rom")
+  ) {
+    return "mvs";
+  }
+  return "unknown";
+}
+
+function biosRegionFromLabel(label: string): BiosRegion | "" {
+  const lower = label.toLowerCase();
+  if (lower.includes("uni-bios") || lower.includes("unibios")) return "";
+  if (
+    lower.includes("neo-po.bin") ||
+    lower.includes("japan") ||
+    lower.includes("sp-j") ||
+    lower.includes("sp1-j") ||
+    lower.includes("sp1.jipan")
+  ) {
+    return "japan";
+  }
+  if (lower.includes("sp-45.sp1") || lower.includes("asia-s")) return "asia";
+  if (lower.includes("neo-epo.bin") || lower.includes("sp-u") || lower.includes("sp1-u")) return "usa";
+  if (lower.includes("sp-s2.sp1") || lower.includes("sp-s.sp1") || lower.includes("sp-s3.sp1") || lower.includes("sp-e")) {
+    return "europe";
+  }
+  return "";
+}
+
+function biosLabelSupportsRegion(label: string, region: BiosRegion): boolean {
+  if (label.toLowerCase().includes("neo-epo.bin")) return region === "usa" || region === "europe";
+  return biosRegionFromLabel(label) === region;
+}
+
+function normalizeBiosRegion(value: string): BiosRegion {
+  const lower = value.toLowerCase();
+  if (lower === "us" || lower === "usa" || lower === "u") return "usa";
+  if (lower === "jp" || lower === "japan" || lower === "j") return "japan";
+  if (lower === "as" || lower === "asia" || lower === "a") return "asia";
+  if (lower === "eu" || lower === "eur" || lower === "europe" || lower === "e") return "europe";
+  return "europe";
+}
+
+function biosProfileFromKind(kind: BiosKind): BiosProfile | "" {
+  if (kind === "mvs") return "neogeo";
+  if (kind === "aes" || kind === "unibios") return kind;
+  return "";
+}
+
+function biosProfileFromLabel(label: string): BiosProfile | "" {
+  return biosProfileFromKind(biosKindFromLabel(label));
+}
+
+function isBiosProfile(value: string): value is BiosProfile {
+  return value === "neogeo" || value === "aes" || value === "unibios";
+}
+
+function isBiosRegion(value: string): value is BiosRegion {
+  return value === "usa" || value === "japan" || value === "asia" || value === "europe";
+}
+
+function describeBios(label: string): BiosOption {
+  const kind = biosKindFromLabel(label);
+  return { label, kind, ...biosGuide[kind] };
+}
+
+function biosOptionsForSettings(current: string, discovered: BiosOption[] = []): BiosOption[] {
+  const byLabel = new Map<string, BiosOption>();
+  for (const option of discovered) byLabel.set(option.label, option);
+  if (current && !byLabel.has(current)) byLabel.set(current, describeBios(current));
+  return [...byLabel.values()];
+}
+
+const biosProfileOrder: BiosProfile[] = ["neogeo", "aes", "unibios"];
+const biosRegionOrder: BiosRegion[] = ["usa", "japan", "asia", "europe"];
+
+function biosKindForProfile(profile: BiosProfile): BiosKind {
+  return profile === "neogeo" ? "mvs" : profile;
+}
+
+function biosProfileLabel(profile: BiosProfile): string {
+  return profile === "neogeo" ? "NEOGEO" : profile === "aes" ? "AES" : "UNIBIOS";
+}
+
+function biosProfileTitle(profile: BiosProfile): string {
+  return biosGuide[biosKindForProfile(profile)].title;
+}
+
+function biosRegionLabel(region: BiosRegion): string {
+  const labelsByRegion: Record<BiosRegion, string> = {
+    usa: "USA",
+    japan: "Japón",
+    asia: "Asia",
+    europe: "Europa",
+  };
+  return labelsByRegion[region];
+}
+
+function biosProfilesForSettings(current: string, options: BiosOption[]): BiosProfile[] {
+  const present = new Set<BiosProfile>();
+  for (const option of options) {
+    const profile = biosProfileFromKind(option.kind);
+    if (profile) present.add(profile);
+  }
+  const currentProfile = biosProfileFromLabel(current);
+  if (currentProfile) present.add(currentProfile);
+  return biosProfileOrder.filter((profile) => present.has(profile));
+}
+
+function biosRegionsForProfile(profile: BiosProfile, options: BiosOption[]): Set<BiosRegion> {
+  const regions = new Set<BiosRegion>();
+  for (const option of options) {
+    if (biosProfileFromKind(option.kind) !== profile) continue;
+    for (const region of biosRegionOrder) {
+      if (biosLabelSupportsRegion(option.label, region)) regions.add(region);
+    }
+  }
+  return regions;
+}
+
+function resolveBiosOption(profile: BiosProfile, region: BiosRegion, options: BiosOption[]): BiosOption | undefined {
+  return (
+    options.find((option) => biosProfileFromKind(option.kind) === profile && biosLabelSupportsRegion(option.label, region)) ??
+    options.find((option) => biosProfileFromKind(option.kind) === profile)
+  );
+}
+
+function setBiosSelection(profile: BiosProfile, requestedRegion: BiosRegion): void {
+  const options = biosOptionsForSettings(configString("bios"), state.library?.biosOptions ?? []);
+  const availableRegions = biosRegionsForProfile(profile, options);
+  const region =
+    profile === "unibios"
+      ? requestedRegion
+      : availableRegions.has(requestedRegion)
+        ? requestedRegion
+        : [...availableRegions][0] ?? requestedRegion;
+  const option = resolveBiosOption(profile, region, options);
+  if (option) state.draft.bios = option.label;
+  state.draft.bios_region = region;
+  state.dirty = true;
+  render();
+}
+
+function renderBiosGuide(profile: BiosProfile, region: BiosRegion, selected: BiosOption | undefined): string {
+  const currentKind = biosKindForProfile(profile);
+  const current = selected ?? { label: "", kind: currentKind, ...biosGuide[currentKind] };
+  const guideCards = biosProfileOrder
+    .map((profileOption) => {
+      const kind = biosKindForProfile(profileOption);
+      const info = biosGuide[kind];
+      return `
+        <div class="bios-mode-card bios-${kind}">
+          <span>${biosProfileLabel(profileOption)}</span>
+          <strong>${escapeHtml(info.title)}</strong>
+          <p>${escapeHtml(info.purpose)}</p>
+        </div>
+      `;
+    })
+    .join("");
+  return `
+    <div class="bios-guide">
+      <div class="bios-selected-card bios-${current.kind}">
+        <span>${biosProfileLabel(profile)}</span>
+        <div>
+          <strong>${escapeHtml(current.title)}</strong>
+          <small>${profile === "unibios" ? `Hardware: ${configString("unibios_hardware", "mvs").toUpperCase()}` : `Región: ${biosRegionLabel(region)}`}</small>
+          <p>${escapeHtml(current.purpose)}</p>
+          <em class="${current.hardcoreSafe ? "is-safe" : "is-blocked"}">${escapeHtml(current.raNote)}</em>
+        </div>
+      </div>
+      <div class="bios-mode-grid">${guideCards}</div>
+    </div>
+  `;
 }
 
 function formatNumber(value: number): string {
@@ -476,13 +783,14 @@ function gameMeta(rom: RomItem): string[] {
     .slice(0, 4);
 }
 
-function navIcon(name: "library" | "achievement" | "settings" | "search" | "play" | "heart" | "refresh"): string {
+function navIcon(name: "library" | "achievement" | "settings" | "search" | "play" | "stop" | "heart" | "refresh"): string {
   const paths = {
     library: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h10M7 16h6"/>',
     achievement: '<path d="M8 3h8v4a4 4 0 0 1-8 0V3Z"/><path d="M8 5H4v1a4 4 0 0 0 4 4M16 5h4v1a4 4 0 0 1-4 4M12 11v5M8 21h8M9 16h6v5H9z"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3v-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6V3h4v.1A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.6 1h.1v4H21a1.7 1.7 0 0 0-1.6 1Z"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
     play: '<path d="m8 5 11 7-11 7V5Z"/>',
+    stop: '<rect x="6" y="6" width="12" height="12" rx="1"/>',
     heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8Z"/>',
     refresh: '<path d="M20 6v5h-5M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6 6.5L4 9m16 6-2 2.5A7 7 0 0 1 5.5 15"/>',
   };
@@ -491,6 +799,7 @@ function navIcon(name: "library" | "achievement" | "settings" | "search" | "play
 
 function renderHeader(): string {
   const ra = state.ra?.profile;
+  const sessionRom = state.library?.roms.find((rom) => rom.path === state.session?.romPath);
   return `
     <header class="app-header">
       <button class="brand" data-action="view" data-view="library" aria-label="Ir a biblioteca">
@@ -508,10 +817,17 @@ function renderHeader(): string {
           ${navIcon("settings")}<span>Ajustes</span>
         </button>
       </nav>
-      <button class="profile-chip" data-action="view" data-view="achievements">
-        ${ra?.avatar ? `<img src="${escapeHtml(ra.avatar)}" alt="" />` : `<span>${escapeHtml((configString("ra_username", "RA")[0] || "R").toUpperCase())}</span>`}
-        <span><strong>${escapeHtml(ra?.username || configString("ra_username", "Sin conectar"))}</strong><small>${ra ? `${formatNumber(ra.points)} pts` : "RetroAchievements"}</small></span>
-      </button>
+      <div class="header-actions">
+        ${state.session?.running ? `
+          <button class="session-chip" data-action="stop-session" title="Cerrar emulador">
+            <i></i><span><strong>${escapeHtml(sessionRom?.title || "Emulador activo")}</strong><small>${escapeHtml(launchModeLabel(state.session.mode))}</small></span>${navIcon("stop")}
+          </button>
+        ` : ""}
+        <button class="profile-chip" data-action="view" data-view="achievements">
+          ${ra?.avatar ? `<img src="${escapeHtml(ra.avatar)}" alt="" />` : `<span>${escapeHtml((configString("ra_username", "RA")[0] || "R").toUpperCase())}</span>`}
+          <span><strong>${escapeHtml(ra?.username || configString("ra_username", "Sin conectar"))}</strong><small>${ra ? `${formatNumber(ra.points)} pts` : "RetroAchievements"}</small></span>
+        </button>
+      </div>
     </header>
   `;
 }
@@ -603,7 +919,8 @@ function renderLibrary(): string {
   if (!rom) {
     return `<section class="empty-screen"><h1>No hay juegos</h1><p>Revisa la ruta de ROMs en Ajustes y vuelve a escanear.</p></section>`;
   }
-  const meta = gameMeta(rom);
+  const setName = rom.title.toLocaleLowerCase("es") === rom.base.toLocaleLowerCase("es") ? "" : rom.base;
+  const meta = [setName, ...gameMeta(rom)].filter(Boolean);
   const favorite = state.favorites.has(rom.path);
   return `
     <main class="launcher">
@@ -613,9 +930,17 @@ function renderLibrary(): string {
           ${rom.media.wheel ? `<img class="game-logo" src="${escapeHtml(rom.media.wheel)}" alt="${escapeHtml(rom.title)}" />` : `<h1>${escapeHtml(rom.title)}</h1>`}
           <div class="game-meta">${meta.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}<span>${rom.format.toUpperCase()}</span></div>
           <p class="game-description">${escapeHtml(rom.description || "Sin descripción disponible en gamelist.xml.")}</p>
-          <div class="hero-actions">
-            <button class="play-button" data-action="launch" ${state.launching ? "disabled" : ""}>${navIcon("play")}<span>${state.launching ? "ABRIENDO…" : "JUGAR"}</span></button>
-            <button class="round-button ${favorite ? "is-favorite" : ""}" data-action="favorite" title="Favorito">${navIcon("heart")}</button>
+          <div class="launch-panel">
+            <div class="launch-mode" role="group" aria-label="Modo de sesión">
+              ${(["normal", "clean", "diagnostic"] as LaunchMode[])
+                .map((mode) => `<button class="${state.launchMode === mode ? "is-active" : ""}" data-action="launch-mode" data-mode="${mode}">${escapeHtml(launchModeLabel(mode))}</button>`)
+                .join("")}
+            </div>
+            <div class="hero-actions">
+              <button class="play-button" data-action="launch" ${state.launching || state.session?.running ? "disabled" : ""}>${navIcon("play")}<span>${state.session?.running ? "EN EJECUCIÓN" : state.launching ? "ABRIENDO…" : "JUGAR"}</span></button>
+              ${state.session?.running ? `<button class="round-button stop-button" data-action="stop-session" title="Cerrar emulador">${navIcon("stop")}</button>` : ""}
+              <button class="round-button ${favorite ? "is-favorite" : ""}" data-action="favorite" title="Favorito">${navIcon("heart")}</button>
+            </div>
           </div>
           <div class="media-tabs">${renderMediaTabs(rom)}</div>
         </div>
@@ -641,7 +966,6 @@ function renderLibrary(): string {
         <div class="game-rail" data-rail>
           ${games.length ? games.map(renderGameCard).join("") : `<div class="no-results">No hay juegos para este filtro.</div>`}
         </div>
-        <div class="keyboard-hint"><span>← →</span> navegar <span>Enter</span> jugar <span>F</span> favorito</div>
       </section>
     </main>
   `;
@@ -650,6 +974,7 @@ function renderLibrary(): string {
 function renderGameCard(rom: RomItem): string {
   const selected = rom.path === state.selectedRomPath;
   const cover = artwork(rom, "box3d", "box2d", "thumbnail", "image", "mix");
+  const setName = rom.title.toLocaleLowerCase("es") === rom.base.toLocaleLowerCase("es") ? "" : rom.base;
   return `
     <button class="game-card ${selected ? "is-selected" : ""}" data-action="select-rom" data-path="${encodeURIComponent(rom.path)}" aria-label="${escapeHtml(rom.title)}">
       <span class="cover-frame">
@@ -657,7 +982,7 @@ function renderGameCard(rom: RomItem): string {
         ${state.favorites.has(rom.path) ? `<span class="favorite-mark">♥</span>` : ""}
       </span>
       <strong>${escapeHtml(rom.title)}</strong>
-      <small>${escapeHtml(rom.developer || rom.publisher || "Neo Geo")} · ${rom.format.toUpperCase()}</small>
+      <small>${setName ? `${escapeHtml(setName)} · ` : ""}${escapeHtml(rom.developer || rom.publisher || "Neo Geo")} · ${rom.format.toUpperCase()}</small>
     </button>
   `;
 }
@@ -795,7 +1120,25 @@ function renderSettings(): string {
   const response = state.response;
   if (!response) return "";
   const library = state.library;
-  const biosOptions = (library?.biosArchives ?? []).map((name) => `${name}:uni-bios_4_0.rom`);
+  const currentBios = configString("bios");
+  const biosOptions = biosOptionsForSettings(currentBios, library?.biosOptions ?? []);
+  const biosProfiles = biosProfilesForSettings(currentBios, biosOptions);
+  const currentProfile = biosProfileFromLabel(currentBios);
+  const selectedProfile =
+    currentProfile && biosProfiles.includes(currentProfile) ? currentProfile : biosProfiles[0] ?? "neogeo";
+  const profileRegions = biosRegionsForProfile(selectedProfile, biosOptions);
+  const configuredRegion = normalizeBiosRegion(configString("bios_region", "europe"));
+  const currentRegion = biosRegionFromLabel(currentBios);
+  const selectedRegion =
+    selectedProfile === "unibios"
+      ? configuredRegion
+      : profileRegions.has(configuredRegion)
+        ? configuredRegion
+        : currentRegion && profileRegions.has(currentRegion)
+          ? currentRegion
+          : [...profileRegions][0] ?? configuredRegion;
+  const selectedBios = resolveBiosOption(selectedProfile, selectedRegion, biosOptions);
+  const regionDisabled = selectedProfile === "unibios" || !biosOptions.length || !profileRegions.size;
   return `
     <main class="content-page settings-page">
       <div class="settings-heading">
@@ -810,20 +1153,50 @@ function renderSettings(): string {
           <div class="settings-panel-title"><span>01</span><div><h2>Vídeo y audio</h2><p>Presentación, CRT y salida de sonido.</p></div></div>
           <div class="toggle-grid">${toggle("scanlines")}${toggle("curvature")}${toggle("bloom")}${toggle("fullscreen")}${toggle("muted")}</div>
           ${selectField("aspect_ratio", "Relación de aspecto", [
-            { value: "4:3", text: "4:3 original" },
+            { value: "4:3", text: "4:3 corregido" },
+            { value: "1:1", text: "1:1 PAR (píxel cuadrado)" },
+            { value: "45:44", text: "45:44 PAR (hardware)" },
             { value: "16:9", text: "16:9 panorámico" },
           ], "4:3")}
+          ${selectField("palette_mode", "Conversión de paleta", [
+            { value: "resnet", text: "Red de resistencias (precisa)" },
+            { value: "raw", text: "Raw 6-bit" },
+          ], "resnet")}
           ${range("volume", "Volumen", 0, 100, 5)}
           ${range("window_scale", "Escala de ventana", 2, 4, 1)}
         </section>
 
         <section class="settings-panel">
           <div class="settings-panel-title"><span>02</span><div><h2>Sistema</h2><p>BIOS, idioma, guardado y controles.</p></div></div>
-          <label class="setting-field"><span>BIOS activa</span><select data-action="config-input" data-key="bios">
-            ${Array.from(new Set([configString("bios"), ...biosOptions].filter(Boolean))).map((value) => `<option ${value === configString("bios") ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}
-          </select></label>
+          <div class="bios-pair-grid">
+            <label class="setting-field bios-select-field"><span>BIOS activa</span><select data-action="bios-profile" ${biosProfiles.length ? "" : "disabled"}>
+              ${biosProfiles.map((profile) => `<option value="${profile}" ${profile === selectedProfile ? "selected" : ""}>${escapeHtml(`${biosProfileLabel(profile)} · ${biosProfileTitle(profile)}`)}</option>`).join("")}
+            </select><small>${biosProfiles.length ? "AES es consola; NeoGeo/MVS es arcade; UniBIOS se bloquea en Hardcore." : "No se detectaron BIOS en bios/ ni en roms/."}</small></label>
+            ${selectedProfile === "unibios"
+              ? `<label class="setting-field bios-select-field"><span>Hardware UniBIOS</span><select data-action="config-input" data-key="unibios_hardware">
+                  <option value="mvs" ${configString("unibios_hardware", "mvs") === "mvs" ? "selected" : ""}>MVS arcade</option>
+                  <option value="aes" ${configString("unibios_hardware", "mvs") === "aes" ? "selected" : ""}>AES consola</option>
+                </select><small>La región se cambia desde el menú UniBIOS; este selector fija el hardware anunciado al juego.</small></label>`
+              : `<label class="setting-field bios-select-field"><span>Región</span><select data-action="bios-region" data-profile="${selectedProfile}" ${regionDisabled ? "disabled" : ""}>
+                  ${biosRegionOrder.map((region) => {
+                    const available = profileRegions.has(region);
+                    const disabled = !available && profileRegions.size ? "disabled" : "";
+                    return `<option value="${region}" ${region === selectedRegion ? "selected" : ""} ${disabled}>${escapeHtml(biosRegionLabel(region))}</option>`;
+                  }).join("")}
+                </select><small>${selectedBios ? "Se usará la BIOS regional compatible detectada." : "No hay archivo compatible para este perfil."}</small></label>`}
+          </div>
+          ${renderBiosGuide(selectedProfile, selectedRegion, selectedBios)}
           ${field("lang", "Idioma", "es / en")}
           <div class="toggle-grid">${toggle("auto_save")}${toggle("diagnostic_dumps")}${toggle("gamepad")}</div>
+          <div class="field-grid">
+            ${selectField("sprite_limit", "Sprites por línea", [
+              { value: "96", text: "96 (hardware)" },
+              { value: "192", text: "192 (hack)" },
+              { value: "288", text: "288 (hack)" },
+              { value: "381", text: "381 (hack)" },
+            ], "96")}
+          </div>
+          <div class="toggle-grid">${toggle("setting_mode")}${toggle("freeplay")}${toggle("memcard")}${toggle("memcard_write_protect")}${toggle("cpu_overclock")}${toggle("disable_adpcm_wrap")}</div>
         </section>
 
         <section class="settings-panel settings-wide">
@@ -932,6 +1305,14 @@ app.addEventListener("click", (event) => {
     void loadRa();
   } else if (action === "launch") {
     void launchEmulator();
+  } else if (action === "launch-mode") {
+    const mode = actionEl.dataset.mode;
+    if (mode === "normal" || mode === "clean" || mode === "diagnostic") {
+      state.launchMode = mode;
+      render();
+    }
+  } else if (action === "stop-session") {
+    void stopEmulator();
   } else if (action === "ra-connect") {
     void connectRetroAchievements();
   } else if (action === "ra-disconnect") {
@@ -973,10 +1354,20 @@ app.addEventListener("input", (event) => {
     state.draft[key] = Number(target.value);
     state.dirty = true;
     render();
+  } else if (action === "bios-profile" && isBiosProfile(target.value)) {
+    setBiosSelection(target.value, normalizeBiosRegion(configString("bios_region", "europe")));
+  } else if (action === "bios-region" && isBiosRegion(target.value)) {
+    const datasetProfile = target.dataset.profile ?? "";
+    const profile = isBiosProfile(datasetProfile) ? datasetProfile : biosProfileFromLabel(configString("bios"));
+    setBiosSelection(profile || "neogeo", target.value);
   } else if (action === "config-input" && key) {
     state.draft[key] = target.value;
     state.dirty = true;
-    document.querySelector<HTMLButtonElement>('[data-action="save"]')?.replaceChildren("Guardar cambios");
+    if (key === "bios") {
+      render();
+    } else {
+      document.querySelector<HTMLButtonElement>('[data-action="save"]')?.replaceChildren("Guardar cambios");
+    }
   } else if (action === "secret-input" && key) {
     state.secretDraft[key] = target.value;
     state.dirty = true;
@@ -1009,3 +1400,6 @@ document.addEventListener("keydown", (event) => {
 });
 
 void loadConfig();
+window.setInterval(() => {
+  if (state.loaded) void loadSession(false);
+}, 1500);

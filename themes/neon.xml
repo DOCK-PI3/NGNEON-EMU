@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<theme version="2" id="neon" name="NGNEON Neon" author="NGNEON-EMU">
+  <canvas width="960" height="540"/>
+  <palette
+    background="#05070B"
+    header="#080D15"
+    panel="#0B111B"
+    panel_alt="#121B29"
+    primary="#EA3357"
+    primary_dark="#65182A"
+    secondary="#4C6FFF"
+    accent="#22D3EE"
+    warning="#F2C94C"
+    success="#4DD68A"
+    text="#F5F7FB"
+    text_soft="#AAB4C3"
+    text_dim="#657083"
+    border="#25344A"
+    error="#FF6B7D"/>
+
+  <!-- Sustituye únicamente en este XML el logo integrado de la cabinet por
+       el marquee del juego. Logo y wheel se conservan como fallback. -->
+  <media id="logo" source="game.marquee,game.logo,game.wheel"
+         x="252" y="62" width="312" height="70" z="135"
+         opacity="255" fit="cover" visible="true"/>
+</theme>

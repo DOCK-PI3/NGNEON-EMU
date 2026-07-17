@@ -5,11 +5,28 @@ set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 set "OUT=%ROOT%\NGNEON-EMU"
 set "EXE=%ROOT%\target\release\ngneon-emu.exe"
+set "FRONTEND_EXE=%ROOT%\target\release\ngneon-frontend.exe"
 set "SDL_RELEASE=%ROOT%\target\release\SDL2.dll"
 set "SDL_ROOT=%ROOT%\SDL2.dll"
-set "MEDIA_ROOT=%ROOT%\media"
-set "MEDIA_RELEASE=%ROOT%\target\release\media"
-set "CONFIGURATOR=%ROOT%\configurator"
+set "VCRT_RELEASE=%ROOT%\target\release\VCRUNTIME140.dll"
+set "VCRT_ROOT=%ROOT%\VCRUNTIME140.dll"
+set "VCRT_SYSTEM=%SystemRoot%\System32\VCRUNTIME140.dll"
+set "CONFIG_EXAMPLE=%ROOT%\config\ngneon.example.conf"
+
+if /i "%NGNEON_ALLOW_PACKAGE_CLEAN%"=="1" goto package_guard_done
+if not exist "%OUT%" goto package_guard_done
+
+echo [INFO] Checking existing package for user data...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $out='%OUT%'; $template='%CONFIG_EXAMPLE%'; $hasUserData=$false; $protected=@('roms','media','saves','screenshots','logs'); foreach($name in $protected) { $dir=Join-Path $out $name; if(Test-Path -LiteralPath $dir) { foreach($file in Get-ChildItem -LiteralPath $dir -File -Recurse) { if($file.FullName -ne (Join-Path $out 'roms\readme.txt')) { $hasUserData=$true } } } }; function Read-Conf([string]$path) { $map=@{}; if(Test-Path -LiteralPath $path) { foreach($line in Get-Content -LiteralPath $path) { if($line -match '^\s*([^#=][^=]*)=(.*)$') { $map[$matches[1].Trim()]=$matches[2].Trim() } } }; return $map }; $expected=Read-Conf $template; $expected['rom_path']='roms'; $expected['bios_dir']='bios'; $expected['media_dir']='media'; $expected['gamepad']='off'; $expected['cpu_overclock']='off'; $expected['sprite_limit']='96'; $expected['disable_adpcm_wrap']='off'; $expected['memcard']='on'; $expected['memcard_write_protect']='off'; $expected['ra_token']=''; $expected['ra_password']=''; $expected['ra_username']=''; $current=Read-Conf (Join-Path $out 'config\ngneon.conf'); foreach($key in $expected.Keys) { if(-not $current.ContainsKey($key) -or $current[$key] -ne $expected[$key]) { $hasUserData=$true } }; if($hasUserData) { exit 3 } }"
+if errorlevel 3 (
+    echo [ERROR] Existing NGNEON-EMU contains ROMs, media, saves, logs, screenshots, or modified config.
+    echo [ERROR] Packaging stopped so those files are not deleted.
+    echo [INFO] To intentionally create a clean package, run first:
+    echo        set NGNEON_ALLOW_PACKAGE_CLEAN=1
+    exit /b 3
+)
+
+:package_guard_done
 
 echo.
 echo === NGNEON-EMU release packager ===
@@ -27,27 +44,29 @@ if errorlevel 1 (
 )
 popd >nul
 
-if exist "%CONFIGURATOR%\package.json" (
-    echo [INFO] Building configurator with pnpm...
-    call corepack pnpm --dir "%CONFIGURATOR%" install
-    if errorlevel 1 (
-        echo [ERROR] Configurator pnpm install failed.
-        exit /b 1
-    )
-    call corepack pnpm --dir "%CONFIGURATOR%" build
-    if errorlevel 1 (
-        echo [ERROR] Configurator build failed.
-        exit /b 1
-    )
-)
-
 if not exist "%EXE%" (
     echo [ERROR] Missing executable: "%EXE%"
     exit /b 1
 )
 
+if not exist "%FRONTEND_EXE%" (
+    echo [ERROR] Missing native frontend: "%FRONTEND_EXE%"
+    exit /b 1
+)
+
+if not exist "%CONFIG_EXAMPLE%" (
+    echo [ERROR] Missing config template: "%CONFIG_EXAMPLE%"
+    exit /b 1
+)
+
 if not exist "%OUT%" mkdir "%OUT%"
-if not exist "%OUT%\screenshots" mkdir "%OUT%\screenshots"
+if exist "%OUT%\screenshots" rmdir /s /q "%OUT%\screenshots"
+mkdir "%OUT%\screenshots"
+
+echo [INFO] Cleaning stale generated package folders...
+if exist "%OUT%\target" rmdir /s /q "%OUT%\target"
+if exist "%OUT%\runtime" rmdir /s /q "%OUT%\runtime"
+if exist "%OUT%\configurator" rmdir /s /q "%OUT%\configurator"
 
 echo [INFO] Cleaning build-only files from package folder...
 del /q "%OUT%\*.d" "%OUT%\*.rlib" "%OUT%\*.lib" "%OUT%\*.pdb" 2>nul
@@ -55,6 +74,10 @@ del /q "%OUT%\compare_rom_banks.exe" "%OUT%\diagnose_rom.exe" "%OUT%\make_test_n
 
 echo [INFO] Copying executable...
 copy /y "%EXE%" "%OUT%\ngneon-emu.exe" >nul
+if errorlevel 1 exit /b 1
+
+echo [INFO] Copying native frontend...
+copy /y "%FRONTEND_EXE%" "%OUT%\ngneon-frontend.exe" >nul
 if errorlevel 1 exit /b 1
 
 echo [INFO] Copying SDL2.dll...
@@ -68,27 +91,29 @@ if exist "%SDL_RELEASE%" (
 )
 if errorlevel 1 exit /b 1
 
+echo [INFO] Copying VCRUNTIME140.dll...
+if exist "%VCRT_RELEASE%" (
+    copy /y "%VCRT_RELEASE%" "%OUT%\VCRUNTIME140.dll" >nul
+) else if exist "%VCRT_ROOT%" (
+    copy /y "%VCRT_ROOT%" "%OUT%\VCRUNTIME140.dll" >nul
+) else if exist "%VCRT_SYSTEM%" (
+    copy /y "%VCRT_SYSTEM%" "%OUT%\VCRUNTIME140.dll" >nul
+) else (
+    echo [ERROR] VCRUNTIME140.dll not found in target\release, project root, or System32.
+    exit /b 1
+)
+if errorlevel 1 exit /b 1
+
 if exist "%ROOT%\configurar-ngneon.bat" (
-    echo [INFO] Copying configurator launcher...
+    echo [INFO] Copying compatibility launcher...
     copy /y "%ROOT%\configurar-ngneon.bat" "%OUT%\configurar-ngneon.bat" >nul
     if errorlevel 1 exit /b 1
 )
 
-if exist "%CONFIGURATOR%\" (
-    echo [INFO] Copying configurator\ ...
-    if exist "%OUT%\configurator" rmdir /s /q "%OUT%\configurator"
-    mkdir "%OUT%\configurator"
-    if exist "%CONFIGURATOR%\dist" robocopy "%CONFIGURATOR%\dist" "%OUT%\configurator\dist" /E /R:2 /W:1 /NFL /NDL /NP >nul
-    if errorlevel 8 exit /b 1
-    copy /y "%CONFIGURATOR%\server.mjs" "%OUT%\configurator\server.mjs" >nul
+if exist "%ROOT%\iniciar-ngneon.bat" (
+    echo [INFO] Copying native frontend launcher...
+    copy /y "%ROOT%\iniciar-ngneon.bat" "%OUT%\iniciar-ngneon.bat" >nul
     if errorlevel 1 exit /b 1
-    copy /y "%CONFIGURATOR%\package.json" "%OUT%\configurator\package.json" >nul
-    if errorlevel 1 exit /b 1
-    copy /y "%CONFIGURATOR%\pnpm-lock.yaml" "%OUT%\configurator\pnpm-lock.yaml" >nul
-    if errorlevel 1 exit /b 1
-    copy /y "%CONFIGURATOR%\pnpm-workspace.yaml" "%OUT%\configurator\pnpm-workspace.yaml" >nul
-    if errorlevel 1 exit /b 1
-    if exist "%CONFIGURATOR%\README.md" copy /y "%CONFIGURATOR%\README.md" "%OUT%\configurator\README.md" >nul
 )
 
 if exist "%ROOT%\bios\" (
@@ -102,25 +127,28 @@ if exist "%ROOT%\bios\" (
 
 if exist "%ROOT%\config\" (
     echo [INFO] Copying config\ ...
-    robocopy "%ROOT%\config" "%OUT%\config" /E /R:2 /W:1 /NFL /NDL /NP >nul
+    if exist "%OUT%\config" rmdir /s /q "%OUT%\config"
+    mkdir "%OUT%\config"
+    robocopy "%ROOT%\config" "%OUT%\config" /E /XF ngneon*.conf /R:2 /W:1 /NFL /NDL /NP >nul
     if errorlevel 8 exit /b 1
 ) else (
     echo [INFO] Source folder not found, creating empty config\
     if not exist "%OUT%\config" mkdir "%OUT%\config"
 )
 
-if exist "%MEDIA_ROOT%\" (
-    echo [INFO] Copying media\ ...
-    robocopy "%MEDIA_ROOT%" "%OUT%\media" /E /R:2 /W:1 /NFL /NDL /NP >nul
-    if errorlevel 8 exit /b 1
-) else if exist "%MEDIA_RELEASE%\" (
-    echo [INFO] Copying target\release\media\ ...
-    robocopy "%MEDIA_RELEASE%" "%OUT%\media" /E /R:2 /W:1 /NFL /NDL /NP >nul
+if exist "%ROOT%\themes\" (
+    echo [INFO] Copying themes\ without overwriting user themes...
+    if not exist "%OUT%\themes" mkdir "%OUT%\themes"
+    robocopy "%ROOT%\themes" "%OUT%\themes" /E /XC /XN /XO /R:2 /W:1 /NFL /NDL /NP >nul
     if errorlevel 8 exit /b 1
 ) else (
-    echo [INFO] Source folder not found, creating empty media\
-    if not exist "%OUT%\media" mkdir "%OUT%\media"
+    echo [INFO] Source folder not found, creating empty themes\
+    if not exist "%OUT%\themes" mkdir "%OUT%\themes"
 )
+
+echo [INFO] Creating empty media\ folder...
+if exist "%OUT%\media" rmdir /s /q "%OUT%\media"
+mkdir "%OUT%\media"
 
 echo [INFO] Creating empty roms\ folder with ROM format readme...
 if exist "%OUT%\roms" rmdir /s /q "%OUT%\roms"
@@ -137,6 +165,7 @@ mkdir "%OUT%\roms"
     echo.
     echo BIOS files go in the bios folder, normally as neogeo.zip or aes.zip.
     echo Cartridge/browser artwork goes in the media folder as PNG files with the same base name as the ROM.
+    echo Start the native library with iniciar-ngneon.bat.
     echo.
     echo Examples:
     echo   roms\aof.neo
@@ -145,21 +174,25 @@ mkdir "%OUT%\roms"
 ) > "%OUT%\roms\readme.txt"
 if errorlevel 1 exit /b 1
 
-if exist "%ROOT%\saves\" (
-    echo [INFO] Copying saves\ ...
-    robocopy "%ROOT%\saves" "%OUT%\saves" /E /R:2 /W:1 /NFL /NDL /NP >nul
-    if errorlevel 8 exit /b 1
-) else (
-    echo [INFO] Source folder not found, creating empty saves\
-    if not exist "%OUT%\saves" mkdir "%OUT%\saves"
-)
+echo [INFO] Creating empty saves\ folder...
+if exist "%OUT%\saves" rmdir /s /q "%OUT%\saves"
+mkdir "%OUT%\saves"
+
+echo [INFO] Creating empty logs\ folder...
+if exist "%OUT%\logs" rmdir /s /q "%OUT%\logs"
+mkdir "%OUT%\logs"
 
 if exist "%ROOT%\README.md" copy /y "%ROOT%\README.md" "%OUT%\README.md" >nul
 if exist "%ROOT%\CHANGELOG.md" copy /y "%ROOT%\CHANGELOG.md" "%OUT%\CHANGELOG.md" >nul
 
-echo [INFO] Making copied config portable...
+echo [INFO] Creating portable config from ngneon.example.conf...
 set "NGNEON_PACKAGE_CONFIG=%OUT%\config\ngneon.conf"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $p = $env:NGNEON_PACKAGE_CONFIG; if (Test-Path -LiteralPath $p) { $lines = @(Get-Content -LiteralPath $p); $map = [ordered]@{ rom_path=''; bios_dir='bios'; media_dir='media'; gamepad='off'; cpu_overclock='off'; sprite_limit='96'; disable_adpcm_wrap='off'; memcard='on'; memcard_write_protect='off'; ra_token=''; ra_password=''; ra_username='' }; foreach ($k in $map.Keys) { $pattern = '^' + [regex]::Escape($k) + '='; $value = $k + '=' + $map[$k]; $found = $false; for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pattern) { $lines[$i] = $value; $found = $true } }; if (-not $found) { $lines += $value } }; Set-Content -LiteralPath $p -Value $lines -Encoding ASCII } }"
+copy /y "%CONFIG_EXAMPLE%" "%NGNEON_PACKAGE_CONFIG%" >nul
+if errorlevel 1 (
+    echo [ERROR] Could not copy config template.
+    exit /b 1
+)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $p = $env:NGNEON_PACKAGE_CONFIG; $lines = @(Get-Content -LiteralPath $p); $map = [ordered]@{ rom_path='roms'; bios_dir='bios'; media_dir='media'; gamepad='off'; cpu_overclock='off'; sprite_limit='96'; disable_adpcm_wrap='off'; memcard='on'; memcard_write_protect='off'; ra_token=''; ra_password=''; ra_username='' }; foreach ($k in $map.Keys) { $pattern = '^' + [regex]::Escape($k) + '='; $value = $k + '=' + $map[$k]; $found = $false; for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pattern) { $lines[$i] = $value; $found = $true } }; if (-not $found) { $lines += $value } }; Set-Content -LiteralPath $p -Value $lines -Encoding ASCII }"
 if errorlevel 1 (
     echo [ERROR] Could not update copied config.
     exit /b 1
@@ -169,12 +202,17 @@ echo.
 echo [OK] Package ready: "%OUT%"
 echo.
 echo Runtime files copied:
+echo   ngneon-frontend.exe
 echo   ngneon-emu.exe
 echo   SDL2.dll
+echo   VCRUNTIME140.dll
+echo   iniciar-ngneon.bat
 echo   configurar-ngneon.bat
-echo   bios\ config\ media\ roms\ saves\ screenshots\ configurator\
+echo   bios\ config\ themes\ media\ roms\ saves\ screenshots\ logs\
 echo.
 echo Note: roms\ is intentionally packaged empty except for roms\readme.txt.
+echo Note: media\ and saves\ are intentionally packaged empty.
+echo Note: existing themes\ files are preserved; only missing bundled themes are copied.
 echo.
 echo Build-only files intentionally excluded: *.rlib, *.lib, *.d, *.pdb and helper diagnostic executables.
 exit /b 0

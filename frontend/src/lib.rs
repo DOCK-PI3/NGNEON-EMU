@@ -1,2 +1,9 @@
 pub mod audio;
+mod frontend_catalog;
+mod frontend_font;
+mod frontend_music;
+mod frontend_theme;
+mod frontend_video;
 pub mod gamepad;
+pub mod native_frontend;
+pub mod screenshot;

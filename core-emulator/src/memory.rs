@@ -11,8 +11,9 @@ pub const BIOS_ROM_SIZE: usize = 0x80000;
 pub const BIOS_ROM_START: u32 = 0xC00000;
 pub const BACKUP_RAM_SIZE: usize = 0x10000;
 pub const BACKUP_RAM_START: u32 = 0xD00000;
-pub const MEMORY_CARD_SIZE: usize = 0x2000;
+pub const MEMORY_CARD_SIZE: usize = 0x0800;
 pub const MEMORY_CARD_START: u32 = 0x800000;
+const CART_BIOS_DECODE_SIZE: usize = 0x20000;
 pub const FIXED_PROM_WINDOW_SIZE: usize = 0x100000;
 pub const BANKED_PROM_WINDOW_SIZE: usize = 0x100000;
 pub const Z80_RAM_SIZE: usize = 0x0800;
@@ -32,6 +33,43 @@ pub const Z80_CLOCK_HZ: i32 = 4_000_000;
 /// 3_244_030 master cycles / DIV_M68K(2), roughly 8 frames.
 pub const WATCHDOG_M68K_CYCLES: u32 = 1_622_015;
 const MEMORY_CARD_SAVE_PATH: &str = "saves/memory-card.mem";
+
+// Header and allocation tables from Geolith's pre-formatted 2 KiB card.
+// The remaining entries are consecutive big-endian block pointers.
+const FORMATTED_MEMORY_CARD_HEADER: [u8; 0x140] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x0A, 0x0A, 0xFF,
+    0x52, 0x6F, 0x73, 0x79, 0x20, 0x4C, 0x65, 0x65, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x4E, 0x40, 0x45, 0x44, 0x4F, 0x48, 0x2D, 0x4C, 0x47, 0x50, 0x45, 0x54, 0x4F, 0x58, 0x80, 0x5C,
+    0x02, 0x60, 0x00, 0x64, 0x00, 0x68, 0x00, 0x6C, 0x00, 0x70, 0x00, 0x74, 0x00, 0x78, 0x00, 0x7C,
+    0xFF, 0x80, 0x00, 0x84, 0xFF, 0x88, 0x00, 0x8C, 0xFF, 0x90, 0x00, 0x94, 0xFF, 0x98, 0x00, 0x9C,
+    0xFF, 0xA0, 0x00, 0xA4, 0xFF, 0xA8, 0x00, 0xAC, 0xFF, 0xB0, 0x00, 0xB4, 0xFF, 0xB8, 0x00, 0xBC,
+    0xFF, 0xC0, 0x00, 0xC4, 0xFF, 0xC8, 0x00, 0xCC, 0xFF, 0xD0, 0x00, 0xD4, 0xFF, 0xD8, 0x00, 0xDC,
+    0xFF, 0xE0, 0x00, 0xE4, 0xFF, 0xE8, 0x00, 0xEC, 0xFF, 0xF0, 0x00, 0xF4, 0xFF, 0xF8, 0x00, 0xFC,
+    0xFF, 0x00, 0x01, 0x04, 0xFF, 0x08, 0x01, 0x0C, 0xFF, 0x10, 0x01, 0x14, 0xFF, 0x18, 0x01, 0x1C,
+    0xFF, 0x20, 0x01, 0x24, 0xFF, 0x28, 0x01, 0x2C, 0xFF, 0x30, 0x01, 0x34, 0xFF, 0x38, 0x01, 0x3C,
+    0xFF, 0x40, 0x01, 0x44, 0xFF, 0x48, 0x01, 0x4C, 0xFF, 0x50, 0x01, 0x54, 0xFF, 0x58, 0x01, 0x5C,
+    0xFF, 0x60, 0x01, 0x64, 0xFF, 0x68, 0x01, 0x6C, 0xFF, 0x70, 0x01, 0x74, 0xFF, 0x78, 0x01, 0x7C,
+    0x02, 0x02, 0x02, 0x02, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x02, 0x02, 0x02, 0x02, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+pub(crate) const RTC_SAVE_STATE_SIZE: usize = 34;
+
+fn formatted_memory_card() -> Vec<u8> {
+    let mut card = Vec::with_capacity(MEMORY_CARD_SIZE);
+    card.extend_from_slice(&FORMATTED_MEMORY_CARD_HEADER);
+    for address in (0x0280u16..=0x0FFCu16).step_by(4) {
+        card.extend_from_slice(&address.to_be_bytes());
+    }
+    debug_assert_eq!(card.len(), MEMORY_CARD_SIZE);
+    card
+}
 /// SVC Chaos needs 10,000 additional master cycles of watchdog tolerance.
 /// The memory subsystem tracks M68K cycles, so divide by `DIV_M68K` (2).
 const SVC_WATCHDOG_TOLERANCE_M68K_CYCLES: u32 = 5_000;
@@ -56,12 +94,6 @@ const PVC_CARTRAM_START: u32 = 0x2FE000;
 const PVC_CARTRAM_SIZE: usize = 0x2000;
 const KOF10TH_EXTRA_RAM_SIZE: usize = 0x20000;
 const KOF10TH_DYNFIX_SIZE: usize = 0x20000;
-const ADPCM_A_RAM_SIZE: usize = 0x4000; // 16KB internal YM2610 ADPCM-A RAM
-const ADPCM_A_START: u32 = 0x300000;
-const ADPCM_A_END: u32 = 0x303FFF;
-const ADPCM_B_RAM_SIZE: usize = 0x4000; // 16KB internal YM2610 ADPCM-B RAM
-const ADPCM_B_START: u32 = 0x310000;
-const ADPCM_B_END: u32 = 0x313FFF;
 const INPUT_P1_PORT: u32 = 0x300000;
 const DIPSW_PORT: u32 = 0x300001;
 const TEST_SWITCH_PORT: u32 = 0x300081;
@@ -321,7 +353,39 @@ impl Rtc4990a {
             return;
         }
         self.minute = 0;
-        self.hour = (self.hour + 1) % 24;
+        self.hour += 1;
+        if self.hour < 24 {
+            return;
+        }
+        self.hour = 0;
+        self.weekday = (self.weekday + 1) % 7;
+
+        let month_days = [
+            31,
+            if self.year % 4 == 0 { 29 } else { 28 },
+            31,
+            30,
+            31,
+            30,
+            31,
+            31,
+            30,
+            31,
+            30,
+            31,
+        ];
+        let days = month_days[usize::from(self.month.saturating_sub(1).min(11))];
+        self.day += 1;
+        if self.day <= days {
+            return;
+        }
+        self.day = 1;
+        self.month += 1;
+        if self.month <= 12 {
+            return;
+        }
+        self.month = 1;
+        self.year = (self.year + 1) % 100;
     }
 
     fn load_register_from_time(&mut self) {
@@ -378,13 +442,13 @@ pub struct SoundPortSnapshot {
 /// Per-game SMA (NEO-SMA) runtime configuration.
 ///
 /// Each SMA-protected game uses the same LFSR (SMATAP = 0x98ec) but differs in:
-/// - `prn_addr[2]`: Two 16-bit addresses where the LFSR value can be read
+/// - `prn_addr`: Optional 16-bit addresses where the LFSR value can be read
 /// - `bank_reg_addr`: Address where the bank switch value is written
 /// - `bank_offsets`: LUT of bank offsets (up to 64 entries, index by unscrambled value)
 /// - `scramble`: 6-element bitswap map for unscrambling the bank register value
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmaConfig {
-    pub prn_addr: [u32; 2],
+    pub prn_addr: Option<[u32; 2]>,
     pub bank_reg_addr: u32,
     pub bank_offsets: &'static [u32],
     pub scramble: [u8; 6],
@@ -401,7 +465,7 @@ impl SmaConfig {
             0x598000,
         ];
         Self {
-            prn_addr: [0x2FFFF8, 0x2FFFFA],
+            prn_addr: Some([0x2FFFF8, 0x2FFFFA]),
             bank_reg_addr: 0x2FFFF0,
             bank_offsets: BANK,
             scramble: [14, 6, 8, 10, 12, 5],
@@ -420,7 +484,9 @@ impl SmaConfig {
             0x4C0000,
         ];
         Self {
-            prn_addr: [0x2FFFF8, 0x2FFFFA],
+            // Geolith configures the standard SMA PRNG window for both
+            // Metal Slug 3 board revisions.
+            prn_addr: Some([0x2FFFF8, 0x2FFFFA]),
             bank_reg_addr: 0x2FFFE4,
             bank_offsets: BANK,
             scramble: [14, 12, 15, 6, 3, 9],
@@ -439,7 +505,7 @@ impl SmaConfig {
             0x4C0000,
         ];
         Self {
-            prn_addr: [0x2FFFF8, 0x2FFFFA],
+            prn_addr: Some([0x2FFFF8, 0x2FFFFA]),
             bank_reg_addr: 0x2FFFE4,
             bank_offsets: BANK,
             scramble: [15, 3, 1, 6, 12, 11],
@@ -458,7 +524,7 @@ impl SmaConfig {
             0x5D0000, 0x5D8000, 0x5E0000, 0x5E8000, 0x5F0000, 0x5F8000, 0x600000,
         ];
         Self {
-            prn_addr: [0x2FFFCC, 0x2FFFF0],
+            prn_addr: Some([0x2FFFCC, 0x2FFFF0]),
             bank_reg_addr: 0x2FFFC0,
             bank_offsets: BANK,
             scramble: [5, 9, 7, 6, 14, 12],
@@ -477,7 +543,7 @@ impl SmaConfig {
             0x5D8000, 0x6D8000, 0x5E0000, 0x6E0000, 0x5E8000, 0x6E8000, 0x6E8000,
         ];
         Self {
-            prn_addr: [0x2FFFCC, 0x2FFFF0],
+            prn_addr: Some([0x2FFFCC, 0x2FFFF0]),
             bank_reg_addr: 0x2FFFC0,
             bank_offsets: BANK,
             scramble: [4, 8, 14, 2, 11, 13],
@@ -494,7 +560,7 @@ impl SmaConfig {
             0x618000, 0x619000, 0x61A000, 0x61A800,
         ];
         Self {
-            prn_addr: [0x2FFFD8, 0x2FFFDA],
+            prn_addr: Some([0x2FFFD8, 0x2FFFDA]),
             bank_reg_addr: 0x2FFFEC,
             bank_offsets: BANK,
             scramble: [15, 14, 7, 3, 10, 5],
@@ -503,7 +569,8 @@ impl SmaConfig {
 
     /// Returns true if the given address is one of the PRN read addresses.
     pub fn is_prn_addr(&self, addr: u32) -> bool {
-        addr == self.prn_addr[0] || addr == self.prn_addr[1]
+        self.prn_addr
+            .is_some_and(|prn_addr| addr == prn_addr[0] || addr == prn_addr[1])
     }
 
     /// Returns true if the given address is the bank register (any byte).
@@ -609,7 +676,9 @@ impl Memory {
                     .copied()
                     .unwrap_or(0xFF)
             }
-            LSPC_REG_START..=LSPC_REG_END => self.read_lspc_register(addr),
+            // Geolith exposes the LSPC registers as a 16-bit bus. Byte reads
+            // fall through to open bus.
+            LSPC_REG_START..=LSPC_REG_END => 0xFF,
             PALETTE_RAM_START..=PALETTE_RAM_END => {
                 let offset = self.palette_ram_offset(addr);
                 self.palette_ram.get(offset).copied().unwrap_or(0)
@@ -620,14 +689,6 @@ impl Memory {
             }
             DIPSW_PORT => self.dip_switches,
             TEST_SWITCH_PORT => self.test_switch & !0x40,
-            0x300002..=ADPCM_A_END => {
-                let offset = (addr - ADPCM_A_START) as usize;
-                self.adpcm_a_ram.get(offset).copied().unwrap_or(0)
-            }
-            ADPCM_B_START..=ADPCM_B_END => {
-                let offset = (addr - ADPCM_B_START) as usize;
-                self.adpcm_b_ram.get(offset).copied().unwrap_or(0)
-            }
             SOUND_PORT => {
                 self.record_bus_access(BusAccessKind::Read, addr, self.z80_sound_reply);
                 self.z80_sound_reply
@@ -684,23 +745,12 @@ impl Memory {
             DIPSW_PORT => {
                 self.reset_watchdog();
             }
-            ADPCM_A_START..=ADPCM_A_END => {
-                let offset = (addr - ADPCM_A_START) as usize;
-                if let Some(cell) = self.adpcm_a_ram.get_mut(offset) {
-                    *cell = value;
-                }
-            }
-            ADPCM_B_START..=ADPCM_B_END => {
-                let offset = (addr - ADPCM_B_START) as usize;
-                if let Some(cell) = self.adpcm_b_ram.get_mut(offset) {
-                    *cell = value;
-                }
-            }
             SOUND_PORT => {
                 self.write_sound_command(value);
             }
             STATUS_A_PORT => {}
-            RTC_CONTROL_PORT => self.rtc.borrow_mut().write_control(value),
+            RTC_CONTROL_PORT if self.system_is_mvs => self.rtc.borrow_mut().write_control(value),
+            RTC_CONTROL_PORT => {}
             SYSTEM_PORT => {}
             POUTPUT_START..=POUTPUT_END if addr & 1 == 1 => {}
             SYSTEM_LATCH_START..=SYSTEM_LATCH_END => self.write_system_latch(addr),
@@ -828,11 +878,7 @@ impl Memory {
                 self.record_bus_access(BusAccessKind::Read, addr, 0xFF);
                 0xFFFF
             }
-            LSPC_REG_START..=LSPC_REG_END => {
-                let hi = self.read_lspc_register(addr) as u16;
-                let lo = self.read_lspc_register(addr.wrapping_add(1)) as u16;
-                (hi << 8) | lo
-            }
+            LSPC_REG_START..=LSPC_REG_END => self.read_lspc_register_word(addr),
             // Fallback byte-by-byte para regiones con side-effects
             _ => {
                 let hi = self.read8(addr) as u16;
@@ -1002,24 +1048,6 @@ impl Memory {
                     }
                 }
             }
-            ADPCM_A_START..=ADPCM_A_END => {
-                let offset = (addr - ADPCM_A_START) as usize;
-                if let Some(cell) = self.adpcm_a_ram.get_mut(offset) {
-                    *cell = hi;
-                }
-                if let Some(cell) = self.adpcm_a_ram.get_mut(offset.wrapping_add(1)) {
-                    *cell = lo;
-                }
-            }
-            ADPCM_B_START..=ADPCM_B_END => {
-                let offset = (addr - ADPCM_B_START) as usize;
-                if let Some(cell) = self.adpcm_b_ram.get_mut(offset) {
-                    *cell = hi;
-                }
-                if let Some(cell) = self.adpcm_b_ram.get_mut(offset.wrapping_add(1)) {
-                    *cell = lo;
-                }
-            }
             SOUND_PORT => self.write_sound_command(hi),
             LSPC_REG_START..=LSPC_REG_END => self.write_lspc_register_word(addr, value),
             SYSTEM_LATCH_START..=SYSTEM_LATCH_END => {
@@ -1150,10 +1178,7 @@ impl Memory {
                     self.record_bus_access(BusAccessKind::Write, addr.wrapping_add(3), b3);
                 }
             }
-            ADPCM_A_START..=ADPCM_A_END
-            | ADPCM_B_START..=ADPCM_B_END
-            | SOUND_PORT
-            | LSPC_REG_START..=LSPC_REG_END => {
+            SOUND_PORT | LSPC_REG_START..=LSPC_REG_END => {
                 // Geolith/Musashi dispatches long writes as two word writes,
                 // preserving the word-level behavior above for MMIO.
                 self.write16(addr, (value >> 16) as u16);
@@ -1190,14 +1215,15 @@ pub struct Memory {
     // Per-game SMA runtime uses SmaConfig from CartProtection::Sma (see SmaConfig).
     pub zoom_rom: Vec<u8>, // L0 shrink/zoom lookup table (000-lo.lo)
     pub palette_ram: Vec<u8>,
-    pub adpcm_a_ram: Vec<u8>, // ADPCM-A RAM (16KB, 0x300000-0x303FFF)
-    pub adpcm_b_ram: Vec<u8>, // ADPCM-B RAM (16KB, 0x310000-0x313FFF)
     pub bios: Vec<u8>,
     pub backup_ram: Vec<u8>,
     pub memory_card: Vec<u8>,
     /// Base path for save files (e.g., "saves/aof"). When set, backup RAM
     /// and memory card are persisted to disk as `.sav` and `.mem` files.
     pub(crate) save_path: Option<String>,
+    /// Session-level gate used by clean/diagnostic launches. The emulated
+    /// SRAM and memory card still exist, but no host data is loaded or saved.
+    persistent_data_enabled: bool,
     dirty_backup_ram: Cell<bool>,
     dirty_memory_card: Cell<bool>,
     pub vram_addr: Cell<u16>,
@@ -1209,18 +1235,19 @@ pub struct Memory {
     pub timer_high: u16,
     pub timer_low: u16,
     pub timer_stop: u16,
-    pub irq_ack: u16,
     pub irq2_ctrl: u8,
     pub irq2_reload: u32,
     pub irq2_counter: u32,
     pub irq2_frags: u32,
-    pub lspc_rom_size: u16,
     pub pending_vram_write_hi: Option<u8>,
     pub lspc_scanline: Cell<u16>,
+    pub lspc_cycle: Cell<u16>,
     pub dip_switches: u8,
     pub test_switch: u8,
     /// STATUS_B bit 7: true for MVS/Universe BIOS hardware, false for AES.
     pub system_is_mvs: bool,
+    /// STATUS_A coin slots 3/4 lines used by UniBIOS to detect AES/MVS hardware.
+    pub coin_slots_34_high: bool,
     pub sound_latch: u8,
     pub sound_reply: u8,
     pub z80_ram: Vec<u8>,
@@ -1289,12 +1316,11 @@ impl Memory {
             sma_rom: Vec::new(),
             zoom_rom: Vec::new(),
             palette_ram: vec![0; PALETTE_RAM_SIZE],
-            adpcm_a_ram: vec![0; ADPCM_A_RAM_SIZE],
-            adpcm_b_ram: vec![0; ADPCM_B_RAM_SIZE],
             bios: build_diagnostic_bios(),
             backup_ram: vec![0; BACKUP_RAM_SIZE],
-            memory_card: vec![0xFF; MEMORY_CARD_SIZE],
+            memory_card: formatted_memory_card(),
             save_path: None,
+            persistent_data_enabled: true,
             dirty_backup_ram: Cell::new(false),
             dirty_memory_card: Cell::new(false),
             vram_addr: Cell::new(0),
@@ -1306,17 +1332,17 @@ impl Memory {
             timer_high: 0,
             timer_low: 0,
             timer_stop: 0,
-            irq_ack: 0,
             irq2_ctrl: 0,
             irq2_reload: 0,
             irq2_counter: 0,
             irq2_frags: 0,
-            lspc_rom_size: 0,
             pending_vram_write_hi: None,
             lspc_scanline: Cell::new(0),
+            lspc_cycle: Cell::new(0),
             dip_switches: 0xFF,
             test_switch: 0xC0,
             system_is_mvs: true,
+            coin_slots_34_high: true,
             sound_latch: 0,
             sound_reply: 0,
             z80_ram: vec![0; Z80_RAM_SIZE],
@@ -1373,6 +1399,24 @@ impl Memory {
         self.system_is_mvs = is_mvs;
     }
 
+    pub fn set_coin_slots_34_high(&mut self, high: bool) {
+        self.coin_slots_34_high = high;
+    }
+
+    /// Apply the three MVS DIP options exposed by Geolith's libretro core.
+    pub fn set_dip_options(&mut self, setting_mode: bool, four_player: bool, freeplay: bool) {
+        self.dip_switches = 0xFF;
+        if setting_mode {
+            self.dip_switches &= !0x01;
+        }
+        if four_player {
+            self.dip_switches &= !0x02;
+        }
+        if freeplay {
+            self.dip_switches &= !0x40;
+        }
+    }
+
     pub fn set_bios(&mut self, bios: Vec<u8>) {
         self.bios = bios;
     }
@@ -1426,15 +1470,20 @@ impl Memory {
     /// Load persistent data (backup RAM + memory card) from disk.
     /// This is called after setting the save path in `load_rom()`.
     pub fn load_persistent_data(&mut self) {
+        if !self.persistent_data_enabled {
+            return;
+        }
         let Some(ref save_path) = self.save_path else {
             return;
         };
 
-        // Try to load backup RAM
-        let sav_path = format!("{save_path}.sav");
-        if let Ok(data) = std::fs::read(&sav_path) {
-            let len = data.len().min(self.backup_ram.len());
-            self.backup_ram[..len].copy_from_slice(&data[..len]);
+        // Geolith persists backup RAM for MVS and UniBIOS, never for AES.
+        if self.system_is_mvs {
+            let sav_path = format!("{save_path}.sav");
+            if let Ok(data) = std::fs::read(&sav_path) {
+                let len = data.len().min(self.backup_ram.len());
+                self.backup_ram[..len].copy_from_slice(&data[..len]);
+            }
         }
 
         // A Neo Geo memory card is shared between cartridges. Prefer the
@@ -1454,6 +1503,9 @@ impl Memory {
 
     /// Save backup RAM to disk (if dirty).
     pub fn save_backup_ram(&self) {
+        if !self.persistent_data_enabled || !self.system_is_mvs {
+            return;
+        }
         if !self.dirty_backup_ram.get() {
             return;
         }
@@ -1473,14 +1525,17 @@ impl Memory {
 
     /// Save memory card to disk (if dirty).
     pub fn save_memory_card(&self) {
+        if !self.persistent_data_enabled {
+            return;
+        }
         if !self.dirty_memory_card.get() {
             return;
         }
         if self.save_path.is_none() {
             return;
         }
-        if self.memory_card.iter().all(|&b| b == 0xFF) {
-            return; // Don't save default all-0xFF data
+        if self.memory_card == formatted_memory_card() {
+            return;
         }
         if let Err(e) = std::fs::write(MEMORY_CARD_SAVE_PATH, &self.memory_card) {
             eprintln!("[WARN] No se pudo guardar memory card en {MEMORY_CARD_SAVE_PATH}: {e}");
@@ -1492,6 +1547,9 @@ impl Memory {
     /// Save all persistent data to disk (if dirty). Called periodically
     /// by the frontend and when loading a new ROM or exiting.
     pub fn save_persistent_data(&self) {
+        if !self.persistent_data_enabled {
+            return;
+        }
         // Ensure save directory exists
         if let Some(ref save_path) = self.save_path {
             if let Some(parent) = PathBuf::from(save_path).parent() {
@@ -1500,6 +1558,16 @@ impl Memory {
         }
         self.save_backup_ram();
         self.save_memory_card();
+    }
+
+    pub fn set_persistent_data_enabled(&mut self, enabled: bool) {
+        self.persistent_data_enabled = enabled;
+        if !enabled {
+            self.backup_ram.fill(0);
+            self.memory_card.copy_from_slice(&formatted_memory_card());
+            self.dirty_backup_ram.set(false);
+            self.dirty_memory_card.set(false);
+        }
     }
 
     pub fn take_bus_trace(&self) -> Vec<BusAccess> {
@@ -1553,6 +1621,7 @@ impl Memory {
         self.auto_animation_timer.set(0);
         self.auto_animation_reload.set(0);
         self.lspc_scanline.set(0);
+        self.lspc_cycle.set(0);
 
         self.prom_bank_offset = if self.prom.len() > FIXED_PROM_WINDOW_SIZE {
             FIXED_PROM_WINDOW_SIZE
@@ -1567,6 +1636,13 @@ impl Memory {
             0
         };
         self.watchdog_cycles = 0;
+    }
+
+    pub fn reset_for_bios_boot(&mut self) {
+        self.soft_reset_for_watchdog();
+        self.use_cart_audio = self.sm1.is_empty();
+        self.use_cart_fix = self.sfix.is_empty();
+        self.display_enabled = true;
     }
 
     pub fn system_control_snapshot(&self) -> SystemControlSnapshot {
@@ -1653,10 +1729,8 @@ impl Memory {
         self.ram.fill(0);
         self.vram.fill(0);
         self.palette_ram.fill(0);
-        self.adpcm_a_ram.fill(0);
-        self.adpcm_b_ram.fill(0);
         self.backup_ram.fill(0);
-        self.memory_card.fill(0xFF);
+        self.memory_card.copy_from_slice(&formatted_memory_card());
         self.dirty_backup_ram.set(false);
         self.dirty_memory_card.set(false);
         self.vram_addr.set(0);
@@ -1668,14 +1742,13 @@ impl Memory {
         self.timer_high = 0;
         self.timer_low = 0;
         self.timer_stop = 0;
-        self.irq_ack = 0;
         self.irq2_ctrl = 0;
         self.irq2_reload = 0;
         self.irq2_counter = 0;
         self.irq2_frags = 0;
-        self.lspc_rom_size = 0;
         self.pending_vram_write_hi = None;
         self.lspc_scanline.set(0);
+        self.lspc_cycle.set(0);
         self.sound_latch = 0;
         self.sound_reply = 0;
         self.z80_ram.fill(0);
@@ -1688,12 +1761,11 @@ impl Memory {
         self.rtc.borrow_mut().reset();
         self.display_enabled = true;
         self.use_cart_vectors = false;
-        // Geolith starts MVS/UniBIOS on the board SM1 ROM and switches to the
-        // cartridge M1 ROM together with the CRTFIX latch.
+        // AES has no board SFIX/SM1; MVS and UniBIOS start on those board ROMs.
         self.use_cart_audio = self.sm1.is_empty();
-        self.use_cart_fix = false; // Real hardware: starts with BIOS SFIX font
-                                   // Geolith resets reg_sramlock to 0, so backup SRAM starts writable
-                                   // until BIOS or game code writes REG_SRAMLOCK.
+        self.use_cart_fix = self.sfix.is_empty();
+        // Geolith resets reg_sramlock to 0, so backup SRAM starts writable
+        // until BIOS or game code writes REG_SRAMLOCK.
         self.save_ram_unlocked = true;
         self.palette_bank = 0;
         self.palette_shadow = false;
@@ -1757,7 +1829,7 @@ impl Memory {
             return 0xFF;
         }
         self.bios
-            .get(offset % self.bios.len())
+            .get((offset & (CART_BIOS_DECODE_SIZE - 1)) % self.bios.len())
             .copied()
             .unwrap_or(0xFF)
     }
@@ -1824,7 +1896,12 @@ impl Memory {
     }
 
     fn read_status_a(&self) -> u8 {
-        let status = self.status_a & self.input_ports.status_a;
+        let mut status = self.status_a & self.input_ports.status_a;
+        if self.coin_slots_34_high {
+            status |= 0x18;
+        } else {
+            status &= !0x18;
+        }
         let rtc = self.rtc.borrow_mut().read_pins() << 6;
         (status & 0x3F) | rtc
     }
@@ -1838,8 +1915,12 @@ impl Memory {
         }
         if self.memcard_inserted {
             value &= !0x30;
+        } else {
+            value |= 0x30;
         }
         if self.memcard_write_protected {
+            value |= 0x40;
+        } else {
             value &= !0x40;
         }
 
@@ -2372,10 +2453,6 @@ impl Memory {
     }
 
     fn read_memory_card(&self, addr: u32) -> u8 {
-        if !self.memcard_inserted {
-            return 0xFF;
-        }
-
         if addr & 1 == 0 {
             return 0xFF;
         }
@@ -2401,7 +2478,7 @@ impl Memory {
     }
 
     fn write_memory_card(&mut self, addr: u32, value: u8) {
-        if !self.memcard_inserted || self.memcard_write_protected || !self.memcard_unlocked {
+        if !self.memcard_unlocked {
             return;
         }
 
@@ -2429,6 +2506,56 @@ impl Memory {
 
     pub fn advance_rtc(&mut self, m68k_cycles: u32) {
         self.rtc.borrow_mut().sync_cycles(m68k_cycles);
+    }
+
+    pub(crate) fn save_rtc_state(&self) -> [u8; RTC_SAVE_STATE_SIZE] {
+        let rtc = self.rtc.borrow();
+        let mut state = [0u8; RTC_SAVE_STATE_SIZE];
+        state[0] = rtc.command;
+        state[1] = rtc.mode;
+        state[2..10].copy_from_slice(&rtc.register.to_le_bytes());
+        state[10..14].copy_from_slice(&rtc.cycles.to_le_bytes());
+        state[14..18].copy_from_slice(&rtc.tp_interval.to_le_bytes());
+        state[18..22].copy_from_slice(&rtc.tp_counter.to_le_bytes());
+        state[22] = u8::from(rtc.tp_running);
+        state[23] = u8::from(rtc.timer_1hz);
+        state[24] = u8::from(rtc.prev_clk);
+        state[25] = u8::from(rtc.prev_stb);
+        state[26] = u8::from(rtc.tp);
+        state[27] = rtc.second;
+        state[28] = rtc.minute;
+        state[29] = rtc.hour;
+        state[30] = rtc.day;
+        state[31] = rtc.weekday;
+        state[32] = rtc.month;
+        state[33] = rtc.year;
+        state
+    }
+
+    pub(crate) fn load_rtc_state(&mut self, state: &[u8]) -> Result<(), &'static str> {
+        if state.len() != RTC_SAVE_STATE_SIZE {
+            return Err("SaveState: estado RTC inválido");
+        }
+        let mut rtc = self.rtc.borrow_mut();
+        rtc.command = state[0];
+        rtc.mode = state[1];
+        rtc.register = u64::from_le_bytes(state[2..10].try_into().unwrap());
+        rtc.cycles = u32::from_le_bytes(state[10..14].try_into().unwrap());
+        rtc.tp_interval = u32::from_le_bytes(state[14..18].try_into().unwrap()).max(1);
+        rtc.tp_counter = u32::from_le_bytes(state[18..22].try_into().unwrap());
+        rtc.tp_running = state[22] != 0;
+        rtc.timer_1hz = state[23] != 0;
+        rtc.prev_clk = state[24] != 0;
+        rtc.prev_stb = state[25] != 0;
+        rtc.tp = state[26] != 0;
+        rtc.second = state[27].min(59);
+        rtc.minute = state[28].min(59);
+        rtc.hour = state[29].min(23);
+        rtc.day = state[30].clamp(1, 31);
+        rtc.weekday = state[31] % 7;
+        rtc.month = state[32].clamp(1, 12);
+        rtc.year = state[33] % 100;
+        Ok(())
     }
 
     pub fn reload_irq2_on_vblank(&mut self) {
@@ -2512,29 +2639,16 @@ impl Memory {
         (self.lspc_mode & 0x0008 == 0).then_some(self.auto_animation_counter.get())
     }
 
-    fn read_lspc_register(&self, addr: u32) -> u8 {
-        let base = addr & !1;
-        let word = match base {
-            LSPC_VRAMADDR => self.vram_addr.get(),
-            LSPC_VRAMRW => {
-                // Geolith's LSPC model does not advance REG_VRAMADDR on
-                // reads. The MVS BIOS VRAM test relies on readback staying on
-                // the address it just selected.
+    fn read_lspc_register_word(&self, addr: u32) -> u16 {
+        match addr & !1 {
+            LSPC_VRAMADDR | LSPC_VRAMRW | LSPC_TIMERHIGH | LSPC_TIMERLOW => {
+                // These four addresses alias the current VRAM data port on
+                // reads and do not advance REG_VRAMADDR.
                 self.read_vram_word(self.vram_addr.get())
             }
-            LSPC_VRAMMOD => self.vram_mod,
-            LSPC_MODE => self.lspc_mode_with_scanline(),
-            LSPC_TIMERHIGH => self.timer_high,
-            LSPC_TIMERLOW => self.timer_low,
-            LSPC_IRQACK => self.irq_ack,
-            LSPC_TIMERSTOP => self.timer_stop,
+            LSPC_VRAMMOD | LSPC_IRQACK => self.vram_mod,
+            LSPC_MODE | LSPC_TIMERSTOP => self.lspc_mode_with_scanline(),
             _ => 0xFFFF,
-        };
-
-        if addr & 1 == 0 {
-            (word >> 8) as u8
-        } else {
-            word as u8
         }
     }
 
@@ -2577,13 +2691,17 @@ impl Memory {
                     self.irq2_counter = self.irq2_reload;
                 }
             }
-            LSPC_IRQACK => {
-                self.irq_ack = value;
-                // LSPC RomSize register (0x3C000C) also encodes C-ROM
-                // address window size. Store the full word value so the
-                // video layer can verify it against the data-based crom_mask.
-                self.lspc_rom_size = self.irq_ack;
-            }
+            LSPC_IRQACK => unsafe {
+                if value & 0x0004 != 0 {
+                    crate::musashi_ffi::m68k_set_virq(1, 0);
+                }
+                if value & 0x0002 != 0 {
+                    crate::musashi_ffi::m68k_set_virq(2, 0);
+                }
+                if value & 0x0001 != 0 {
+                    crate::musashi_ffi::m68k_set_virq(3, 0);
+                }
+            },
             LSPC_TIMERSTOP => {
                 self.timer_stop = value;
             }
@@ -2904,6 +3022,13 @@ fn build_diagnostic_bios() -> Vec<u8> {
     bios[pos..pos + 2].copy_from_slice(&[0x70, 0x00]);
     pos += 2;
 
+    // MOVE.W #$0001, $003C000C.L   (acknowledge the hard-reset IRQ3)
+    //   → 0x33FC 0x0001 0x003C000C
+    bios[pos..pos + 2].copy_from_slice(&[0x33, 0xFC]);
+    bios[pos + 2..pos + 4].copy_from_slice(&[0x00, 0x01]);
+    bios[pos + 4..pos + 8].copy_from_slice(&0x003C_000Cu32.to_be_bytes());
+    pos += 8;
+
     // MOVE.B D0, $003A0001.L   (display ON)
     //   → 0x13C0 0x003A0001
     bios[pos..pos + 2].copy_from_slice(&[0x13, 0xC0]);
@@ -2960,6 +3085,105 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_memory_card_matches_geolith_image_exactly() {
+        let card = formatted_memory_card();
+
+        assert_eq!(card.len(), 0x0800);
+        assert_eq!(
+            format!("{:x}", md5::compute(&card)),
+            "29436c1c6ffbc34765456ed12f28e289"
+        );
+        assert_eq!(
+            &card[0x7F8..],
+            &[0x0F, 0xF0, 0x0F, 0xF4, 0x0F, 0xF8, 0x0F, 0xFC]
+        );
+    }
+
+    #[test]
+    fn cartridge_bios_window_mirrors_every_128k_like_geolith() {
+        let mut memory = Memory::new();
+        let mut bios = vec![0x11; BIOS_ROM_SIZE];
+        bios[CART_BIOS_DECODE_SIZE] = 0x22;
+        memory.set_bios(bios);
+
+        assert_eq!(memory.read8(BIOS_ROM_START), 0x11);
+        assert_eq!(
+            memory.read8(BIOS_ROM_START + CART_BIOS_DECODE_SIZE as u32),
+            0x11
+        );
+        assert_eq!(memory.read8(BIOS_ROM_START + 0x0E_0000), 0x11);
+    }
+
+    #[test]
+    fn isolated_session_resets_and_disables_host_persistence() {
+        let mut memory = Memory::new();
+        memory.backup_ram[0] = 0x12;
+        memory.memory_card[0] = 0x34;
+        memory.dirty_backup_ram.set(true);
+        memory.dirty_memory_card.set(true);
+
+        memory.set_persistent_data_enabled(false);
+
+        assert!(memory.backup_ram.iter().all(|byte| *byte == 0));
+        assert_eq!(memory.memory_card, formatted_memory_card());
+        assert!(!memory.dirty_backup_ram.get());
+        assert!(!memory.dirty_memory_card.get());
+    }
+
+    #[test]
+    fn isolated_session_does_not_load_or_overwrite_backup_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "ngneon-isolated-persistence-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let save_base = directory.join("mslug3");
+        let save_file = save_base.with_extension("sav");
+        let original = vec![0x7E; BACKUP_RAM_SIZE];
+        std::fs::write(&save_file, &original).unwrap();
+
+        let mut memory = Memory::new();
+        memory.save_path = Some(save_base.to_string_lossy().into_owned());
+        memory.set_persistent_data_enabled(false);
+        memory.load_persistent_data();
+        memory.backup_ram[0] = 0x42;
+        memory.dirty_backup_ram.set(true);
+        memory.save_persistent_data();
+
+        assert_eq!(memory.backup_ram[1], 0);
+        assert_eq!(std::fs::read(&save_file).unwrap(), original);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn aes_does_not_load_mvs_backup_ram() {
+        let directory = std::env::temp_dir().join(format!(
+            "ngneon-aes-nvram-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let base = directory.join("game");
+        std::fs::write(base.with_extension("sav"), vec![0xA5; BACKUP_RAM_SIZE]).unwrap();
+
+        let mut memory = Memory::new();
+        memory.save_path = Some(base.to_string_lossy().into_owned());
+        memory.set_system_is_mvs(false);
+        memory.load_persistent_data();
+        assert!(memory.backup_ram.iter().all(|value| *value == 0));
+
+        memory.set_system_is_mvs(true);
+        memory.load_persistent_data();
+        assert_eq!(memory.backup_ram[0], 0xA5);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn ram_and_vram_are_writable_but_prom_is_read_only() {
         let mut memory = Memory::new();
         memory.prom = vec![0x12; 0x100];
@@ -2987,17 +3211,16 @@ mod tests {
         memory.write16(LSPC_VRAMRW, 0x1234);
 
         memory.write16(LSPC_VRAMADDR, 0x0004);
-        assert_eq!(memory.read8(LSPC_VRAMADDR), 0x00);
-        assert_eq!(memory.read8(LSPC_VRAMADDR + 1), 0x04);
-        assert_eq!(memory.read8(LSPC_VRAMRW), 0x12);
-        assert_eq!(memory.read8(LSPC_VRAMRW + 1), 0x34);
+        assert_eq!(memory.read8(LSPC_VRAMADDR), 0xFF);
+        assert_eq!(memory.read8(LSPC_VRAMADDR + 1), 0xFF);
+        assert_eq!(memory.read16(LSPC_VRAMADDR), 0x1234);
+        assert_eq!(memory.read16(LSPC_VRAMRW), 0x1234);
         // Geolith does not auto-increment VRAMADDR on readback; writes still
         // apply the configured modulo.
-        assert_eq!(memory.read8(LSPC_VRAMADDR), 0x00);
-        assert_eq!(memory.read8(LSPC_VRAMADDR + 1), 0x04);
+        assert_eq!(memory.vram_addr.get(), 0x0004);
 
         memory.write16(LSPC_VRAMRW, 0x5678);
-        assert_eq!(memory.read16(LSPC_VRAMADDR), 0x0006);
+        assert_eq!(memory.vram_addr.get(), 0x0006);
     }
 
     #[test]
@@ -3017,7 +3240,7 @@ mod tests {
         memory.write16(LSPC_VRAMRW, 0x1234);
         assert_eq!(memory.vram[0x87FF * 2], 0x12);
         assert_eq!(memory.vram[0x87FF * 2 + 1], 0x34);
-        assert_eq!(memory.read16(LSPC_VRAMADDR), 0x8800);
+        assert_eq!(memory.vram_addr.get(), 0x8800);
 
         memory.write16(LSPC_VRAMRW, 0x5678);
         assert_eq!(memory.vram[0], 0x00, "invalid VRAM write must not wrap");
@@ -3033,6 +3256,35 @@ mod tests {
 
         memory.write8(LSPC_VRAMMOD + 1, 0x05);
         assert_eq!(memory.vram_mod, 0x0202, "odd LSPC byte writes are ignored");
+    }
+
+    #[test]
+    fn lspc_read_aliases_and_irq_ack_match_geolith() {
+        let mut memory = Memory::new();
+        memory.write16(LSPC_VRAMADDR, 0x0010);
+        memory.write16(LSPC_VRAMRW, 0xA55A);
+        memory.write16(LSPC_VRAMADDR, 0x0010);
+        memory.write16(LSPC_VRAMMOD, 0xFFFE);
+
+        for register in [LSPC_VRAMADDR, LSPC_VRAMRW, LSPC_TIMERHIGH, LSPC_TIMERLOW] {
+            assert_eq!(memory.read16(register), 0xA55A);
+        }
+        assert_eq!(memory.read16(LSPC_VRAMMOD), 0xFFFE);
+        assert_eq!(memory.read16(LSPC_IRQACK), 0xFFFE);
+        assert_eq!(memory.read16(LSPC_TIMERSTOP), memory.read16(LSPC_MODE));
+        assert_eq!(memory.read8(LSPC_VRAMRW), 0xFF);
+
+        unsafe {
+            crate::musashi_ffi::m68k_set_virq(1, 1);
+            crate::musashi_ffi::m68k_set_virq(2, 1);
+            crate::musashi_ffi::m68k_set_virq(3, 1);
+        }
+        memory.write16(LSPC_IRQACK, 0x0007);
+        unsafe {
+            assert_eq!(crate::musashi_ffi::m68k_get_virq(1), 0);
+            assert_eq!(crate::musashi_ffi::m68k_get_virq(2), 0);
+            assert_eq!(crate::musashi_ffi::m68k_get_virq(3), 0);
+        }
     }
 
     #[test]
@@ -3077,14 +3329,14 @@ mod tests {
         memory.advance_auto_animation_frame();
 
         assert_eq!(memory.auto_animation_counter(), Some(1));
-        assert_eq!(memory.read8(LSPC_MODE + 1) & 0x07, 1);
+        assert_eq!(memory.read16(LSPC_MODE) & 0x07, 1);
 
         memory.write16(LSPC_MODE, 0x0008);
         memory.advance_auto_animation_frame();
 
         // Auto-animation is disabled (bit 3 set), so counter stays at 1.
         assert_eq!(memory.auto_animation_counter(), None);
-        assert_eq!(memory.read8(LSPC_MODE + 1) & 0x07, 1);
+        assert_eq!(memory.read16(LSPC_MODE) & 0x07, 1);
     }
 
     #[test]
@@ -3310,7 +3562,7 @@ mod tests {
         memory.load_rom(&mut rom);
 
         assert!(memory.backup_ram.iter().all(|value| *value == 0));
-        assert!(memory.memory_card.iter().all(|value| *value == 0xff));
+        assert_eq!(memory.memory_card, formatted_memory_card());
         assert!(!memory.dirty_backup_ram.get());
         assert!(!memory.dirty_memory_card.get());
         assert!(memory.memcard_inserted);
@@ -3364,6 +3616,7 @@ mod tests {
         memory.auto_animation_timer.set(6);
         memory.auto_animation_reload.set(5);
         memory.lspc_scanline.set(200);
+        memory.lspc_cycle.set(600);
         memory.restore_special_board_state(SpecialBoardState {
             cart_reg: [0x1111, 0x2222],
             prot_reg: 0x33445566,
@@ -3391,6 +3644,7 @@ mod tests {
         assert_eq!(memory.auto_animation_timer.get(), 0);
         assert_eq!(memory.auto_animation_reload.get(), 0);
         assert_eq!(memory.lspc_scanline.get(), 0);
+        assert_eq!(memory.lspc_cycle.get(), 0);
         assert_eq!(
             memory.special_board_state(),
             SpecialBoardState {
@@ -3402,6 +3656,38 @@ mod tests {
                 pending_sma_bank_hi: None,
             }
         );
+    }
+
+    #[test]
+    fn bios_boot_reset_restarts_board_fix_and_audio_latches() {
+        let mut memory = Memory::new();
+        memory.sm1 = vec![0; crate::bios::SM1_ROM_SIZE];
+        memory.sfix = vec![0; crate::bios::SFIX_ROM_SIZE];
+        memory.use_cart_audio = true;
+        memory.use_cart_fix = true;
+        memory.use_cart_vectors = true;
+        memory.display_enabled = false;
+
+        memory.reset_for_bios_boot();
+
+        assert!(!memory.use_cart_vectors);
+        assert!(!memory.use_cart_audio);
+        assert!(!memory.use_cart_fix);
+        assert!(memory.display_enabled);
+    }
+
+    #[test]
+    fn aes_boot_uses_cartridge_fix_and_audio_without_board_roms() {
+        let mut memory = Memory::new();
+        memory.sm1.clear();
+        memory.sfix.clear();
+        memory.use_cart_audio = false;
+        memory.use_cart_fix = false;
+
+        memory.reset_for_bios_boot();
+
+        assert!(memory.use_cart_audio);
+        assert!(memory.use_cart_fix);
     }
 
     #[test]
@@ -3452,8 +3738,20 @@ mod tests {
 
         assert_eq!(memory.read16(INPUT_P1_PORT), 0xA5A5);
         assert_eq!(memory.read16(INPUT_P2_PORT), 0x5A5A);
-        assert_eq!(memory.read16(SYSTEM_PORT), 0xC7C7);
+        assert_eq!(memory.read16(SYSTEM_PORT), 0xB7B7);
         assert_eq!(memory.read16(SOUND_PORT), 0xFFFF);
+    }
+
+    #[test]
+    fn unmapped_adpcm_ram_addresses_stay_open_bus_like_geolith() {
+        let mut memory = Memory::new();
+
+        for address in [0x300002, 0x303fff, 0x310000, 0x313fff] {
+            assert_eq!(memory.read8(address), 0xff);
+            memory.write8(address, 0x5a);
+            assert_eq!(memory.read8(address), 0xff);
+        }
+        assert_eq!(memory.read16(0x310000), 0xffff);
     }
 
     #[test]
@@ -3564,6 +3862,7 @@ mod tests {
         let memory = Memory::new();
 
         assert_eq!(memory.read8(MEMORY_CARD_START), 0xFF);
+        assert_eq!(memory.read8(MEMORY_CARD_START + 1), 0x00);
         assert_eq!(memory.read8(0xA9CC06), 0xFF);
         assert!(memory.take_bus_trace().is_empty());
     }
@@ -3577,11 +3876,12 @@ mod tests {
 
         memory.write8(MEMORY_CARD_START, 0x12);
         assert_eq!(memory.read8(MEMORY_CARD_START), 0xFF);
+        assert_eq!(memory.read8(MEMORY_CARD_START + 1), 0x00);
 
         memory.write8(0x3A0005, 0);
         memory.write8(MEMORY_CARD_START, 0x34);
         assert_eq!(memory.read8(MEMORY_CARD_START), 0xFF);
-        assert_eq!(memory.read8(MEMORY_CARD_START + 1), 0xFF);
+        assert_eq!(memory.read8(MEMORY_CARD_START + 1), 0x00);
 
         memory.write8(0x3A0017, 0);
         memory.write8(MEMORY_CARD_START, 0x34);
@@ -3590,9 +3890,9 @@ mod tests {
         assert_eq!(memory.read16(MEMORY_CARD_START), 0xFF34);
 
         memory.memcard_write_protected = true;
-        assert_eq!(memory.read8(SYSTEM_PORT) & 0x40, 0x00);
+        assert_eq!(memory.read8(SYSTEM_PORT) & 0x40, 0x40);
         memory.write8(MEMORY_CARD_START, 0x56);
-        assert_eq!(memory.read8(MEMORY_CARD_START + 1), 0x34);
+        assert_eq!(memory.read8(MEMORY_CARD_START + 1), 0x56);
     }
 
     #[test]
@@ -3663,8 +3963,19 @@ mod tests {
 
         assert_eq!(memory.read8(INPUT_P1_PORT), 0b1111_1110);
         assert_eq!(memory.read8(DIPSW_PORT), 0xFF);
-        assert_eq!(memory.read8(SYSTEM_PORT), 0b1111_1101);
+        assert_eq!(memory.read8(SYSTEM_PORT), 0b1011_1101);
         assert_eq!(memory.read8(STATUS_A_PORT) & 0x01, 0);
+    }
+
+    #[test]
+    fn dip_options_match_geolith_bit_assignments() {
+        let mut memory = Memory::new();
+
+        memory.set_dip_options(true, true, true);
+        assert_eq!(memory.read8(DIPSW_PORT), 0xBC);
+
+        memory.set_dip_options(false, false, false);
+        assert_eq!(memory.read8(DIPSW_PORT), 0xFF);
     }
 
     #[test]
@@ -3674,9 +3985,23 @@ mod tests {
         assert_eq!(memory.read8(SYSTEM_PORT), 0xbf);
         memory.memcard_inserted = true;
         assert_eq!(memory.read8(SYSTEM_PORT), 0x8f);
+        memory.memcard_write_protected = true;
+        assert_eq!(memory.read8(SYSTEM_PORT), 0xcf);
         memory.memcard_inserted = false;
+        memory.memcard_write_protected = false;
         memory.set_system_is_mvs(false);
         assert_eq!(memory.read8(SYSTEM_PORT), 0x3f);
+    }
+
+    #[test]
+    fn status_a_coin_slots_34_select_unibios_hardware_like_geolith() {
+        let mut memory = Memory::new();
+
+        memory.set_coin_slots_34_high(true);
+        assert_eq!(memory.read8(STATUS_A_PORT) & 0x18, 0x18);
+
+        memory.set_coin_slots_34_high(false);
+        assert_eq!(memory.read8(STATUS_A_PORT) & 0x18, 0x00);
     }
 
     #[test]
@@ -3727,6 +4052,45 @@ mod tests {
 
         write_rtc_command(&mut memory, 0x01);
         assert_eq!(memory.read8(STATUS_A_PORT) & 0x80, 0x00);
+    }
+
+    #[test]
+    fn rtc_rolls_weekday_date_month_and_leap_year_like_geolith() {
+        let mut rtc = Rtc4990a::from_calendar(59, 59, 23, 28, 3, 2, 24);
+        rtc.increment_clock();
+        assert_eq!((rtc.second, rtc.minute, rtc.hour), (0, 0, 0));
+        assert_eq!((rtc.day, rtc.weekday, rtc.month, rtc.year), (29, 4, 2, 24));
+
+        rtc.day = 29;
+        rtc.hour = 23;
+        rtc.minute = 59;
+        rtc.second = 59;
+        rtc.increment_clock();
+        assert_eq!((rtc.day, rtc.month, rtc.year), (1, 3, 24));
+
+        rtc.month = 12;
+        rtc.day = 31;
+        rtc.hour = 23;
+        rtc.minute = 59;
+        rtc.second = 59;
+        rtc.year = 99;
+        rtc.increment_clock();
+        assert_eq!((rtc.day, rtc.month, rtc.year), (1, 1, 0));
+    }
+
+    #[test]
+    fn aes_ignores_rtc_control_writes() {
+        let mut memory = Memory::new();
+        memory.set_system_is_mvs(false);
+        *memory.rtc.borrow_mut() = Rtc4990a::from_calendar(56, 34, 12, 25, 1, 5, 26);
+        write_rtc_command(&mut memory, 0x03);
+        assert_eq!(memory.rtc.borrow().register, 0);
+
+        let mut mvs_memory = Memory::new();
+        mvs_memory.set_system_is_mvs(true);
+        *mvs_memory.rtc.borrow_mut() = Rtc4990a::from_calendar(56, 34, 12, 25, 1, 5, 26);
+        write_rtc_command(&mut mvs_memory, 0x03);
+        assert_eq!(mvs_memory.rtc.borrow().register & 0xff, 0x56);
     }
 
     #[test]
@@ -3912,7 +4276,7 @@ mod tests {
     }
 
     #[test]
-    fn mslug3_sma_protection_exposes_presence_rng_and_bankswitch() {
+    fn mslug3_sma_protection_matches_geolith_presence_rng_and_bankswitch() {
         let mut memory = Memory::new();
         let mut rom = crate::rom::RomData::demo();
         rom.is_demo = false;
@@ -3934,12 +4298,9 @@ mod tests {
         assert_eq!(memory.read8(SMA_PRESENCE_ADDR + 1), 0x9A);
         assert_eq!(memory.read16(SMA_PRESENCE_ADDR), SMA_PRESENCE_VALUE);
 
-        // PRN addresses from config
-        let prn0 = config.prn_addr[0];
-        let prn1 = config.prn_addr[1];
-        // Geolith advances the LFSR before returning each PRN read.
-        assert_eq!(memory.read16(prn0), 0x468A);
-        assert_eq!(memory.read16(prn1), 0x8D14);
+        assert_eq!(config.prn_addr, Some([0x2FFFF8, 0x2FFFFA]));
+        assert_eq!(memory.read16(0x2FFFF8), 0x468A);
+        assert_eq!(memory.sma_rng.get(), 0x468A);
 
         // Bank register from config
         let bank_reg = config.bank_reg_addr;
@@ -4003,11 +4364,12 @@ mod tests {
         memory.load_rom(&mut rom);
 
         let config = SmaConfig::kof99();
-        assert_eq!(memory.read16(config.prn_addr[0]), 0x468A);
+        let prn_addr = config.prn_addr.expect("KOF99 exposes SMA RNG");
+        assert_eq!(memory.read16(prn_addr[0]), 0x468A);
 
         // Byte reads also advance once and expose the low byte of the new value.
         memory.sma_rng.set(0x2345);
-        assert_eq!(memory.read8(config.prn_addr[0]), 0x8A);
+        assert_eq!(memory.read8(prn_addr[0]), 0x8A);
         assert_eq!(memory.sma_rng.get(), 0x468A);
 
         // Geolith's KOF99 scramble maps this value to bank-table index 4,
@@ -4022,7 +4384,7 @@ mod tests {
         // SMA word writes are ignored by the dedicated SMA word handler.
         memory.write8(config.bank_reg_addr, 0x01);
         assert_eq!(memory.prom_bank_offset, 0x200000);
-        memory.write16(config.prn_addr[0], 0x0005);
+        memory.write16(prn_addr[0], 0x0005);
         assert_eq!(memory.prom_bank_offset, 0x200000);
     }
 

@@ -61,9 +61,9 @@ fn main() {
         .include(&musashi_dir)
         .warnings(false)
         .flag_if_supported("-Wno-unused-function") // quiet for generated code
-        .file(musashi_dir.join("m68kcpu.c")) /* includes m68k_in.c internally */
+        .file(musashi_dir.join("m68kcpu.c"))
+        .file(musashi_dir.join("ng_m68k_state.c"))
         .file(musashi_dir.join("m68kops.c")) /* generated dispatch table */
-        .file(musashi_dir.join("musashi_stubs.c")) /* FPU/MMU stubs for linker */
         .define("MUSASHI_CNF", "\"m68kconf.h\"")
         .compile("musashi");
 

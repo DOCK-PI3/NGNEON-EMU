@@ -9,7 +9,13 @@ sdl2 = "0.38.0"
 gl = "0.14"
 core-emulator = { path = "../core-emulator" }
 rfd = "0.14.1"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+xml-rs = "0.8"
+fontdue = "0.9.3"
+mp4 = "0.14.0"
+openh264 = "=0.9.3"
+rand = "0.9"
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3"] }
 
 [lib]
 name = "frontend"
@@ -25,3 +31,7 @@ harness = false
 [[bin]]
 name = "ngneon-emu"
 path = "src/main.rs"
+
+[[bin]]
+name = "ngneon-frontend"
+path = "src/bin/ngneon_frontend.rs"

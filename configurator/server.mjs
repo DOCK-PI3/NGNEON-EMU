@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile, writeFile, stat, readdir } from "node:fs/promises";
+import { mkdir, open, readFile, writeFile, stat, readdir } from "node:fs/promises";
 import { createReadStream, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -11,10 +11,16 @@ const projectRoot = process.env.NGNEON_ROOT
   ? path.resolve(process.env.NGNEON_ROOT)
   : path.resolve(__dirname, "..");
 const configFile = path.join(projectRoot, "config", "ngneon.conf");
-const emulatorExe = path.join(projectRoot, "ngneon-emu.exe");
 const distDir = path.join(__dirname, "dist");
 const devIndex = path.join(__dirname, "index.html");
+const logsDir = path.join(projectRoot, "logs");
 const port = Number(process.env.NGNEON_CONFIG_PORT || 4177);
+let activeSession = null;
+
+function resolveEmulatorExe() {
+  const packaged = path.join(projectRoot, "ngneon-emu.exe");
+  return existsSync(packaged) ? packaged : path.join(projectRoot, "target", "release", "ngneon-emu.exe");
+}
 
 const publicKeys = new Set([
   "rom_path",
@@ -31,6 +37,16 @@ const publicKeys = new Set([
   "auto_save",
   "muted",
   "bios",
+  "bios_region",
+  "unibios_hardware",
+  "cpu_overclock",
+  "sprite_limit",
+  "disable_adpcm_wrap",
+  "memcard",
+  "memcard_write_protect",
+  "setting_mode",
+  "freeplay",
+  "palette_mode",
   "ra_username",
   "ra_hardcore",
   "diagnostic_dumps",
@@ -40,6 +56,7 @@ const publicKeys = new Set([
 const secretKeys = new Set(["ra_token", "ra_password", "ra_api_key"]);
 const writableKeys = new Set([...publicKeys, ...secretKeys]);
 const romExtensions = new Set([".neo", ".zip"]);
+const biosExtensions = new Set([".bin", ".rom", ".sp1"]);
 const imageExtensions = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"]);
 const videoExtensions = new Set([".mp4", ".webm", ".mov", ".m4v"]);
 const mediaExtensions = new Set([...imageExtensions, ...videoExtensions, ".pdf"]);
@@ -58,6 +75,91 @@ function isSystemZipName(name) {
 function isPlayableRomName(name) {
   const ext = path.extname(name).toLowerCase();
   return romExtensions.has(ext) && !(ext === ".zip" && isSystemZipName(name));
+}
+
+function isBiosArchiveName(name) {
+  const ext = path.extname(name).toLowerCase();
+  if (ext !== ".zip") return false;
+  const stem = path.basename(name, ext).toLowerCase();
+  return stem === "neogeo" || stem === "aes" || stem.startsWith("uni-bios") || stem.startsWith("unibios");
+}
+
+function isBiosCandidateName(name) {
+  const fileName = path.basename(name).toLowerCase();
+  if (["000-lo.lo", "sfix.sfix", "sm1.sm1"].includes(fileName)) return false;
+  return (
+    fileName.startsWith("sp-") ||
+    fileName.startsWith("sp1") ||
+    fileName.startsWith("uni-bios") ||
+    ["japan-j3.bin", "vs-bios.rom", "neo-epo.bin", "neo-po.bin"].includes(fileName)
+  );
+}
+
+function biosKind(label) {
+  const lower = label.toLowerCase();
+  if (lower.includes("uni-bios") || lower.includes("unibios")) return "unibios";
+  if (lower.includes("aes.zip") || lower.includes("neo-epo.bin") || lower.includes("neo-po.bin")) return "aes";
+  if (
+    lower.includes("neogeo.zip") ||
+    lower.includes("sp-s2.sp1") ||
+    lower.includes("sp-s.sp1") ||
+    lower.includes("sp-u") ||
+    lower.includes("sp1-u") ||
+    lower.includes("sp-e") ||
+    lower.includes("sp-j") ||
+    lower.includes("sp1.jipan") ||
+    lower.includes("japan") ||
+    lower.includes("asia-s") ||
+    lower.includes("vs-bios.rom")
+  ) {
+    return "mvs";
+  }
+  return "unknown";
+}
+
+function biosPriority(label) {
+  const lower = label.toLowerCase();
+  if (lower.includes("neogeo.zip:uni-bios_4_0")) return 0;
+  if (lower.includes("neogeo.zip:uni-bios")) return 1;
+  if (lower.includes("uni-bios_4_0")) return 2;
+  if (lower.includes("uni-bios")) return 3;
+  if (lower.includes("sp-s2.sp1")) return 4;
+  if (lower.includes("sp-s.sp1")) return 5;
+  if (lower.includes("sp-u") || lower.includes("sp1-u")) return 6;
+  if (lower.includes("sp-e")) return 7;
+  if (lower.includes("sp-j") || lower.includes("japan")) return 8;
+  return 9;
+}
+
+function describeBiosOption(label) {
+  const kind = biosKind(label);
+  const descriptions = {
+    aes: {
+      title: "AES consola doméstica",
+      purpose: "Modo doméstico sin monedas, con las variantes y menús de consola que incluya el cartucho.",
+      raNote: "RetroAchievements identifica la ROM; AES no es un requisito general. La BIOS oficial sí es válida en Hardcore.",
+      hardcoreSafe: true,
+    },
+    mvs: {
+      title: "NeoGeo MVS arcade",
+      purpose: "Modo cabina: monedas, DIP, test y bookkeeping. Es el hardware original de los sets arcade.",
+      raNote: "RetroAchievements identifica la ROM; MVS no impide logros por sí mismo y su BIOS oficial es válida en Hardcore.",
+      hardcoreSafe: true,
+    },
+    unibios: {
+      title: "UniBIOS",
+      purpose: "BIOS comunitaria con menú de región, modo AES/MVS y extras de diagnóstico.",
+      raNote: "No usar para RetroAchievements Hardcore; NGNEON la bloquea en ese modo.",
+      hardcoreSafe: false,
+    },
+    unknown: {
+      title: "BIOS detectada",
+      purpose: "El configurador no reconoce el modo por el nombre. Verifica el archivo antes de usar RA.",
+      raNote: "Para Hardcore usa una BIOS oficial reconocida. El tipo AES/MVS no sustituye la identificación de la ROM.",
+      hardcoreSafe: true,
+    },
+  };
+  return { label, kind, ...descriptions[kind] };
 }
 
 function parseConfig(text) {
@@ -86,6 +188,9 @@ function publicConfig(values) {
     }
   }
   out.aspect_ratio ||= "4:3";
+  out.unibios_hardware ||= "mvs";
+  out.palette_mode ||= "resnet";
+  out.sprite_limit ||= "96";
   return out;
 }
 
@@ -150,7 +255,7 @@ async function handleGetConfig(_req, res) {
     paths: {
       projectRoot,
       configFile,
-      emulatorExe,
+      emulatorExe: resolveEmulatorExe(),
     },
   });
 }
@@ -456,6 +561,65 @@ async function listFilesSafe(dir, predicate) {
   }
 }
 
+async function listZipEntryNames(file) {
+  try {
+    const buffer = await readFile(file);
+    const entries = [];
+    for (let offset = 0; offset <= buffer.length - 46; offset += 1) {
+      if (buffer.readUInt32LE(offset) !== 0x02014b50) continue;
+      const nameLength = buffer.readUInt16LE(offset + 28);
+      const extraLength = buffer.readUInt16LE(offset + 30);
+      const commentLength = buffer.readUInt16LE(offset + 32);
+      const nameStart = offset + 46;
+      const nameEnd = nameStart + nameLength;
+      if (nameEnd > buffer.length) continue;
+      entries.push(buffer.toString("utf8", nameStart, nameEnd).replace(/\\/g, "/"));
+      offset = nameEnd + extraLength + commentLength - 1;
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+async function listBiosOptionsFromDir(dir, seen) {
+  const names = await listFilesSafe(dir, (name) => {
+    const ext = path.extname(name).toLowerCase();
+    return isBiosArchiveName(name) || biosExtensions.has(ext);
+  });
+  const options = [];
+  for (const name of names) {
+    const filePath = path.join(dir, name);
+    if (path.extname(name).toLowerCase() === ".zip") {
+      const entries = await listZipEntryNames(filePath);
+      for (const entry of entries) {
+        const fileName = path.basename(entry).toLowerCase();
+        if (!isBiosCandidateName(fileName)) continue;
+        const label = `${name}:${fileName}`;
+        if (seen.has(label)) continue;
+        seen.add(label);
+        options.push(describeBiosOption(label));
+      }
+      continue;
+    }
+
+    const label = path.basename(name).toLowerCase();
+    if (seen.has(label)) continue;
+    seen.add(label);
+    options.push(describeBiosOption(label));
+  }
+  return options;
+}
+
+async function listBiosOptions(dirs) {
+  const seen = new Set();
+  const all = [];
+  for (const dir of dirs) {
+    all.push(...(await listBiosOptionsFromDir(dir, seen)));
+  }
+  return all.sort((a, b) => biosPriority(a.label) - biosPriority(b.label) || a.label.localeCompare(b.label));
+}
+
 function decodeXml(value) {
   let text = String(value || "");
   for (let pass = 0; pass < 2; pass += 1) {
@@ -587,16 +751,32 @@ async function handleLibrary(_req, res) {
 
   const romNames = await listFilesSafe(romDir, isPlayableRomName);
   const romByName = new Map(romNames.map((name) => [name.toLowerCase(), path.join(romDir, name)]));
-  const biosArchives = await listFilesSafe(
-    biosDir,
-    (name) => name.toLowerCase() === "neogeo.zip" || name.toLowerCase() === "aes.zip",
-  );
+  const biosArchives = Array.from(
+    new Set([
+      ...(await listFilesSafe(biosDir, isBiosArchiveName)),
+      ...(await listFilesSafe(romDir, isBiosArchiveName)),
+    ]),
+  ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+  const biosOptions = await listBiosOptions([biosDir, romDir]);
 
   assetRegistry.clear();
   let games = [];
   if (gamelistPath) {
     const xml = await readFile(gamelistPath, "utf8");
     games = parseGamelist(xml, path.dirname(gamelistPath), romByName);
+    const uniqueByPath = new Map();
+    for (const game of games) {
+      const key = game.path.toLowerCase();
+      const existing = uniqueByPath.get(key);
+      if (!existing) {
+        uniqueByPath.set(key, game);
+        continue;
+      }
+      existing.media = { ...existing.media, ...game.media };
+      existing.hasMedia ||= game.hasMedia;
+      if (game.description.length > existing.description.length) existing.description = game.description;
+    }
+    games = Array.from(uniqueByPath.values());
   }
 
   const matched = new Set(games.map((game) => game.name.toLowerCase()));
@@ -635,6 +815,7 @@ async function handleLibrary(_req, res) {
     roots: { romDir, biosDir, mediaDir, gamelistPath },
     roms: games,
     biosArchives,
+    biosOptions,
     mediaCount: assetRegistry.size,
     mediaMatched: games.filter((game) => game.hasMedia).length,
   });
@@ -683,32 +864,127 @@ async function handleMedia(req, res, assetId) {
 }
 
 async function handleLaunch(req, res) {
-  const exe = existsSync(emulatorExe)
-    ? emulatorExe
-    : path.join(projectRoot, "target", "release", "ngneon-emu.exe");
+  if (activeSession?.running) {
+    await sendJson(res, { error: "Ya hay una sesión del emulador en ejecución", session: sessionPayload() }, 409);
+    return;
+  }
+
+  const exe = resolveEmulatorExe();
   if (!existsSync(exe)) {
     await sendJson(res, { error: `No encuentro el emulador: ${exe}` }, 404);
     return;
   }
   const payload = req.method === "POST" ? await readRequestJson(req) : {};
+  const mode = ["normal", "clean", "diagnostic"].includes(payload.mode) ? payload.mode : "normal";
   const args = [];
+  if (mode === "clean" || mode === "diagnostic") {
+    args.push("--clean-start");
+  }
+  let romPath = "";
   if (payload.romPath) {
-    const romPath = path.resolve(String(payload.romPath));
+    romPath = path.resolve(String(payload.romPath));
     if (!isPlayableRomName(path.basename(romPath)) || !existsSync(romPath)) {
       await sendJson(res, { error: `ROM invalida: ${romPath}` }, 400);
+      return;
+    }
+    const { values } = await readConfig();
+    const romDir = resolveConfiguredPath(values.rom_path, "roms");
+    const relative = path.relative(romDir, romPath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      await sendJson(res, { error: "La ROM no pertenece a la biblioteca configurada" }, 400);
       return;
     }
     args.push(romPath);
   }
 
+  await mkdir(logsDir, { recursive: true });
+  const stamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+  const logPath = path.join(logsDir, `session-${stamp}.log`);
+  const logFile = await open(logPath, "a");
+  await logFile.write(
+    `[LAUNCHER] mode=${mode} rom=${romPath || "none"} exe=${exe}\n[LAUNCHER] started=${new Date().toISOString()}\n`,
+  );
+  const env = { ...process.env };
+  if (mode === "diagnostic") {
+    env.NGNEON_FREEZE_DIAG = "1";
+    env.NGNEON_AUDIO_DIAG = "1";
+  }
   const child = spawn(exe, args, {
-    cwd: path.dirname(exe),
+    cwd: projectRoot,
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", logFile.fd, logFile.fd],
     windowsHide: false,
+    env,
+  });
+  const session = {
+    running: true,
+    pid: child.pid ?? 0,
+    mode,
+    romPath,
+    logPath,
+    startedAt: new Date().toISOString(),
+    endedAt: "",
+    exitCode: null,
+    signal: "",
+  };
+  activeSession = session;
+  child.once("exit", (code, signal) => {
+    if (activeSession?.pid === session.pid) {
+      activeSession = {
+        ...session,
+        running: false,
+        endedAt: new Date().toISOString(),
+        exitCode: code,
+        signal: signal || "",
+      };
+    }
+    void logFile.close();
+  });
+  child.once("error", (error) => {
+    if (activeSession?.pid === session.pid) {
+      activeSession = {
+        ...session,
+        running: false,
+        endedAt: new Date().toISOString(),
+        exitCode: -1,
+        signal: error.message,
+      };
+    }
+    void logFile.close();
   });
   child.unref();
-  await sendJson(res, { ok: true, exe });
+  await sendJson(res, { ok: true, exe, session: sessionPayload() });
+}
+
+function sessionPayload() {
+  return activeSession ?? {
+    running: false,
+    pid: 0,
+    mode: "normal",
+    romPath: "",
+    logPath: "",
+    startedAt: "",
+    endedAt: "",
+    exitCode: null,
+    signal: "",
+  };
+}
+
+async function handleSession(_req, res) {
+  await sendJson(res, { session: sessionPayload() });
+}
+
+async function handleStop(_req, res) {
+  if (!activeSession?.running || !activeSession.pid) {
+    await sendJson(res, { ok: true, session: sessionPayload() });
+    return;
+  }
+  try {
+    process.kill(activeSession.pid);
+    await sendJson(res, { ok: true, session: sessionPayload() });
+  } catch (error) {
+    await sendJson(res, { error: error instanceof Error ? error.message : String(error) }, 500);
+  }
 }
 
 async function serveStatic(req, res) {
@@ -769,6 +1045,8 @@ const server = createServer(async (req, res) => {
       await handleGetConfig(req, res);
     } else if (req.method === "GET" && url.pathname === "/api/library") {
       await handleLibrary(req, res);
+    } else if (req.method === "GET" && url.pathname === "/api/session") {
+      await handleSession(req, res);
     } else if (req.method === "GET" && url.pathname === "/api/ra/dashboard") {
       await handleRaDashboard(req, res);
     } else if (req.method === "GET" && mediaMatch) {
@@ -781,6 +1059,8 @@ const server = createServer(async (req, res) => {
       await handleRaDisconnect(req, res);
     } else if (req.method === "POST" && url.pathname === "/api/launch") {
       await handleLaunch(req, res);
+    } else if (req.method === "POST" && url.pathname === "/api/stop") {
+      await handleStop(req, res);
     } else {
       await serveStatic(req, res);
     }

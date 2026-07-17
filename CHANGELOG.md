@@ -1,9 +1,61 @@
 # Changelog de NGNEON-EMU
 
 Historial consolidado de cambios implementados durante el desarrollo del emulador.  
-El proyecto combina un núcleo Neo Geo en Rust, un frontend nativo SDL2/OpenGL y un configurador web local.
+El proyecto combina un núcleo Neo Geo en Rust, un frontend de biblioteca SDL2 y la presentación del emulador mediante SDL2/OpenGL.
 
 > Nota legal: NGNEON-EMU no distribuye BIOS ni ROMs comerciales. El usuario debe aportar sus propios archivos.
+
+---
+
+## 2026-07-17 — Temas completos, media configurable y música del frontend
+
+### Frontend nativo
+
+- Añadidos los layouts XML v2 `Cyber List` y `Console Showcase`, diferentes al
+  diseño clásico y construidos con componentes transformables.
+- El parser admite 16 componentes funcionales, hasta 32 slots de media dinámica
+  y 15 fuentes semánticas `game.*` para vídeo, fanart, capturas, títulos,
+  mixes, marquees, wheels/logos, cajas y cartuchos.
+- Los slots media soportan prioridad/fallback, `contain`, `cover`, `stretch`,
+  opacidad, posición, tamaño y orden `z`.
+- `media_dir=auto` resuelve la biblioteca como `<rom_path>/gamelist.xml` y
+  `<rom_path>/media`; también se puede elegir una ruta global personalizada
+  desde Ajustes o con `F4`.
+- El navegador interno y el frontend nativo comparten la misma interpretación
+  de `media_dir`; el navegador reconoce cajas en `box2d`, `box3d`, `mix` y
+  `screenshots`, además del formato plano anterior.
+- La carpeta `musica/` reproduce MP3 aleatoriamente sin repetir hasta completar
+  la vuelta. Ajustes permite activarla o desactivarla y `Ctrl+N` cambia de pista.
+- La música se pausa al lanzar un juego y se reanuda al cerrar el emulador.
+- Los mensajes correctos de configuración y recarga de tema desaparecen
+  automáticamente después de unos segundos.
+- `themes/README.md` documenta todos los componentes, fuentes, atributos,
+  subdirectorios, fallbacks, límites y recetas; la plantilla XML se valida
+  automáticamente con el parser real.
+
+## 2026-07-12 — Planificador Geolith y launcher de sesiones
+
+### Emulación
+
+- Sustituido el reparto del frame en 264 bloques por el orden de ejecución de Geolith: una instrucción 68K completa, watchdog/RTC/IRQ2, LSPC y sincronización Z80/YM2610.
+- Los eventos LSPC cruzan los ciclos 29, 573 y 712 conservando la fase entre frames.
+- La fase de ciclo LSPC se guarda en save states versión 11 y resincroniza el reloj maestro al cargar.
+- La auditoría estructural ZIP frente a `.neo` compara también el offset ADPCM-B: 146 de 153 referencias son idénticas; las diferencias restantes son buffers M1 CMC expandidos o bancos ausentes en el ZIP fuente.
+
+### Frontend nativo
+
+- Añadido `ngneon-frontend.exe`, una biblioteca SDL2 de escritorio independiente del proceso de emulación.
+- Vista tipo wheel con media de `gamelist.xml` y fallback por nombre en `media/` para PNG, JPEG y WebP.
+- Configuración nativa de BIOS, región, vídeo, autoestado, gamepad y hacks compatibles con Geolith.
+- Modos de arranque Normal, Sesión limpia y Diagnóstico.
+- Sesión limpia y Diagnóstico aíslan SRAM/memory card del almacenamiento del host sin borrar los saves existentes.
+- Todos los modos generan un manifiesto reproducible sin credenciales en `logs/launch-*.log`.
+- Cada juego se abre en un proceso `ngneon-emu.exe` separado; al cerrarlo se vuelve al frontend.
+- El modo diagnóstico escribe progreso CPU, LSPC, IRQ2, watchdog y audio en `logs/session-*.log`.
+- Eliminados Edge, Chrome, Node, el servidor local y el configurador web del flujo y del paquete de release.
+- El empaquetador protege ROMs, media, saves, capturas, logs y configuración existente; ya no los limpia sin autorización explícita.
+
+Las pruebas automatizadas validan contratos internos y estructura de ROM; la validación de jugabilidad se realiza manualmente por el usuario.
 
 ---
 

@@ -76,9 +76,68 @@ fn compare_bank(label: &str, left: &[u8], right: &[u8]) {
         extra
     );
 
-    if label == "C" && len >= 128 {
-        compare_c_tiles(left, right);
+    if label == "P" {
+        print_best_block_matches(label, left, right, 0x100000);
+        print_first_diff_window(left, right);
+    } else if label == "S" && len >= 0x20000 {
+        print_best_block_matches(label, left, right, 0x20000);
     }
+
+    let quick = std::env::var("NGNEON_COMPARE_QUICK")
+        .map(|value| value != "0")
+        .unwrap_or(false);
+    if label == "C" && len >= 128 && !quick {
+        compare_c_tiles(left, right);
+    } else if label == "C" && quick {
+        print_best_block_matches(label, left, right, 0x800000);
+    }
+}
+
+fn print_best_block_matches(label: &str, left: &[u8], right: &[u8], block_size: usize) {
+    let left_blocks = left.len() / block_size;
+    let right_blocks = right.len() / block_size;
+    for left_block in 0..left_blocks {
+        let left_start = left_block * block_size;
+        let mut best = (0usize, 0usize);
+        for right_block in 0..right_blocks {
+            let right_start = right_block * block_size;
+            let matches = left[left_start..left_start + block_size]
+                .iter()
+                .zip(&right[right_start..right_start + block_size])
+                .filter(|(left, right)| left == right)
+                .count();
+            if matches > best.1 {
+                best = (right_block, matches);
+            }
+        }
+        println!(
+            "{label} block {left_block} left_hash={:016X} best_right={} matches={:.2}%",
+            fnv1a64(&left[left_start..left_start + block_size]),
+            best.0,
+            best.1 as f64 * 100.0 / block_size as f64
+        );
+    }
+    let right_hashes = (0..right_blocks)
+        .map(|block| {
+            let start = block * block_size;
+            format!(
+                "{}:{:016X}",
+                block,
+                fnv1a64(&right[start..start + block_size])
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!("{label} right_hashes {right_hashes}");
+}
+
+fn fnv1a64(data: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    hash
 }
 
 fn compare_c_tiles(left: &[u8], right: &[u8]) {

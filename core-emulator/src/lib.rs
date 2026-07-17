@@ -30,10 +30,14 @@ pub const DEFAULT_CPU_CYCLES_PER_FRAME: i32 = 202_752;
 pub const DEFAULT_Z80_TSTATES_PER_FRAME: u32 = 67_584;
 pub const VBLANK_IRQ_LEVEL: u8 = 1;
 pub const RASTER_IRQ_LEVEL: u8 = 2;
+pub const RESET_IRQ_LEVEL: u8 = 3;
 const SCANLINES_PER_FRAME: i32 = 264;
 const LSPC_EARLY_EVENT_CYCLE: i32 = 29;
 const LSPC_RENDER_CYCLE: i32 = 573;
 const LSPC_SCANLINE_ADVANCE_CYCLE: i32 = 712;
+const M68K_CYCLES_PER_SCANLINE: u32 = 768;
+#[cfg(test)]
+const MASTER_CYCLES_PER_SCANLINE: u32 = 1_536;
 const M68K_MASTER_DIV: u32 = 2;
 const Z80_MASTER_DIV: u32 = 6;
 const MASTER_CYCLES_PER_FRAME: u32 = 405_504;
@@ -113,10 +117,6 @@ pub struct NeoGeo {
     /// synchronized with the 68k across scanline and frame boundaries.
     master_cycles: u32,
     z80_master_cycles: u32,
-    /// Musashi finishes the current instruction when a timing slice expires.
-    /// This debt is subtracted from the following scanline so those excess
-    /// cycles are not generated again.
-    m68k_cycle_debt: i32,
     /// RetroAchievements session (None if not initialized).
     pub ra_session: Option<retroachievements::RASession>,
 }
@@ -149,7 +149,6 @@ impl NeoGeo {
             last_z80_tstates: 0,
             master_cycles: 0,
             z80_master_cycles: 0,
-            m68k_cycle_debt: 0,
             ra_session: None,
         }
     }
@@ -183,6 +182,9 @@ impl NeoGeo {
         }
 
         self.cpu.reset();
+        self.cpu
+            .request_interrupt(RESET_IRQ_LEVEL)
+            .expect("RESET IRQ level is valid");
         self.ym2610.borrow_mut().reset();
         self.z80_cpu.reset();
         self.audio_mixer.reset();
@@ -314,7 +316,6 @@ impl NeoGeo {
         } else {
             DEFAULT_CPU_CYCLES_PER_FRAME
         };
-        self.m68k_cycle_debt = 0;
     }
 
     pub fn cpu_overclock(&self) -> bool {
@@ -323,6 +324,10 @@ impl NeoGeo {
 
     pub fn set_sprites_per_scanline(&mut self, limit: usize) {
         self.video.set_sprites_per_scanline(limit);
+    }
+
+    pub fn set_palette_mode(&mut self, mode: video::PaletteMode) {
+        self.video.set_palette_mode(mode);
     }
 
     pub fn set_adpcm_wrap(&mut self, enabled: bool) {
@@ -335,8 +340,38 @@ impl NeoGeo {
             .set_memory_card_state(inserted, write_protected);
     }
 
+    /// Select the cartridge hardware reported through STATUS_B bit 7.
+    /// Official AES firmware uses console hardware; MVS and UniBIOS default
+    /// to arcade hardware unless the frontend selects UniBIOS AES mode.
+    pub fn set_system_is_mvs(&mut self, is_mvs: bool) {
+        self.memory.borrow_mut().set_system_is_mvs(is_mvs);
+    }
+
+    pub fn set_coin_slots_34_high(&mut self, high: bool) {
+        self.memory.borrow_mut().set_coin_slots_34_high(high);
+    }
+
+    /// Apply Geolith-compatible MVS DIP options.
+    pub fn set_dip_options(&mut self, setting_mode: bool, four_player: bool, freeplay: bool) {
+        self.memory
+            .borrow_mut()
+            .set_dip_options(setting_mode, four_player, freeplay);
+    }
+
     pub fn reset(&mut self) {
         self.memory.borrow_mut().soft_reset_for_watchdog();
+        self.reset_processors_after_memory_reset();
+    }
+
+    pub fn reset_for_bios_change(&mut self) {
+        self.memory.borrow_mut().reset_for_bios_boot();
+        self.reset_processors_after_memory_reset();
+        self.cpu
+            .request_interrupt(RESET_IRQ_LEVEL)
+            .expect("RESET IRQ level is valid");
+    }
+
+    fn reset_processors_after_memory_reset(&mut self) {
         self.cpu.reset();
         self.ym2610.borrow_mut().reset();
         self.z80_cpu.reset();
@@ -367,10 +402,9 @@ impl NeoGeo {
     fn reset_timing_counters(&mut self) {
         self.master_cycles = 0;
         self.z80_master_cycles = 0;
-        self.m68k_cycle_debt = 0;
     }
 
-    fn advance_master_clock_for_68k(&mut self, cycles: i32) {
+    fn add_master_clock_for_68k(&mut self, cycles: i32) {
         let cycles = cycles.max(0) as u32;
         if cycles == 0 {
             return;
@@ -384,6 +418,10 @@ impl NeoGeo {
         self.master_cycles = self
             .master_cycles
             .saturating_add(cycles.saturating_mul(master_div));
+    }
+
+    fn advance_master_clock_for_68k(&mut self, cycles: i32) {
+        self.add_master_clock_for_68k(cycles);
         self.catch_up_z80_audio_to_master_clock();
     }
 
@@ -417,60 +455,70 @@ impl NeoGeo {
         self.z80_master_cycles %= MASTER_CYCLES_PER_FRAME;
     }
 
-    fn run_cpu_timing_slice(&mut self, cycles: i32, cpu_error: &mut Option<String>) -> (bool, i32) {
-        if cycles <= 0 || cpu_error.is_some() {
-            return (false, 0);
+    fn render_lspc_scanline(&mut self, hardware_scanline: u16) {
+        let memory = self.memory.borrow();
+        if !memory.display_enabled {
+            return;
         }
 
-        let mut remaining = cycles;
-        let mut total_actual = 0;
+        if hardware_scanline == 22 || hardware_scanline == 23 {
+            self.video.calculate_buffered_sprites_scanline_all(
+                &memory,
+                usize::from(hardware_scanline - 22),
+            );
+        } else if (24..24 + self.video.height as u16).contains(&hardware_scanline) {
+            let scanline = usize::from(hardware_scanline - 24);
+            self.video
+                .present_buffered_sprites_scanline(&memory, scanline);
+            self.video.calculate_buffered_sprites_scanline_all(
+                &memory,
+                usize::from(hardware_scanline - 22),
+            );
+            self.video.render_fix_scanline(&memory, scanline);
+        }
+    }
 
-        while remaining > 0 && cpu_error.is_none() {
-            let chunk = {
-                let mem = self.memory.borrow();
-                mem.cycles_until_irq2_event_with_overclock(remaining as u32, self.m68k_overclock)
-                    .map(|cycles| cycles.max(1).min(remaining as u32) as i32)
-                    .unwrap_or(remaining)
+    fn run_lspc_cycles(&mut self, mut cycles: u32, cpu_error: &mut Option<String>) {
+        while cycles != 0 {
+            let (scanline, start) = {
+                let memory = self.memory.borrow();
+                (
+                    memory.lspc_scanline.get(),
+                    u32::from(memory.lspc_cycle.get()),
+                )
             };
+            let run_cycles = cycles.min(M68K_CYCLES_PER_SCANLINE - start);
+            let end = start + run_cycles;
 
-            match self.cpu.run_cycles(chunk) {
-                Ok(actual) => {
-                    let actual_clamped = actual.max(0);
-                    total_actual += actual_clamped;
-                    remaining = remaining.saturating_sub(actual_clamped);
-
-                    self.last_cpu_cycles += actual;
-                    let mut mem = self.memory.borrow_mut();
-                    let cycles = actual.max(0) as u32;
-                    let effective_cycles = self.effective_m68k_cycles(cycles);
-                    mem.advance_rtc(effective_cycles);
-                    let watchdog_triggered = mem.advance_watchdog(cycles);
-                    let irq2_triggered =
-                        mem.tick_irq2_counter_with_overclock(cycles, self.m68k_overclock);
-                    drop(mem);
-
-                    if watchdog_triggered {
-                        self.watchdog_reset();
-                    } else if irq2_triggered {
-                        if let Err(e) = self.cpu.request_interrupt(RASTER_IRQ_LEVEL) {
-                            *cpu_error = Some(e);
-                        }
+            if start <= LSPC_EARLY_EVENT_CYCLE as u32 && end > LSPC_EARLY_EVENT_CYCLE as u32 {
+                if scanline == 8 {
+                    self.memory.borrow().advance_auto_animation_frame();
+                } else if scanline == 249 && cpu_error.is_none() {
+                    if let Err(error) = self.cpu.request_interrupt(VBLANK_IRQ_LEVEL) {
+                        *cpu_error = Some(error);
                     }
-
-                    self.advance_master_clock_for_68k(actual);
-
-                    if actual_clamped == 0 {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    *cpu_error = Some(e);
-                    break;
                 }
             }
-        }
 
-        (false, total_actual)
+            if start <= LSPC_RENDER_CYCLE as u32 && end > LSPC_RENDER_CYCLE as u32 {
+                self.render_lspc_scanline(scanline);
+                if scanline == 248 {
+                    self.memory.borrow_mut().reload_irq2_on_vblank();
+                }
+            }
+
+            if start <= LSPC_SCANLINE_ADVANCE_CYCLE as u32
+                && end > LSPC_SCANLINE_ADVANCE_CYCLE as u32
+            {
+                self.memory.borrow().advance_video_timing();
+            }
+
+            self.memory
+                .borrow()
+                .lspc_cycle
+                .set((end % M68K_CYCLES_PER_SCANLINE) as u16);
+            cycles -= run_cycles;
+        }
     }
 
     pub fn status(&self) -> MachineStatus {
@@ -505,6 +553,15 @@ impl NeoGeo {
         self.memory.borrow().save_persistent_data();
     }
 
+    /// Enable or isolate host-side backup RAM and memory-card persistence for
+    /// the current session. Clean/diagnostic launches disable it before ROM
+    /// loading so their initial machine state cannot depend on earlier runs.
+    pub fn set_persistent_data_enabled(&mut self, enabled: bool) {
+        self.memory
+            .borrow_mut()
+            .set_persistent_data_enabled(enabled);
+    }
+
     /// Save the full emulation state to a binary buffer.
     /// Returns `None` if the save path hasn't been set (no ROM loaded).
     ///
@@ -513,13 +570,17 @@ impl NeoGeo {
     pub fn save_state(&mut self) -> Option<Vec<u8>> {
         let mem = self.memory.borrow();
         mem.save_path.as_ref()?;
-        let mut state = savestate::serialize_all(
+        let mut state = savestate::serialize_all_with_scheduler(
             &mut self.cpu,
             &self.z80_cpu,
             &self.ym2610.borrow(),
             &self.video,
             &mem,
             &self.audio_mixer,
+            savestate::SchedulerState {
+                master_cycles: self.master_cycles,
+                z80_master_cycles: self.z80_master_cycles,
+            },
         );
         drop(mem);
 
@@ -548,7 +609,8 @@ impl NeoGeo {
         }
         let (core_state, ra_progress) = split_ra_state_trailer(data)?;
         let mut mem = self.memory.borrow_mut();
-        savestate::deserialize_all(
+        let mut scheduler = savestate::SchedulerState::default();
+        savestate::deserialize_all_with_scheduler(
             core_state,
             &mut self.cpu,
             &mut self.z80_cpu,
@@ -556,8 +618,11 @@ impl NeoGeo {
             &mut self.video,
             &mut mem,
             &mut self.audio_mixer,
+            &mut scheduler,
         )?;
         drop(mem);
+        self.master_cycles = scheduler.master_cycles % MASTER_CYCLES_PER_FRAME;
+        self.z80_master_cycles = scheduler.z80_master_cycles % MASTER_CYCLES_PER_FRAME;
 
         if let (Some(ra), Some(progress)) = (self.ra_session.as_mut(), ra_progress) {
             ra.deserialize_progress(progress)
@@ -597,136 +662,66 @@ impl NeoGeo {
         self.last_z80_tstates = 0;
         self.audio_mixer.begin_frame();
 
-        // ── Interleaved: Run 68k + advance scanline timing ────────────
-        // The LSPC scanline counter must advance DURING CPU execution so
-        // that BIOS/game code that polls it (e.g., UniBIOS VBlank wait)
-        // sees scanlines progressing.  Without this interleaving, the
-        // counter stays at 0 and the BIOS hangs forever.
-        //
-        // We divide the frame's cycle budget into chunks of ~cycles_per_sl
-        // cycles each and alternate CPU execution with scanline
-        // advancement.
-        //
-        // For small budgets (tests), the per-scanline budget would be too
-        // small (< 1 instruction), so we fall back to the flat model:
-        // run the CPU for the full budget, then advance all scanlines
-        // at once.  This preserves test correctness.
-        const MIN_INTERLEAVE: i32 = 4096;
+        // Geolith executes one complete 68K instruction at a time, then
+        // advances watchdog/RTC/IRQ2, LSPC and finally Z80/YM2610 by the
+        // instruction's real cycle count. Keeping that order matters for
+        // games that poll the raster counter or change VRAM around IRQ2.
         let total_budget = self.cpu_cycles_per_frame;
         let mut cpu_error: Option<String> = None;
         let mut rendered_interleaved = false;
+        let native_budget = if self.m68k_overclock {
+            DEFAULT_CPU_CYCLES_PER_FRAME * 2
+        } else {
+            DEFAULT_CPU_CYCLES_PER_FRAME
+        };
 
-        if total_budget >= MIN_INTERLEAVE {
+        if total_budget == native_budget {
             rendered_interleaved = true;
             self.video.clear_framebuffer();
             self.video.reset_sprite_line_buffers();
-            let cycles_per_sl = total_budget / SCANLINES_PER_FRAME;
-            let extra = (total_budget % SCANLINES_PER_FRAME) as usize;
-            let event_scale = if self.m68k_overclock { 2 } else { 1 };
+            while self.master_cycles < MASTER_CYCLES_PER_FRAME && cpu_error.is_none() {
+                match self.cpu.run_cycles(1) {
+                    Ok(actual) => {
+                        let cycles = actual.max(0) as u32;
+                        let effective_cycles = self.effective_m68k_cycles(cycles);
+                        self.last_cpu_cycles += actual;
+                        self.add_master_clock_for_68k(actual);
 
-            for i in 0..SCANLINES_PER_FRAME {
-                let budget = cycles_per_sl + if (i as usize) < extra { 1 } else { 0 };
-                let early_event_cycle = LSPC_EARLY_EVENT_CYCLE * event_scale;
-                let render_cycle = (LSPC_RENDER_CYCLE * event_scale).min(budget);
-                let scanline_advance_cycle =
-                    (LSPC_SCANLINE_ADVANCE_CYCLE * event_scale).min(budget);
-                let mut line_cycles = self.m68k_cycle_debt;
-                self.m68k_cycle_debt = 0;
-
-                // Geolith fires auto-animation and VBlank when the LSPC
-                // crosses cycle 29 of scanlines 8 and 249 respectively.
-                // Preserve that phase instead of raising them at cycle zero:
-                // games can use the exact interrupt arrival point as part of
-                // their frame counters and pseudo-random sequencing.
-                if i == 8 || i == 249 {
-                    if early_event_cycle > line_cycles {
-                        let (watchdog_triggered, actual) = self
-                            .run_cpu_timing_slice(early_event_cycle - line_cycles, &mut cpu_error);
-                        line_cycles += actual.max(0);
-                        if watchdog_triggered {
-                            break;
+                        if self.memory.borrow_mut().advance_watchdog(cycles) {
+                            self.watchdog_reset();
                         }
-                    }
 
-                    if i == 8 {
-                        let mem = self.memory.borrow();
-                        mem.advance_auto_animation_frame();
-                    } else if cpu_error.is_none() {
-                        if let Err(e) = self.cpu.request_interrupt(VBLANK_IRQ_LEVEL) {
-                            cpu_error = Some(e);
+                        let irq2_triggered = {
+                            let mut memory = self.memory.borrow_mut();
+                            if memory.system_is_mvs {
+                                memory.advance_rtc(effective_cycles);
+                            }
+                            memory.tick_irq2_counter_with_overclock(cycles, self.m68k_overclock)
+                        };
+                        if irq2_triggered {
+                            if let Err(error) = self.cpu.request_interrupt(RASTER_IRQ_LEVEL) {
+                                cpu_error = Some(error);
+                            }
                         }
-                    }
-                }
 
-                if render_cycle > line_cycles {
-                    let (watchdog_triggered, actual) =
-                        self.run_cpu_timing_slice(render_cycle - line_cycles, &mut cpu_error);
-                    line_cycles += actual.max(0);
-                    if watchdog_triggered {
-                        break;
+                        self.run_lspc_cycles(effective_cycles, &mut cpu_error);
+                        self.catch_up_z80_audio_to_master_clock();
                     }
+                    Err(error) => cpu_error = Some(error),
                 }
-
-                // Geolith renders the full LSPC area, then libretro exposes
-                // the cropped 224-line image from crop_t + 16 (24 by default).
-                // Present NGNEON's 224-line framebuffer on that same hardware
-                // window so mid-frame VRAM writes land on the intended rows.
-                if cpu_error.is_none() {
-                    let mem = self.memory.borrow();
-                    if mem.display_enabled {
-                        if i == 22 || i == 23 {
-                            self.video
-                                .calculate_buffered_sprites_scanline_all(&mem, (i - 22) as usize);
-                        } else if (24..24 + self.video.height as i32).contains(&i) {
-                            let sl = (i - 24) as usize;
-                            self.video.present_buffered_sprites_scanline(&mem, sl);
-                            let future_sl = (i - 22) as usize;
-                            self.video
-                                .calculate_buffered_sprites_scanline_all(&mem, future_sl);
-                            self.video.render_fix_scanline(&mem, sl);
-                        }
-                    }
-                }
-
-                // Advance video timing (increment scanline counter,
-                // auto-animation counter) — released before next run_cycles.
-                if i == 248 {
-                    self.memory.borrow_mut().reload_irq2_on_vblank();
-                }
-                if scanline_advance_cycle > line_cycles {
-                    let (watchdog_triggered, actual) = self
-                        .run_cpu_timing_slice(scanline_advance_cycle - line_cycles, &mut cpu_error);
-                    line_cycles += actual.max(0);
-                    if watchdog_triggered {
-                        break;
-                    }
-                }
-                {
-                    let mem = self.memory.borrow();
-                    mem.advance_video_timing();
-                }
-
-                if budget > line_cycles {
-                    let (watchdog_triggered, actual) =
-                        self.run_cpu_timing_slice(budget - line_cycles, &mut cpu_error);
-                    line_cycles += actual.max(0);
-                    if watchdog_triggered {
-                        break;
-                    }
-                }
-                self.m68k_cycle_debt = line_cycles.saturating_sub(budget);
             }
         } else {
-            self.m68k_cycle_debt = 0;
             // Flat model: run CPU for the full budget before advancing
             // any scanlines.  Used for small-budget tests.
             match self.cpu.run_cycles(total_budget) {
                 Ok(actual) => {
                     self.last_cpu_cycles += actual;
-                    let mut mem = self.memory.borrow_mut();
                     let cycles = actual.max(0) as u32;
                     let effective_cycles = self.effective_m68k_cycles(cycles);
-                    mem.advance_rtc(effective_cycles);
+                    let mut mem = self.memory.borrow_mut();
+                    if mem.system_is_mvs {
+                        mem.advance_rtc(effective_cycles);
+                    }
                     let watchdog_triggered = mem.advance_watchdog(cycles);
                     let irq2_triggered =
                         mem.tick_irq2_counter_with_overclock(cycles, self.m68k_overclock);
@@ -796,8 +791,8 @@ impl NeoGeo {
             }
         }
 
-        // IRQ1 (VBlank) already fired at scanline 248 during the
-        // interleaving/advancement loop above.
+        // IRQ1 (VBlank) already fired at hardware scanline 249 during the
+        // instruction-level LSPC loop above.
 
         // RetroAchievements: process achievement conditions each frame
         if let Some(ref mut ra) = self.ra_session {
@@ -833,6 +828,11 @@ fn input_state_to_ports(input_state: [bool; 10]) -> memory::InputPorts {
     let mut p1 = 0xFF;
     let mut system = 0x3F;
     let mut status_a = 0x07;
+    // The original Neo Geo joystick cannot close both contacts on one axis.
+    // Keyboard and gamepad events can, so expose a neutral axis while both
+    // directions are held instead of sending an impossible state to the game.
+    let vertical_socd = input_state[0] && input_state[1];
+    let horizontal_socd = input_state[2] && input_state[3];
 
     for (index, pressed) in input_state.into_iter().enumerate() {
         if !pressed {
@@ -840,16 +840,16 @@ fn input_state_to_ports(input_state: [bool; 10]) -> memory::InputPorts {
         }
 
         match index {
-            0 => p1 &= !0x01,       // Up
-            1 => p1 &= !0x02,       // Down
-            2 => p1 &= !0x04,       // Left
-            3 => p1 &= !0x08,       // Right
-            4 => p1 &= !0x10,       // A
-            5 => p1 &= !0x20,       // B
-            6 => p1 &= !0x40,       // C
-            7 => p1 &= !0x80,       // D
-            8 => system &= !0x01,   // Start
-            9 => status_a &= !0x01, // Coin 1
+            0 if !vertical_socd => p1 &= !0x01,   // Up
+            1 if !vertical_socd => p1 &= !0x02,   // Down
+            2 if !horizontal_socd => p1 &= !0x04, // Left
+            3 if !horizontal_socd => p1 &= !0x08, // Right
+            4 => p1 &= !0x10,                     // A
+            5 => p1 &= !0x20,                     // B
+            6 => p1 &= !0x40,                     // C
+            7 => p1 &= !0x80,                     // D
+            8 => system &= !0x01,                 // Start
+            9 => status_a &= !0x01,               // Coin 1
             _ => {}
         }
     }
@@ -885,6 +885,31 @@ mod tests {
     }
 
     #[test]
+    fn opposite_directions_are_neutralized_at_the_controller_port() {
+        let mut neogeo = NeoGeo::new();
+        neogeo.set_input(EmuAction::Left, true);
+        neogeo.set_input(EmuAction::Right, true);
+        neogeo.set_input(EmuAction::Up, true);
+        neogeo.set_input(EmuAction::Down, true);
+        neogeo.set_input(EmuAction::A, true);
+
+        {
+            let memory = neogeo.memory.borrow();
+            assert_eq!(memory.input_ports.p1 & 0x0C, 0x0C);
+            assert_eq!(memory.input_ports.p1 & 0x03, 0x03);
+            assert_eq!(memory.input_ports.p1 & 0x10, 0x00);
+        }
+
+        // Keeping the raw held states lets the remaining direction become
+        // active as soon as its opposite is released.
+        neogeo.set_input(EmuAction::Right, false);
+        neogeo.set_input(EmuAction::Down, false);
+        let memory = neogeo.memory.borrow();
+        assert_eq!(memory.input_ports.p1 & 0x0C, 0x08);
+        assert_eq!(memory.input_ports.p1 & 0x03, 0x02);
+    }
+
+    #[test]
     fn reset_clears_cpu_fault_state() {
         let mut neogeo = NeoGeo::new();
         neogeo.emulation_paused = true;
@@ -896,6 +921,24 @@ mod tests {
         assert!(!neogeo.emulation_paused);
         assert!(neogeo.last_error.is_none());
         assert_eq!(neogeo.last_cpu_cycles, 0);
+    }
+
+    #[test]
+    fn reg_irqack_is_the_only_cartridge_irq_clear_path() {
+        let mut neogeo = NeoGeo::new();
+        neogeo.cpu.request_interrupt(VBLANK_IRQ_LEVEL).unwrap();
+        neogeo.cpu.request_interrupt(RASTER_IRQ_LEVEL).unwrap();
+        neogeo.cpu.request_interrupt(RESET_IRQ_LEVEL).unwrap();
+
+        assert!(neogeo.cpu.interrupt_pending(VBLANK_IRQ_LEVEL));
+        assert!(neogeo.cpu.interrupt_pending(RASTER_IRQ_LEVEL));
+        assert!(neogeo.cpu.interrupt_pending(RESET_IRQ_LEVEL));
+
+        neogeo.memory.borrow_mut().write16(0x3C000C, 0x0005);
+
+        assert!(!neogeo.cpu.interrupt_pending(VBLANK_IRQ_LEVEL));
+        assert!(neogeo.cpu.interrupt_pending(RASTER_IRQ_LEVEL));
+        assert!(!neogeo.cpu.interrupt_pending(RESET_IRQ_LEVEL));
     }
 
     #[test]
@@ -994,7 +1037,7 @@ mod tests {
     }
 
     #[test]
-    fn scanline_instruction_overrun_does_not_accelerate_audio_cadence() {
+    fn instruction_level_scheduler_preserves_audio_and_lspc_cadence() {
         let mut neogeo = NeoGeo::new();
         let mut rom = crate::rom::RomData {
             prom: minimal_loop_program(),
@@ -1010,6 +1053,7 @@ mod tests {
             metadata: None,
         };
         neogeo.load_rom_and_connect(&mut rom);
+        neogeo.memory.borrow_mut().watchdog_enabled = false;
 
         const FRAMES: u64 = 120;
         let mut actual_samples = 0u64;
@@ -1021,12 +1065,44 @@ mod tests {
         let expected_samples = FRAMES * MASTER_CYCLES_PER_FRAME as u64 / Z80_MASTER_DIV as u64 / 72;
         assert!(
             actual_samples.abs_diff(expected_samples) <= 16,
-            "scanline slicing accelerated YM2610 cadence: actual={actual_samples}, expected={expected_samples}"
+            "instruction scheduling changed YM2610 cadence: actual={actual_samples}, expected={expected_samples}"
         );
-        assert!(
-            neogeo.m68k_cycle_debt < 32,
-            "68k instruction debt should remain bounded"
-        );
+        let memory = neogeo.memory.borrow();
+        let lspc_master_phase = (u32::from(memory.lspc_scanline.get())
+            * MASTER_CYCLES_PER_SCANLINE
+            + u32::from(memory.lspc_cycle.get()) * M68K_MASTER_DIV)
+            % MASTER_CYCLES_PER_FRAME;
+        assert_eq!(neogeo.master_cycles, lspc_master_phase);
+    }
+
+    #[test]
+    fn lspc_events_fire_after_geolith_cycle_boundaries() {
+        let mut neogeo = NeoGeo::new();
+        {
+            let memory = neogeo.memory.borrow();
+            memory.lspc_scanline.set(8);
+            memory.lspc_cycle.set(28);
+            memory.auto_animation_counter.set(0);
+            memory.auto_animation_timer.set(0);
+        }
+        let mut cpu_error = None;
+
+        neogeo.run_lspc_cycles(1, &mut cpu_error);
+        assert_eq!(neogeo.memory.borrow().auto_animation_counter.get(), 0);
+
+        neogeo.run_lspc_cycles(1, &mut cpu_error);
+        assert_eq!(neogeo.memory.borrow().auto_animation_counter.get(), 1);
+
+        {
+            let memory = neogeo.memory.borrow();
+            memory.lspc_scanline.set(100);
+            memory.lspc_cycle.set(712);
+        }
+        neogeo.run_lspc_cycles(1, &mut cpu_error);
+        let memory = neogeo.memory.borrow();
+        assert_eq!(memory.lspc_scanline.get(), 101);
+        assert_eq!(memory.lspc_cycle.get(), 713);
+        assert!(cpu_error.is_none());
     }
 
     #[test]

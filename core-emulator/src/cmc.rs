@@ -35,6 +35,7 @@ struct CmcGfxTables {
     addr_16_23_xor2: &'static [u8; 256],
 }
 
+// Effective values for FBNeo's interleaved CMC42 cartridge data path.
 pub const CMC42_MSLUG3_EXTRA_XOR: u8 = 0xad;
 pub const CMC42_KOF99_EXTRA_XOR: u8 = 0x00;
 pub const CMC42_GAROU_EXTRA_XOR: u8 = 0x06;
@@ -46,16 +47,16 @@ pub const CMC42_PREISLE2_EXTRA_XOR: u8 = 0x9f;
 pub const CMC42_BANGBEAD_EXTRA_XOR: u8 = 0xf8;
 pub const CMC42_GANRYU_EXTRA_XOR: u8 = 0x07;
 
-// CMC50 extra XOR values from FBNeo's NeoGeo CMC table notes.
+// Values passed to NeoCMCDecrypt after FBNeo's CMC50 0x5c correction.
 pub const CMC50_MSLUG4_EXTRA_XOR: u8 = 0x6d;
-pub const CMC50_KOF2003_EXTRA_XOR: u8 = 0x9d;
-pub const CMC50_MSLUG5_EXTRA_XOR: u8 = 0x19;
-pub const CMC50_ROTD_EXTRA_XOR: u8 = 0x3f;
-pub const CMC50_MATRIM_EXTRA_XOR: u8 = 0x6a;
-pub const CMC50_PNYAA_EXTRA_XOR: u8 = 0x2e;
-pub const CMC50_SAMSHO5_EXTRA_XOR: u8 = 0x0f;
-pub const CMC50_SAMSH5SP_EXTRA_XOR: u8 = 0x0d;
-pub const CMC50_SVC_EXTRA_XOR: u8 = 0x57;
+pub const CMC50_KOF2003_EXTRA_XOR: u8 = 0xc1;
+pub const CMC50_MSLUG5_EXTRA_XOR: u8 = 0x45;
+pub const CMC50_ROTD_EXTRA_XOR: u8 = 0x63;
+pub const CMC50_MATRIM_EXTRA_XOR: u8 = 0x36;
+pub const CMC50_PNYAA_EXTRA_XOR: u8 = 0x72;
+pub const CMC50_SAMSHO5_EXTRA_XOR: u8 = 0x53;
+pub const CMC50_SAMSH5SP_EXTRA_XOR: u8 = 0x51;
+pub const CMC50_SVC_EXTRA_XOR: u8 = 0x0b;
 pub const CMC50_KOG_EXTRA_XOR: u8 = 0x5c;
 pub const CMC50_JOCKEYGP_EXTRA_XOR: u8 = 0xf0;
 pub const CMC50_KOF2001_EXTRA_XOR: u8 = 0x42;

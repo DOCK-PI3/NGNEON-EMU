@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -928,7 +929,7 @@ impl RomData {
         let mut graphics_banks = Vec::new();
         let mut srom = Vec::new();
         let mut mrom = Vec::new();
-        let mut vrom = Vec::new();
+        let mut sample_banks = Vec::new();
         let mut sma_rom = Vec::new();
         let mut recognized_files = Vec::new();
         for (part, name, buf) in entries {
@@ -938,10 +939,11 @@ impl RomData {
                 RomPart::Graphics(index) => graphics_banks.push((index, name, buf)),
                 RomPart::FixLayer => srom.extend(buf),
                 RomPart::AudioCpu => mrom.extend(buf),
-                RomPart::Samples(_) => vrom.extend(buf),
+                RomPart::Samples(index) => sample_banks.push((index, buf)),
                 RomPart::Sma => sma_rom = buf,
             }
         }
+        let (mut vrom, vrom_b_offset) = layout_zip_sample_banks(sample_banks);
         // Log any unclassified files for diagnostic purposes
         let total_files = recognized_files.len() + skipped_count;
         if skipped_count > 0 {
@@ -999,13 +1001,9 @@ impl RomData {
 
         // ── C-ROM / M1 / V-ROM decryption ───────────────────────────────
         let crom = if matches!(known_zip_set, Some(KnownZipSet::KogBootleg)) {
-            if let Some(parent_crom) = load_kog_parent_crom(path_ref) {
-                parent_crom
-            } else {
-                let mut crom = layout_kog_bootleg_graphics(graphics_banks);
-                decrypt_kog_bootleg_crom(&mut crom);
-                crom
-            }
+            let mut crom = layout_kog_bootleg_graphics(graphics_banks);
+            decrypt_kog_bootleg_crom(&mut crom);
+            crom
         } else if matches!(
             known_zip_set,
             Some(
@@ -1164,12 +1162,16 @@ impl RomData {
             }
             decrypted_crom
         } else {
-            normalize_zip_graphics_banks(
+            let mut crom = normalize_zip_graphics_banks(
                 graphics_banks
                     .into_iter()
                     .map(|(index, _, bytes)| (index, bytes))
                     .collect(),
-            )
+            );
+            if zip_set_requires_swap_c(file_stem) {
+                apply_swap_c_layout(&mut crom);
+            }
+            crom
         };
         // Auto-dump ROM banks for diagnostic purposes (all ROM types)
         dump_prom_diagnostic(&prom, file_stem);
@@ -1184,7 +1186,7 @@ impl RomData {
             srom,
             mrom,
             vrom,
-            vrom_b_offset: 0,
+            vrom_b_offset,
             sma_rom,
             is_demo: false,
             source: RomSource::ZipArchive,
@@ -2016,14 +2018,6 @@ fn load_kog_parent(path: &Path) -> Option<RomData> {
     None
 }
 
-fn load_kog_parent_crom(path: &Path) -> Option<Vec<u8>> {
-    let parent = load_kog_parent(path)?;
-    if parent.crom.is_empty() {
-        return None;
-    }
-    Some(parent.crom)
-}
-
 fn load_kog_parent_raw_program_tail(path: &Path) -> Option<Vec<u8>> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     for candidate in [dir.join("kof97.zip"), dir.join("kof97.neo")] {
@@ -2210,6 +2204,13 @@ fn write_prom_word_be(prom: &mut [u8], offset: usize, value: u16) {
     prom[offset + 1] = bytes[1];
 }
 
+fn read_prom_word_be(prom: &[u8], offset: usize) -> u16 {
+    prom.get(offset..offset + 2)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u16::from_be_bytes)
+        .unwrap_or(0xffff)
+}
+
 fn layout_p32_program_pair(first: &[u8], second: &[u8]) -> Vec<u8> {
     let len = first.len().max(second.len());
     let mut prom = Vec::with_capacity(len * 2);
@@ -2271,20 +2272,31 @@ fn decrypt_kof98_program(prom: &mut [u8]) {
 }
 
 fn decrypt_mslug5_program(prom: &mut [u8]) {
-    const MIN_SIZE: usize = 0x800000;
-    if prom.len() < MIN_SIZE {
+    const ROM_SIZE: usize = 0x800000;
+    const XOR1: [u8; 0x20] = [
+        0xc2, 0x4b, 0x74, 0xfd, 0x0b, 0x34, 0xeb, 0xd7, 0x10, 0x6d, 0xf9, 0xce, 0x5d, 0xd5, 0x61,
+        0x29, 0xf5, 0xbe, 0x0d, 0x82, 0x72, 0x45, 0x0f, 0x24, 0xb3, 0x34, 0x1b, 0x99, 0xea, 0x09,
+        0xf3, 0x03,
+    ];
+    const XOR2: [u8; 0x20] = [
+        0x36, 0x09, 0xb0, 0x64, 0x95, 0x0f, 0x90, 0x42, 0x6e, 0x0f, 0x30, 0xf6, 0xe5, 0x08, 0x30,
+        0x64, 0x08, 0x04, 0x00, 0x2f, 0x72, 0x09, 0xa0, 0x13, 0xc9, 0x0b, 0xa0, 0x3e, 0xc2, 0x00,
+        0x40, 0x2b,
+    ];
+
+    if prom.len() < ROM_SIZE {
         return;
     }
 
     for i in 0..0x100000 {
-        prom[i] ^= prom[0x0fffe0 + (i & 0x1f)];
+        prom[i] ^= XOR1[i & 0x1f];
     }
 
-    for i in 0x100000..0x700000 {
-        prom[i] ^= !prom[0x7fffe0 + (i & 0x1f)];
+    for i in 0x100000..ROM_SIZE {
+        prom[i] ^= XOR2[i & 0x1f];
     }
 
-    for i in (0x100000..0x700000).step_by(4) {
+    for i in (0x100000..ROM_SIZE).step_by(4) {
         let word = u16::from_le_bytes([prom[i + 1], prom[i + 2]]);
         let swapped = bitswap16(word, [15, 14, 13, 12, 10, 11, 8, 9, 6, 7, 4, 5, 3, 2, 1, 0]);
         let [lo, hi] = swapped.to_le_bytes();
@@ -2292,49 +2304,53 @@ fn decrypt_mslug5_program(prom: &mut [u8]) {
         prom[i + 2] = hi;
     }
 
-    prom.copy_within(0..0x100000, 0x700000);
-
-    let fixed_copy = prom[0x700000..0x800000].to_vec();
+    let source = prom[..ROM_SIZE].to_vec();
     for i in 0..0x10 {
-        let src = bitswap8(i as u8, [7, 6, 5, 4, 1, 0, 3, 2]) as usize * 0x10000;
+        let src =
+            ((i & 0xf0) + bitswap8((i & 0x0f) as u8, [7, 6, 5, 4, 1, 0, 3, 2]) as usize) * 0x10000;
         let dst = i * 0x10000;
-        prom[dst..dst + 0x10000].copy_from_slice(&fixed_copy[src..src + 0x10000]);
+        prom[dst..dst + 0x10000].copy_from_slice(&source[src..src + 0x10000]);
     }
 
-    let mut bank_copy = vec![0; 0x100000];
-    for bank_start in (0x100000..0x700000).step_by(0x100000) {
-        for j in (0..0x100000).step_by(0x100) {
-            let k = ((j & 0x0f00) ^ 0x0700)
-                + ((bitswap8((j >> 12) as u8, [5, 4, 7, 6, 1, 0, 3, 2]) as usize) << 12);
-            bank_copy[j..j + 0x100].copy_from_slice(&prom[bank_start + k..bank_start + k + 0x100]);
-        }
-        prom[bank_start..bank_start + 0x100000].copy_from_slice(&bank_copy);
+    for dst in (0x100000..ROM_SIZE).step_by(0x100) {
+        let src = (dst & 0xf000ff)
+            + ((dst & 0x000f00) ^ 0x000700)
+            + ((bitswap8(((dst & 0x0ff000) >> 12) as u8, [5, 4, 7, 6, 1, 0, 3, 2]) as usize) << 12);
+        prom[dst..dst + 0x100].copy_from_slice(&source[src..src + 0x100]);
     }
 
-    if prom.len() > MIN_SIZE {
-        let tail_len = prom.len() - MIN_SIZE;
-        prom.copy_within(MIN_SIZE..MIN_SIZE + tail_len, 0x700000);
-        let zero_start = prom.len().saturating_sub(0x100000);
-        prom[zero_start..].fill(0);
-    }
+    let reordered = prom[..ROM_SIZE].to_vec();
+    prom[0x100000..0x200000].copy_from_slice(&reordered[0x700000..0x800000]);
+    prom[0x200000..0x800000].copy_from_slice(&reordered[0x100000..0x700000]);
 }
 
 fn decrypt_kof2003_program(prom: &mut [u8]) {
-    const MIN_SIZE: usize = 0x900000;
-    if prom.len() < MIN_SIZE {
-        return;
-    }
+    const ROM_SIZE: usize = 0x900000;
+    const XOR1: [u8; 0x20] = [
+        0x3b, 0x6a, 0xf7, 0xb7, 0xe8, 0xa9, 0x20, 0x99, 0x9f, 0x39, 0x34, 0x0c, 0xc3, 0x9a, 0xa5,
+        0xc8, 0xb8, 0x18, 0xce, 0x56, 0x94, 0x44, 0xe3, 0x7a, 0xf7, 0xdd, 0x42, 0xf0, 0x18, 0x60,
+        0x92, 0x9f,
+    ];
+    const XOR2: [u8; 0x20] = [
+        0x2f, 0x02, 0x60, 0xbb, 0x77, 0x01, 0x30, 0x08, 0xd8, 0x01, 0xa0, 0xdf, 0x37, 0x0a, 0xf0,
+        0x65, 0x28, 0x03, 0xd0, 0x23, 0xd3, 0x03, 0x70, 0x42, 0xbb, 0x06, 0xf0, 0x28, 0xba, 0x0f,
+        0xf0, 0x7a,
+    ];
 
-    for i in 0..0x100000 {
-        prom[i] ^= !prom[0x0fffe0 + (i & 0x1f)];
+    if prom.len() < ROM_SIZE {
+        return;
     }
 
     for i in 0..0x100000 {
         prom[0x800000 + i] ^= prom[0x100002 | i];
     }
 
+    for i in 0..0x100000 {
+        prom[i] ^= XOR1[i & 0x1f];
+    }
+
     for i in 0x100000..0x800000 {
-        prom[i] ^= !prom[0x7fffe0 + (i & 0x1f)];
+        prom[i] ^= XOR2[i & 0x1f];
     }
 
     for i in (0x100000..0x800000).step_by(4) {
@@ -2345,43 +2361,52 @@ fn decrypt_kof2003_program(prom: &mut [u8]) {
         prom[i + 2] = hi;
     }
 
-    prom.copy_within(0..0x100000, 0x700000);
-
-    let fixed_copy = prom[0x700000..0x800000].to_vec();
+    let source = prom[..ROM_SIZE].to_vec();
+    let mut reordered = vec![0; ROM_SIZE];
     for i in 0..0x10 {
         let src = bitswap8(i as u8, [7, 6, 5, 4, 0, 1, 2, 3]) as usize * 0x10000;
         let dst = i * 0x10000;
-        prom[dst..dst + 0x10000].copy_from_slice(&fixed_copy[src..src + 0x10000]);
+        reordered[dst..dst + 0x10000].copy_from_slice(&source[src..src + 0x10000]);
     }
 
-    prom.copy_within(0x100000..0x700000, 0x200000);
-
-    let mut bank_copy = vec![0; 0x100000];
-    for bank_start in (0x200000..0x900000).step_by(0x100000) {
-        for j in (0..0x100000).step_by(0x100) {
-            let k = ((j & 0x0f00) ^ 0x0800)
-                | ((bitswap8((j >> 12) as u8, [4, 5, 6, 7, 1, 0, 3, 2]) as usize) << 12);
-            bank_copy[j..j + 0x100].copy_from_slice(&prom[bank_start + k..bank_start + k + 0x100]);
-        }
-        prom[bank_start..bank_start + 0x100000].copy_from_slice(&bank_copy);
+    for dst in (0x100000..ROM_SIZE).step_by(0x100) {
+        let src = (dst & 0xf000ff)
+            + ((dst & 0x000f00) ^ 0x000800)
+            + ((bitswap8(((dst & 0x0ff000) >> 12) as u8, [4, 5, 6, 7, 1, 0, 3, 2]) as usize) << 12);
+        reordered[dst..dst + 0x100].copy_from_slice(&source[src..src + 0x100]);
     }
+
+    prom[..0x100000].copy_from_slice(&reordered[..0x100000]);
+    prom[0x100000..0x200000].copy_from_slice(&reordered[0x800000..0x900000]);
+    prom[0x200000..0x900000].copy_from_slice(&reordered[0x100000..0x800000]);
 }
 
 fn decrypt_svc_program(prom: &mut [u8]) {
-    const MIN_SIZE: usize = 0x800000;
-    if prom.len() < MIN_SIZE {
+    const ROM_SIZE: usize = 0x800000;
+    const XOR1: [u8; 0x20] = [
+        0x3b, 0x6a, 0xf7, 0xb7, 0xe8, 0xa9, 0x20, 0x99, 0x9f, 0x39, 0x34, 0x0c, 0xc3, 0x9a, 0xa5,
+        0xc8, 0xb8, 0x18, 0xce, 0x56, 0x94, 0x44, 0xe3, 0x7a, 0xf7, 0xdd, 0x42, 0xf0, 0x18, 0x60,
+        0x92, 0x9f,
+    ];
+    const XOR2: [u8; 0x20] = [
+        0x69, 0x0b, 0x60, 0xd6, 0x4f, 0x01, 0x40, 0x1a, 0x9f, 0x0b, 0xf0, 0x75, 0x58, 0x0e, 0x60,
+        0xb4, 0x14, 0x04, 0x20, 0xe4, 0xb9, 0x0d, 0x10, 0x89, 0xeb, 0x07, 0x30, 0x90, 0x50, 0x0e,
+        0x20, 0x26,
+    ];
+
+    if prom.len() < ROM_SIZE {
         return;
     }
 
     for i in 0..0x100000 {
-        prom[i] ^= !prom[0x0fffe0 + (i & 0x1f)];
+        prom[i] ^= XOR1[i & 0x1f];
     }
 
-    for i in 0x100000..0x800000 {
-        prom[i] ^= !prom[0x7fffe0 + (i & 0x1f)];
+    for i in 0x100000..ROM_SIZE {
+        prom[i] ^= XOR2[i & 0x1f];
     }
 
-    for i in (0x100000..0x600000).step_by(4) {
+    for i in (0x100000..ROM_SIZE).step_by(4) {
         let word = u16::from_le_bytes([prom[i + 1], prom[i + 2]]);
         let swapped = bitswap16(word, [15, 14, 13, 12, 10, 11, 8, 9, 6, 7, 4, 5, 3, 2, 1, 0]);
         let [lo, hi] = swapped.to_le_bytes();
@@ -2389,30 +2414,32 @@ fn decrypt_svc_program(prom: &mut [u8]) {
         prom[i + 2] = hi;
     }
 
-    prom.copy_within(0..0x100000, 0x700000);
-
-    let fixed_copy = prom[0x700000..0x800000].to_vec();
+    let source = prom[..ROM_SIZE].to_vec();
     for i in 0..0x10 {
-        let src = bitswap8(i as u8, [7, 6, 5, 4, 2, 3, 0, 1]) as usize * 0x10000;
+        let src =
+            ((i & 0xf0) + bitswap8((i & 0x0f) as u8, [7, 6, 5, 4, 2, 3, 0, 1]) as usize) * 0x10000;
         let dst = i * 0x10000;
-        prom[dst..dst + 0x10000].copy_from_slice(&fixed_copy[src..src + 0x10000]);
+        prom[dst..dst + 0x10000].copy_from_slice(&source[src..src + 0x10000]);
     }
 
-    let mut bank_copy = vec![0; 0x100000];
-    for bank_start in (0x100000..0x700000).step_by(0x100000) {
-        for j in (0..0x100000).step_by(0x100) {
-            let k = ((bitswap8((j >> 12) as u8, [4, 5, 6, 7, 1, 0, 3, 2]) as usize) << 12)
-                | ((j & 0x00f00) ^ 0x00a00);
-            bank_copy[j..j + 0x100].copy_from_slice(&prom[bank_start + k..bank_start + k + 0x100]);
-        }
-        prom[bank_start..bank_start + 0x100000].copy_from_slice(&bank_copy);
+    for dst in (0x100000..ROM_SIZE).step_by(0x100) {
+        let src = (dst & 0xf000ff)
+            + ((dst & 0x000f00) ^ 0x000a00)
+            + ((bitswap8(((dst & 0x0ff000) >> 12) as u8, [4, 5, 6, 7, 1, 0, 3, 2]) as usize) << 12);
+        prom[dst..dst + 0x100].copy_from_slice(&source[src..src + 0x100]);
     }
+
+    let reordered = prom[..ROM_SIZE].to_vec();
+    prom[0x100000..0x200000].copy_from_slice(&reordered[0x700000..0x800000]);
+    prom[0x200000..0x800000].copy_from_slice(&reordered[0x100000..0x700000]);
 }
 
 fn decrypt_kog_bootleg_program(prom: &mut [u8]) {
-    if prom.len() < 0x200000 {
+    if prom.len() < 0x600000 {
         return;
     }
+
+    swap_program_rom_words(prom);
 
     const BANKS: [usize; 8] = [0x3, 0x8, 0x7, 0xC, 0x1, 0xA, 0x6, 0xD];
     let mut unscrambled = vec![0xFF; 0x100000];
@@ -2423,35 +2450,43 @@ fn decrypt_kog_bootleg_program(prom: &mut [u8]) {
             unscrambled[dst..dst + 0x20000].copy_from_slice(&prom[src..src + 0x20000]);
         }
     }
+    unscrambled[0x90000..0x94000].copy_from_slice(&prom[0x40000..0x44000]);
     prom[..0x100000].copy_from_slice(&unscrambled);
 
-    if prom.len() > 0x200000 {
-        let parent_len = (prom.len() - 0x200000).min(0x400000);
-        prom.copy_within(0x200000..0x200000 + parent_len, 0x100000);
+    for offset in (0x90000..0x94000).step_by(2) {
+        let opcode = read_prom_word_be(prom, offset);
+        let operand = read_prom_word_be(prom, offset + 2);
+        if (opcode & 0xf2bf) == 0x42b9 && operand == 0 {
+            write_prom_word_be(prom, offset + 2, 0x0009);
+        }
+        if opcode == 0x4eb8 {
+            write_prom_word_be(prom, offset, 0x6100);
+            let adjustment = (0xfffe - (offset & 0xfffe)) as u16;
+            write_prom_word_be(prom, offset + 2, operand.wrapping_add(adjustment));
+        }
     }
+
+    for offset in [0x7a6, 0x7c6, 0x7e6] {
+        prom.copy_within(0x90000 + offset..0x90000 + offset + 6, offset);
+    }
+    prom.copy_within(0x200000..0x600000, 0x100000);
+    prom[0x500000..0x600000].fill(0);
+    write_prom_word_be(prom, 0x924ac, 0x0009);
+    write_prom_word_be(prom, 0x9251c, 0x0009);
+    write_prom_word_be(prom, 0x0ffffe, 0xff01);
 }
 
 fn decrypt_kog_bootleg_srom(srom: &mut [u8]) {
-    match srom.first().copied() {
-        Some(0x11 | 0x22) => {
-            for chunk in srom.chunks_exact_mut(0x10) {
-                chunk.rotate_left(8);
-            }
-        }
-        Some(0x30) => {
-            for byte in srom {
-                *byte = bitswap8(*byte, [7, 6, 0, 4, 3, 2, 1, 5]);
-            }
-        }
-        _ => {}
+    for chunk in srom.chunks_exact_mut(0x10) {
+        chunk.rotate_left(8);
     }
 }
 
 fn layout_kog_bootleg_graphics(mut banks: Vec<(u8, String, Vec<u8>)>) -> Vec<u8> {
     banks.sort_by(|(_, name_a, _), (_, name_b, _)| name_a.cmp(name_b));
     let mut crom = Vec::new();
-    append_named_graphics_pair(&mut crom, &banks, "c1a", "c1b");
-    append_named_graphics_pair(&mut crom, &banks, "c2a", "c2b");
+    append_named_graphics_pair(&mut crom, &banks, "c1a", "c2a");
+    append_named_graphics_pair(&mut crom, &banks, "c1b", "c2b");
     append_named_graphics_pair(&mut crom, &banks, "c3", "c4");
     crom
 }
@@ -2522,14 +2557,176 @@ fn layout_mslug3_sma_program_rom(banked_prom: Vec<u8>, sma_rom: &[u8]) -> Vec<u8
 }
 
 fn normalize_zip_graphics_banks(banks: Vec<(u8, Vec<u8>)>) -> Vec<u8> {
-    crate::cmc::interleave_cmc_graphics_banks(banks)
+    let mut chunks_by_bank: BTreeMap<u8, Vec<Vec<u8>>> = BTreeMap::new();
+    for (index, bytes) in banks {
+        chunks_by_bank.entry(index).or_default().push(bytes);
+    }
+    let banks = chunks_by_bank
+        .into_iter()
+        .map(|(index, chunks)| {
+            let mut merged = Vec::with_capacity(chunks.iter().map(Vec::len).sum());
+            for chunk in chunks {
+                merged.extend_from_slice(&chunk);
+            }
+            (index, merged)
+        })
+        .collect::<Vec<_>>();
+
+    if banks.len() < 2 {
+        return banks.into_iter().flat_map(|(_, bytes)| bytes).collect();
+    }
+
+    let pair_count = banks.len() / 2;
+    let stride_bank_size = banks
+        .iter()
+        .take(banks.len().saturating_sub(2))
+        .map(|(_, bytes)| bytes.len())
+        .max()
+        .unwrap_or_else(|| banks[0].1.len());
+    let last_pair_size = banks[(pair_count - 1) * 2]
+        .1
+        .len()
+        .max(banks[(pair_count - 1) * 2 + 1].1.len());
+    let output_len = stride_bank_size * 2 * pair_count.saturating_sub(1) + last_pair_size * 2;
+    let mut output = vec![0; output_len];
+
+    for pair in 0..pair_count {
+        let left = &banks[pair * 2].1;
+        let right = &banks[pair * 2 + 1].1;
+        let base = pair * stride_bank_size * 2;
+        for (index, byte) in left.iter().copied().enumerate() {
+            output[base + index * 2] = byte;
+        }
+        for (index, byte) in right.iter().copied().enumerate() {
+            output[base + index * 2 + 1] = byte;
+        }
+    }
+
+    if banks.len() % 2 != 0 {
+        output.extend_from_slice(&banks.last().expect("odd bank exists").1);
+    }
+    output
+}
+
+fn layout_zip_sample_banks(banks: Vec<(u8, Vec<u8>)>) -> (Vec<u8>, usize) {
+    let mut chunks_by_bank: BTreeMap<u8, Vec<Vec<u8>>> = BTreeMap::new();
+    for (index, bytes) in banks {
+        chunks_by_bank.entry(index).or_default().push(bytes);
+    }
+    let banks = chunks_by_bank
+        .into_iter()
+        .map(|(index, chunks)| {
+            let mut merged = Vec::with_capacity(chunks.iter().map(Vec::len).sum());
+            for chunk in chunks {
+                merged.extend_from_slice(&chunk);
+            }
+            (index, merged)
+        })
+        .collect::<Vec<_>>();
+
+    if banks.iter().any(|(index, _)| *index >= 10) {
+        let region_a = layout_numbered_sample_region(
+            banks.iter().filter(|(index, _)| (10..20).contains(index)),
+        );
+        let region_b = layout_numbered_sample_region(
+            banks.iter().filter(|(index, _)| (20..30).contains(index)),
+        );
+        let b_offset = if region_b.is_empty() {
+            0
+        } else {
+            region_a.len()
+        };
+        let mut output = region_a;
+        output.extend(region_b);
+        (output, b_offset)
+    } else {
+        (layout_sequential_sample_region(&banks), 0)
+    }
+}
+
+fn layout_sequential_sample_region(banks: &[(u8, Vec<u8>)]) -> Vec<u8> {
+    let Some((_, first)) = banks.first() else {
+        return Vec::new();
+    };
+    let stride = first.len();
+    let output_len = banks
+        .iter()
+        .enumerate()
+        .map(|(position, (_, bytes))| position * stride + bytes.len())
+        .max()
+        .unwrap_or(0);
+    let mut output = vec![0; output_len];
+    for (position, (_, bytes)) in banks.iter().enumerate() {
+        let start = position * stride;
+        output[start..start + bytes.len()].copy_from_slice(bytes);
+    }
+    output
+}
+
+fn layout_numbered_sample_region<'a>(banks: impl Iterator<Item = &'a (u8, Vec<u8>)>) -> Vec<u8> {
+    let banks = banks.collect::<Vec<_>>();
+    let Some((_, first)) = banks.first() else {
+        return Vec::new();
+    };
+    let stride = first.len();
+    let output_len = banks
+        .iter()
+        .map(|(index, bytes)| ((*index as usize % 10).saturating_sub(1)) * stride + bytes.len())
+        .max()
+        .unwrap_or(0);
+    let mut output = vec![0; output_len];
+    for (index, bytes) in banks {
+        let start = ((index % 10).saturating_sub(1) as usize) * stride;
+        output[start..start + bytes.len()].copy_from_slice(bytes);
+    }
+    output
+}
+
+fn zip_set_requires_swap_c(file_stem: &str) -> bool {
+    matches!(
+        file_stem.to_ascii_lowercase().as_str(),
+        "kotm2"
+            | "kotm2a"
+            | "sengoku2"
+            | "3countb"
+            | "3countba"
+            | "aof"
+            | "aofbr"
+            | "fatfury2"
+            | "fatfury2a"
+            | "ffury2es"
+            | "ssideki"
+            | "wh1"
+            | "wh1h"
+            | "wh1ha"
+            | "viewpoin"
+            | "abyssali"
+    )
+}
+
+fn apply_swap_c_layout(crom: &mut Vec<u8>) {
+    const BANK_SIZE: usize = 0x200000;
+    if crom.len() < BANK_SIZE * 3 {
+        crom.resize(BANK_SIZE * 3, 0);
+    }
+
+    let (_, tail) = crom.split_at_mut(BANK_SIZE);
+    let (bank_1, tail) = tail.split_at_mut(BANK_SIZE);
+    let (bank_2, _) = tail.split_at_mut(BANK_SIZE);
+    bank_1.swap_with_slice(bank_2);
 }
 
 fn cmc_s_data_size(known_zip_set: Option<KnownZipSet>) -> usize {
     match known_zip_set {
         Some(
             KnownZipSet::Kof2002Encrypted
+            | KnownZipSet::Kof2001Encrypted
             | KnownZipSet::Kof99Encrypted
+            | KnownZipSet::Mslug5Encrypted
+            | KnownZipSet::RotdEncrypted
+            | KnownZipSet::PnyaaEncrypted
+            | KnownZipSet::Samsho5Encrypted
+            | KnownZipSet::Samsh5spEncrypted
             | KnownZipSet::S1945pEncrypted
             | KnownZipSet::Preisle2Encrypted
             | KnownZipSet::ZupapaEncrypted
@@ -2778,20 +2975,30 @@ fn classify_zip_entry(name: &str) -> Option<RomPart> {
         "001-003-03b.u3" => return Some(RomPart::Graphics(3)),
         "001-003-04b.u4" => return Some(RomPart::Graphics(4)),
         "001-003-01b.u1" => return Some(RomPart::AudioCpu),
-        "001-003-12a.u12" => return Some(RomPart::Samples(12)),
-        "001-003-13a.u13" => return Some(RomPart::Samples(13)),
+        "001-003-12a.u12" => return Some(RomPart::Samples(1)),
+        "001-003-13a.u13" => return Some(RomPart::Samples(2)),
         "no3.bin" => return Some(RomPart::Graphics(3)),
         "no4.bin" => return Some(RomPart::Graphics(4)),
         _ => {}
     }
 
-    // Try to classify by chip suffix (last dash/underscore component)
-    if let Some(part) = classify_by_chip_suffix(chip) {
-        return Some(part);
+    // MAME extensions disambiguate variant labels such as c51.c5/c61.c6.
+    let suffix_part = classify_by_chip_suffix(chip);
+    let extension_part = classify_by_extension(extension);
+    if matches!(suffix_part, Some(RomPart::Graphics(_)))
+        && matches!(extension_part, Some(RomPart::Graphics(_)))
+        && suffix_part != extension_part
+    {
+        return extension_part;
+    }
+
+    // Try to classify by chip suffix (last dash/underscore component).
+    if suffix_part.is_some() {
+        return suffix_part;
     }
 
     // Fallback: classify by file extension (e.g., .p1, .c1, .m1)
-    classify_by_extension(extension)
+    extension_part
 }
 
 fn zip_entry_file_name(name: &str) -> &str {
@@ -3036,11 +3243,11 @@ mod tests {
         );
         assert_eq!(
             classify_zip_entry("001-003-12a.u12"),
-            Some(RomPart::Samples(12))
+            Some(RomPart::Samples(1))
         );
         assert_eq!(
             classify_zip_entry("001-003-13a.u13"),
-            Some(RomPart::Samples(13))
+            Some(RomPart::Samples(2))
         );
     }
 
@@ -3177,6 +3384,8 @@ mod tests {
         assert_eq!(classify_zip_entry("265-p2.sp2"), Some(RomPart::Program(2)));
         assert_eq!(classify_zip_entry("265-c1.c1"), Some(RomPart::Graphics(1)));
         assert_eq!(classify_zip_entry("265-c8.c8"), Some(RomPart::Graphics(8)));
+        assert_eq!(classify_zip_entry("045-c51.c5"), Some(RomPart::Graphics(5)));
+        assert_eq!(classify_zip_entry("045-c61.c6"), Some(RomPart::Graphics(6)));
         assert_eq!(classify_zip_entry("265-m1.m1"), Some(RomPart::AudioCpu));
         assert_eq!(classify_zip_entry("265-v1.v1"), Some(RomPart::Samples(1)));
         assert_eq!(classify_zip_entry("265-v2.v2"), Some(RomPart::Samples(2)));
@@ -3346,6 +3555,27 @@ mod tests {
     }
 
     #[test]
+    fn standard_crom_layout_preserves_fbneo_pair_stride_gaps() {
+        let crom = normalize_zip_graphics_banks(vec![
+            (1, vec![0x11; 4]),
+            (2, vec![0x12; 4]),
+            (3, vec![0x21; 2]),
+            (4, vec![0x22; 2]),
+            (5, vec![0x31]),
+            (6, vec![0x32]),
+        ]);
+
+        assert_eq!(crom.len(), 18);
+        assert_eq!(
+            &crom[..8],
+            &[0x11, 0x12, 0x11, 0x12, 0x11, 0x12, 0x11, 0x12]
+        );
+        assert_eq!(&crom[8..12], &[0x21, 0x22, 0x21, 0x22]);
+        assert_eq!(&crom[12..16], &[0; 4]);
+        assert_eq!(&crom[16..], &[0x31, 0x32]);
+    }
+
+    #[test]
     fn preserves_neo_crom_byte_order() {
         let tile0: Vec<u8> = (0..64).flat_map(|value| [value, value + 0x80]).collect();
         let tile1: Vec<u8> = (0..64)
@@ -3421,6 +3651,27 @@ mod tests {
     }
 
     #[test]
+    fn sample_layout_preserves_fbneo_stride_for_uneven_vroms() {
+        let (vrom, b_offset) = layout_zip_sample_banks(vec![
+            (1, vec![0x11; 4]),
+            (2, vec![0x22; 2]),
+            (3, vec![0x33]),
+        ]);
+
+        assert_eq!(vrom, vec![0x11, 0x11, 0x11, 0x11, 0x22, 0x22, 0, 0, 0x33]);
+        assert_eq!(b_offset, 0);
+    }
+
+    #[test]
+    fn sample_layout_separates_v11_and_v22_regions() {
+        let (vrom, b_offset) =
+            layout_zip_sample_banks(vec![(11, vec![0x11; 2]), (22, vec![0x22; 2])]);
+
+        assert_eq!(vrom, vec![0x11, 0x11, 0, 0, 0x22, 0x22]);
+        assert_eq!(b_offset, 2);
+    }
+
+    #[test]
     fn loads_kof2002_zip_with_cmc50_decrypted_m1_buffer() {
         let path = unique_temp_path("ngneon-kof2002-loader", "zip");
         create_test_zip(
@@ -3451,6 +3702,31 @@ mod tests {
         let prom = layout_p32_program_pair(&[0x10, 0x11, 0x12, 0x13], &[0x20, 0x21, 0x22, 0x23]);
 
         assert_eq!(prom, vec![0x10, 0x11, 0x20, 0x21, 0x12, 0x13, 0x22, 0x23]);
+    }
+
+    #[test]
+    fn applies_fbneo_swap_c_banks_without_touching_other_ranges() {
+        let bank = 0x200000;
+        let mut crom = vec![0x10; bank * 4];
+        crom[bank..bank * 2].fill(0x20);
+        crom[bank * 2..bank * 3].fill(0x30);
+        crom[bank * 3..].fill(0x40);
+
+        apply_swap_c_layout(&mut crom);
+
+        assert_eq!(crom[0], 0x10);
+        assert_eq!(crom[bank], 0x30);
+        assert_eq!(crom[bank * 2], 0x20);
+        assert_eq!(crom[bank * 3], 0x40);
+        assert!(zip_set_requires_swap_c("aof"));
+        assert!(zip_set_requires_swap_c("VIEWPOIN"));
+        assert!(!zip_set_requires_swap_c("mslug3"));
+
+        let mut short_crom = vec![0x55; bank * 2];
+        apply_swap_c_layout(&mut short_crom);
+        assert_eq!(short_crom.len(), bank * 3);
+        assert_eq!(short_crom[bank], 0);
+        assert_eq!(short_crom[bank * 2], 0x55);
     }
 
     #[test]
@@ -3494,6 +3770,31 @@ mod tests {
             detect_known_zip_set(&samsh5sp),
             Some(KnownZipSet::Samsh5spEncrypted)
         );
+    }
+
+    #[test]
+    fn cmc_fix_sizes_match_reference_cartridge_profiles() {
+        for set in [
+            KnownZipSet::Kof2001Encrypted,
+            KnownZipSet::Kof2002Encrypted,
+            KnownZipSet::Mslug5Encrypted,
+            KnownZipSet::RotdEncrypted,
+            KnownZipSet::PnyaaEncrypted,
+            KnownZipSet::Samsho5Encrypted,
+            KnownZipSet::Samsh5spEncrypted,
+        ] {
+            assert_eq!(cmc_s_data_size(Some(set)), 0x20000);
+        }
+
+        for set in [
+            KnownZipSet::Mslug3Encrypted,
+            KnownZipSet::Kof2003Encrypted,
+            KnownZipSet::SvcEncrypted,
+            KnownZipSet::Mslug4Encrypted,
+            KnownZipSet::MatrimEncrypted,
+        ] {
+            assert_eq!(cmc_s_data_size(Some(set)), 0x80000);
+        }
     }
 
     #[test]
@@ -3711,7 +4012,7 @@ mod tests {
 
         assert_eq!(rom.prom.len(), 0x800000);
         assert_eq!(rom.mrom.len(), crate::cmc::CMC_M1_DECRYPTED_SIZE);
-        assert_eq!(rom.srom.len(), 0x80000);
+        assert_eq!(rom.srom.len(), 0x20000);
         let first_word = u16::from_be_bytes([rom.vrom[0], rom.vrom[1]]);
         assert_eq!(first_word, 4, "ROTD PCM2DecryptV(bit=2) should run");
         let metadata = rom.metadata.as_ref().expect("rotd zip metadata");
@@ -3771,7 +4072,7 @@ mod tests {
 
         assert_eq!(rom.prom.len(), 0x100000);
         assert_eq!(rom.mrom.len(), crate::cmc::CMC_M1_DECRYPTED_SIZE);
-        assert_eq!(rom.srom.len(), 0x80000);
+        assert_eq!(rom.srom.len(), 0x20000);
         assert_eq!(
             &rom.vrom[..4],
             &[0x00, 0x02, 0x00, 0x01],
@@ -3805,7 +4106,7 @@ mod tests {
 
         assert_eq!(rom.prom.len(), 0x500000);
         assert_eq!(rom.mrom.len(), crate::cmc::CMC_M1_DECRYPTED_SIZE);
-        assert_eq!(rom.srom.len(), 0x80000);
+        assert_eq!(rom.srom.len(), 0x20000);
         let metadata = rom.metadata.as_ref().expect("kof2001 zip metadata");
         assert_eq!(metadata.ngh, 0x262);
         let diagnostics = rom.diagnostics();
@@ -3874,7 +4175,7 @@ mod tests {
 
         assert_eq!(rom.prom.len(), 0x800000);
         assert_eq!(rom.mrom.len(), crate::cmc::CMC_M1_DECRYPTED_SIZE);
-        assert_eq!(rom.srom.len(), 0x80000);
+        assert_eq!(rom.srom.len(), 0x20000);
         let metadata = rom.metadata.as_ref().expect("mslug5 zip metadata");
         assert_eq!(metadata.ngh, 0x268);
         let diagnostics = rom.diagnostics();
@@ -3911,7 +4212,7 @@ mod tests {
         assert_eq!(rom.prom[0x100000], 14);
         assert_eq!(rom.prom[0x180000], 13);
         assert_eq!(rom.mrom.len(), crate::cmc::CMC_M1_DECRYPTED_SIZE);
-        assert_eq!(rom.srom.len(), 0x80000);
+        assert_eq!(rom.srom.len(), 0x20000);
         let metadata = rom.metadata.as_ref().expect("samsho5 zip metadata");
         assert_eq!(metadata.ngh, 0x270);
         let diagnostics = rom.diagnostics();
@@ -3948,7 +4249,7 @@ mod tests {
         assert_eq!(rom.prom[0x100000], 10);
         assert_eq!(rom.prom[0x180000], 9);
         assert_eq!(rom.mrom.len(), crate::cmc::CMC_M1_DECRYPTED_SIZE);
-        assert_eq!(rom.srom.len(), 0x80000);
+        assert_eq!(rom.srom.len(), 0x20000);
         let metadata = rom.metadata.as_ref().expect("samsh5sp zip metadata");
         assert_eq!(metadata.ngh, 0x272);
         let diagnostics = rom.diagnostics();
@@ -4379,8 +4680,9 @@ mod tests {
         for (i, expected) in expected_banks.iter().copied().enumerate() {
             let start = i * 0x20000;
             assert_eq!(prom[start], expected as u8);
-            assert_eq!(prom[start + 0x1FFFF], expected as u8);
+            assert_eq!(prom[start + 0x100], expected as u8);
         }
+        assert_eq!(&prom[0x0FFFFE..0x100000], &[0xFF, 0x01]);
         assert_eq!(prom[0x100000], 0xA5);
         assert_eq!(prom[0x4FFFFF], 0xA5);
     }
@@ -4418,22 +4720,22 @@ mod tests {
         let mut crom = layout_kog_bootleg_graphics(banks);
         assert_eq!(
             &crom[..8],
-            &[0x10, 0x20, 0x10, 0x20, 0x10, 0x20, 0x10, 0x20]
+            &[0x10, 0x30, 0x10, 0x30, 0x10, 0x30, 0x10, 0x30]
         );
 
         decrypt_kog_bootleg_crom(&mut crom);
 
         assert_eq!(
             &crom[..8],
-            &[0x10, 0x20, 0x10, 0x20, 0x10, 0x20, 0x10, 0x20]
+            &[0x10, 0x30, 0x10, 0x30, 0x10, 0x30, 0x10, 0x30]
         );
         assert_eq!(
             &crom[0x40..0x48],
-            &[0x10, 0x20, 0x10, 0x20, 0x10, 0x20, 0x10, 0x20]
+            &[0x10, 0x30, 0x10, 0x30, 0x10, 0x30, 0x10, 0x30]
         );
         assert_eq!(
             &crom[0x80..0x88],
-            &[0x30, 0x40, 0x30, 0x40, 0x30, 0x40, 0x30, 0x40]
+            &[0x20, 0x40, 0x20, 0x40, 0x20, 0x40, 0x20, 0x40]
         );
     }
 
