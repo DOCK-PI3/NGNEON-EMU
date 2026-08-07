@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cabinet verde MVS con carrusel de logos, caja 3D y descripción auto-scroll. -->
+<theme version="2" id="neogeo-green-cabinet" name="Neo Geo Green Cabinet" author="NGNEON-EMU">
+  <canvas width="960" height="540"/>
+  <palette
+    background="#020604"
+    header="#06120A"
+    panel="#EA030A05"
+    panel_alt="#DD0A1E0F"
+    primary="#2EAD42"
+    primary_dark="#145421"
+    secondary="#1A7430"
+    accent="#65EE78"
+    warning="#F4D94A"
+    success="#6CFF90"
+    text="#F4FFF5"
+    text_soft="#C8E9CE"
+    text_dim="#71957A"
+    border="#327B41"
+    error="#FF6B7D"/>
+
+  <component id="library_background" visible="false"/>
+  <component id="header" visible="false"/>
+  <component id="carousel" visible="false"/>
+  <component id="cabinet" visible="false"/>
+  <component id="game_info" visible="false"/>
+  <component id="library_footer" visible="false"/>
+
+  <component id="vertical_list"
+             x="600" y="34" width="344" height="326"
+             z="230" visible="true" artwork="logo" chrome="none"/>
+  <component id="page_counter"
+             x="612" y="6" width="320" height="24"
+             z="240" visible="true" chrome="none"/>
+  <component id="game_description"
+             x="514" y="368" width="430" height="128"
+             z="230" visible="true" chrome="none"/>
+  <component id="game_metadata"
+             x="514" y="500" width="430" height="34"
+             z="235" visible="true" chrome="none"/>
+
+  <media id="backdrop" source="game.fanart,game.mix,game.image"
+         x="0" y="0" width="960" height="540" z="-100"
+         opacity="0.10" fit="cover" visible="true"/>
+  <layer id="green-cabinet" source="assets/cabinet.png"
+         x="0" y="21" width="625" height="519" z="220"
+         opacity="255" fit="stretch" view="library" visible="true"/>
+  <media id="preview" source="game.video,game.screenshot,game.titleshot,game.mix,game.image"
+         x="99" y="180" width="333" height="243" z="210"
+         opacity="255" fit="cover" visible="true" chrome="none"/>
+  <media id="logo" source="game.marquee,game.logo,game.wheel"
+         x="68" y="24" width="395" height="104" z="210"
+         opacity="255" fit="stretch" visible="true" chrome="none"/>
+  <media id="box" source="game.box3d,game.box2d,game.boxart,game.thumbnail"
+         x="492" y="140" width="110" height="220" z="210"
+         opacity="255" fit="contain" visible="true" chrome="none"/>
+</theme>

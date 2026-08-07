@@ -7,10 +7,13 @@ seleccionado: vídeos, marquees, logos, capturas, cajas, cartuchos y fanart.
 
 ## Inicio rápido
 
-1. Copia `theme-template.xml.example` como `themes/mi-tema.xml`.
-2. Cambia `id`, `name`, paleta, componentes y slots `<media>`.
-3. Abre **Ajustes → Tema frontend** y selecciona el tema.
-4. Pulsa `F6` después de editar el XML o sus imágenes.
+1. Copia `ThemeTemplate/` como `themes/MiTema/`; el nombre de la carpeta debe
+   describir el tema sin espacios.
+2. Renombra `theme.xml.example` a `theme.xml` y crea `assets/` para imágenes,
+   fuentes u otros recursos propios del diseño.
+3. Cambia `id`, `name`, paleta, componentes y slots `<media>`.
+4. Abre **Ajustes → Tema frontend** y selecciona el tema.
+5. Pulsa `F6` después de editar el XML o sus imágenes.
 
 No es necesario recompilar. La recarga es segura: si el XML nuevo no es válido,
 el frontend conserva la última versión funcional. Si un tema falla durante el
@@ -22,14 +25,15 @@ Las claves relacionadas se guardan en `config/ngneon.conf`:
 
 ```ini
 frontend_theme_dir=themes
-frontend_theme=themes/mi-tema.xml
+frontend_theme=themes/MiTema/theme.xml
 rom_path=roms
 media_dir=auto
 frontend_music=on
 ```
 
-- `frontend_theme_dir`: carpeta donde se descubren los `*.xml`. Acepta una ruta
-  relativa a la raíz de NGNEON-EMU o una ruta absoluta.
+- `frontend_theme_dir`: carpeta donde se descubren `*.xml` en su raíz y a un
+  nivel de profundidad (`NombreSinEspacios/theme.xml`). Acepta una ruta relativa
+  a la raíz de NGNEON-EMU o una ruta absoluta.
 - `frontend_theme`: selector persistente. Admite `builtin`, el `id`, el nombre,
   el nombre del fichero o la ruta del XML.
 - `rom_path`: directorio de ROMs. Aquí se busca primero `gamelist.xml`.
@@ -68,7 +72,9 @@ roms/
     ├── videos/
     │   ├── mslug3.mp4
     │   └── kof98.mp4
-    ├── marquees/
+    ├── arcade-marquee/
+    ├── screen-marquees/
+    ├── marquees/              # compatibilidad heredada
     │   ├── mslug3.png
     │   └── kof98.png
     ├── logos/
@@ -200,6 +206,19 @@ También se admite la forma larga:
 
 ## Componentes funcionales
 
+### Fuente propia del tema
+
+Los temas v2 pueden incluir una fuente TrueType/OpenType dentro de su carpeta:
+
+```xml
+<font source="assets/Rajdhani-SemiBold.ttf"/>
+```
+
+Solo se admite un elemento `<font>`. La ruta debe ser local, relativa al XML y
+no puede contener `..`. Si el archivo no se puede cargar, el frontend muestra
+un aviso y conserva la fuente del sistema. Los componentes de texto que
+declaren `font_size` usan esta fuente; el resto mantiene el tamaño histórico.
+
 Un `<component>` mueve, redimensiona, oculta o cambia de capa un bloque
 funcional completo. El contenido se dibuja primero en su geometría nativa y
 después se transforma al rectángulo indicado. Los hitboxes del ratón usan la
@@ -216,11 +235,22 @@ integrado:
 
 | Atributo | Valores |
 |---|---|
-| `id` | Uno de los 16 IDs de la tabla siguiente |
+| `id` | Uno de los 20 IDs de la tabla siguiente |
 | `x`, `y` | Enteros; admiten negativos |
 | `width`, `height` | Enteros positivos |
 | `z` | `-10000..10000`; un valor mayor queda delante |
 | `visible` | `true/false`, `on/off`, `yes/no` o `1/0` |
+| `artwork` | `logo` o `box3d`; afecta a listas y gamecarousels |
+| `chrome` | `panel` (predeterminado) o `none`; elimina fondo, borde, banda de selección y flecha |
+| `opacity` | `0..255` o `0.0..1.0`; opacidad global del componente |
+| `selected_scale` | `100..200`, porcentaje (`145%`) o factor decimal (`1.45`); sólo gamecarousels |
+| `unselected_opacity` | `0..255` o `0.0..1.0`; atenuación de logos no seleccionados |
+| `arc` | `0..960`; curvatura horizontal en píxeles lógicos del gamecarousel |
+| `font_size` | `6..160`; tamaño tipográfico para los componentes de texto |
+| `show_with_logo` | En `game_title`, permite mostrar el nombre aunque exista logo |
+| `fields` | En `game_metadata`: lista de `year`, `developer`, `publisher`, `players` o `manufacturer` |
+| Efectos/animación | Los atributos comunes de las secciones «Efectos de imagen» y «Animaciones» |
+| Estilo de texto | Los atributos `text_*`, tracking, interlineado y autoajuste descritos más abajo |
 
 ### Referencia de componentes
 
@@ -238,18 +268,184 @@ integrado:
 | `status` | Mensajes de éxito y error | Ambas vistas | `0,56,960,52`, z `300` | Sí |
 | `vertical_list` | Lista vertical alternativa de 7 juegos | Biblioteca con juegos | `24,42,438,476`, z `130` | No |
 | `horizontal_list` | Carrusel horizontal alternativo de 7 juegos | Biblioteca con juegos | `0,404,960,136`, z `130` | No |
+| `gamecarousel_left` | Carrusel vertical curvado hacia el centro desde la izquierda | Biblioteca con juegos | `20,48,300,444`, z `130` | No |
+| `gamecarousel_right` | Carrusel vertical curvado hacia el centro desde la derecha | Biblioteca con juegos | `640,48,300,444`, z `130` | No |
+| `gamecarousel_horizontal` | Carrusel horizontal de cinco cajas 3D grandes | Biblioteca con juegos | `0,190,960,350`, z `130` | No |
 | `game_title` | Título grande del juego | Biblioteca con juegos | `514,18,420,92`, z `130` | No |
 | `game_description` | Descripción multilínea | Biblioteca con juegos | `510,390,426,128`, z `130` | No |
 | `game_metadata` | Año, estudio y jugadores | Biblioteca con juegos | `510,474,426,44`, z `130` | No |
+| `game_credits` | Desarrollador en la esquina inferior izquierda y publisher en la derecha | Biblioteca con juegos | `20,496,920,36`, z `130` | No |
 | `page_counter` | Posición actual y total de juegos | Biblioteca con juegos | `24,12,260,24`, z `130` | No |
 
-`carousel`, `vertical_list` y `horizontal_list` se pueden pulsar para seleccionar
-un juego y admiten doble clic para lanzarlo. Al activar uno de los layouts
-alternativos normalmente se ocultan `carousel`, `cabinet`, `game_info`,
-`library_background`, `header` o `library_footer`, según el diseño buscado.
+`carousel`, `vertical_list`, `horizontal_list`, `gamecarousel_left`,
+`gamecarousel_right` y `gamecarousel_horizontal` se pueden pulsar para
+seleccionar un juego y admiten doble
+clic para lanzarlo. `artwork="logo"` usa logo, wheel y marquee como fallbacks y
+muestra siete elementos. `artwork="box3d"` usa caja 3D, caja 2D, box art y
+miniatura como fallbacks; las listas verticales muestran cinco elementos más
+grandes con su título. `gamecarousel_horizontal` muestra cinco cajas, agranda
+la seleccionada con `selected_scale`, atenúa las demás con
+`unselected_opacity` y la dibuja al final para que quede por encima. Al activar
+uno de los layouts alternativos normalmente se
+ocultan `carousel`, `cabinet`, `game_info`, `library_background`, `header` o
+`library_footer`, según el diseño buscado.
+
+Los dos `gamecarousel_*` son imágenes especulares: el izquierdo curva los logos
+hacia la derecha y el derecho hacia la izquierda. El seleccionado se dibuja al
+final y por encima de sus vecinos, usando `selected_scale`; los demás usan
+`unselected_opacity`. `arc="0"` los alinea y un valor mayor acentúa el arco:
+
+```xml
+<component id="gamecarousel_right"
+           x="620" y="44" width="330" height="452"
+           artwork="logo" chrome="none"
+           selected_scale="145%"
+           unselected_opacity="0.42" arc="72"/>
+```
+
+Ejemplo de carrusel horizontal con título y metadatos personalizados:
+
+```xml
+<font source="assets/Rajdhani-SemiBold.ttf"/>
+<component id="game_title" visible="true"
+           font_size="69" show_with_logo="true"/>
+<component id="game_credits" visible="true"
+           x="20" y="496" width="920" height="36"
+           font_size="20" chrome="none"/>
+<component id="gamecarousel_horizontal" visible="true"
+           artwork="box3d" chrome="none"
+           selected_scale="145%" unselected_opacity="0.68"/>
+```
+
+`chrome="none"` convierte los componentes alternativos en contenido flotante:
+las listas conservan el cambio de tamaño y opacidad para señalar la selección,
+pero no dibujan tarjetas, panel exterior, bandas ni flecha. También se puede usar
+en título, descripción, metadatos y contador para integrarlos directamente sobre
+el fondo del tema. Si se omite, se mantiene la presentación enmarcada histórica.
+
+`game_description` envuelve el texto completo. Cuando excede el recuadro, espera
+2,5 segundos, avanza automáticamente línea a línea, conserva el final otros
+2,5 segundos y vuelve al principio. El ciclo se reinicia al cambiar de juego o
+al volver de Ajustes, por lo que una descripción larga nunca queda inaccesible.
 
 Los componentes alternativos existen también en temas v1, pero están ocultos
 por defecto. El elemento `<media>` sí requiere `version="2"`.
+
+## Efectos visuales compartidos
+
+`<component>`, `<layer>` y `<media>` aceptan el mismo conjunto de filtros.
+Todos son opcionales y sus valores neutros reproducen exactamente el render
+anterior. En un componente el filtro se aplica al bloque funcional completo
+después de dibujarlo; en capas y media se procesa la imagen preparada.
+
+```xml
+<media id="backdrop" source="game.fanart"
+       x="0" y="0" width="960" height="540" fit="cover"
+       brightness="0.76" contrast="112%" saturation="0.85"
+       gradient_start="#00000000" gradient_end="#B0000000"/>
+
+<media id="logo" source="game.logo"
+       x="24" y="20" width="300" height="110"
+       shadow_color="#A0000000" shadow_x="5" shadow_y="7"
+       shadow_blur="5" glow_color="#70FFD66B" glow_radius="7"/>
+```
+
+### Efectos de imagen
+
+| Atributo | Predeterminado | Valores/resultado |
+|---|---:|---|
+| `brightness` | `100%` | Brillo `0..300%`; acepta `120`, `120%` o factor `1.20` |
+| `contrast` | `100%` | Contraste `0..300%` |
+| `saturation` | `100%` | Saturación `0..300%`; `0` deja la imagen monocroma |
+| `grayscale` | `0` | Mezcla a gris `0..255` o `0.0..1.0` |
+| `tint` | transparente | Tinte `#AARRGGBB`; el canal alpha controla su intensidad |
+| `blur` | `0` | Desenfoque separable de radio `0..24` |
+| `shadow_color` | `#A0000000` | Color/alpha de la sombra; declarar cualquier `shadow_*` la activa |
+| `shadow_x`, `shadow_y` | `6`, `8` | Desplazamiento `-256..256` |
+| `shadow_blur` | `6` | Suavizado `0..24` |
+| `glow_color` | `#80FFFFFF` | Color/alpha del resplandor |
+| `glow_radius` | `8` | Radio `0..24`; declarar cualquier `glow_*` lo activa |
+| `rotation` | `0` | Rotación en grados enteros, `-180..180` |
+| `rounded_corners` | `0` | Radio de esquina `0..512` |
+| `gradient_start` | — | Color superior/izquierdo de la superposición |
+| `gradient_end` | — | Color inferior/derecho; debe acompañar a `gradient_start` |
+| `gradient_direction` | `vertical` | `vertical` u `horizontal` |
+
+Los filtros siguen este orden: colorimetría/tinte, blur, rotación, recorte de
+esquinas, gradiente y composición de sombra/glow detrás de la imagen. Rotación,
+sombra y glow permanecen recortados por el rectángulo del elemento: deja margen
+dentro del asset o del componente si quieres que el halo se vea completo.
+
+Las capas estáticas y la media de imagen del juego se filtran una sola vez y
+quedan en caché. Los efectos sobre un `<component>` se calculan después de
+renderizar su contenido; evita `blur`, sombra o glow grandes en un componente
+de pantalla completa que también tenga `pulse`. Los filtros de un slot de vídeo
+se aplican a cada frame, así que para vídeo a pantalla completa conviene usar
+brillo/contraste/saturación y reservar los radios altos para imágenes.
+
+## Estilo de texto
+
+Los componentes `game_title`, `game_description`, `game_metadata`,
+`game_credits` y `page_counter` aceptan estilos tipográficos. `game_description`
+usa también la fuente del tema cuando se declara cualquiera de estos atributos
+o un `font_size`.
+
+```xml
+<component id="game_title" visible="true" chrome="none"
+           x="330" y="18" width="600" height="90"
+           font_size="69" text_color="#FFF7E4"
+           text_align="center" vertical_align="center"
+           text_shadow_color="#C0000000"
+           text_shadow_x="3" text_shadow_y="5" text_shadow_blur="3"
+           text_outline_color="#B0402008" text_outline="1"
+           letter_spacing="2" auto_fit="true" min_font_size="30"/>
+```
+
+| Atributo | Predeterminado | Uso |
+|---|---:|---|
+| `text_color` | paleta del componente | Color `#RRGGBB` o `#AARRGGBB` |
+| `text_align` | `auto` | `left`, `center`, `right` o `auto` |
+| `vertical_align` | `auto` | `top`, `center`, `bottom` o `auto` |
+| `text_shadow_color` | sombra histórica | Color/alpha; `#00000000` la desactiva explícitamente |
+| `text_shadow_x`, `text_shadow_y` | `2`, `3` | Desplazamiento `-256..256` |
+| `text_shadow_blur` | `2` | Suavizado visual `0..24` |
+| `text_outline_color` | `#FF000000` | Color del contorno |
+| `text_outline` | `0` | Grosor `0..8` |
+| `letter_spacing` | `0` | Tracking entre caracteres, `-20..80` píxeles |
+| `line_height` | `100%` | Interlineado `50..300%`; especialmente útil en descripción |
+| `auto_fit` | `true` | Reduce el tamaño hasta caber horizontalmente |
+| `min_font_size` | mínimo interno | Límite `6..160` para `auto_fit` |
+
+`auto_fit="false"` conserva estrictamente `font_size` y deja que el rectángulo
+recorte un texto demasiado ancho. En `game_credits` se conserva la semántica
+especial: desarrollador a la izquierda y publisher a la derecha.
+
+## Animaciones
+
+Las animaciones se reinician al cambiar de juego, recargar/cambiar de tema o
+entrar en otra vista. Se pueden combinar en el mismo componente, capa o media:
+
+```xml
+<media id="logo" source="game.logo"
+       x="24" y="18" width="292" height="118"
+       fade_in="500" slide_in="left" slide_distance="60"
+       slide_duration="650" zoom_in="600" zoom_from="85%"
+       pulse="2%" pulse_period="2200"/>
+```
+
+| Atributo | Predeterminado | Uso |
+|---|---:|---|
+| `fade_in` | `0` | Duración de entrada por opacidad, `0..10000` ms |
+| `slide_in` | `none` | `left`, `right`, `up`, `down` o `none` |
+| `slide_distance` | `64` | Distancia inicial `0..1920` píxeles |
+| `slide_duration` | `450` | Duración `0..10000` ms |
+| `zoom_in` | `0` | Duración del zoom de entrada, `0..10000` ms |
+| `zoom_from` | `85%` | Escala inicial `10..100%`; acepta factor decimal |
+| `pulse` | `0` | Amplitud `0..25%`; acepta `4`, `4%` o factor `1.04` |
+| `pulse_period` | `1600` | Periodo en ms; mínimo `100` cuando pulse está activo |
+
+`pulse` mantiene el frontend redibujándose de forma continua; úsalo en uno o
+dos elementos destacados y con amplitudes pequeñas.
 
 ## Media dinámica del juego
 
@@ -280,6 +476,8 @@ o si el decoder lo rechaza.
 | `opacity` | No | `255` | `0..255` o decimal `0.0..1.0` |
 | `fit` | No | `contain` | `contain`, `cover` o `stretch` |
 | `visible` | No | `true` | Muestra u oculta el slot |
+| `chrome` | No | `panel` | `panel` dibuja fondo/borde; `none` deja sólo la media |
+| Efectos/animación | No | neutros | Todos los atributos visuales compartidos |
 
 No existe atributo `view`: todos los slots media pertenecen a la biblioteca.
 Las fuentes duplicadas dentro del mismo `source` y los IDs repetidos no se
@@ -302,11 +500,12 @@ la proporción exacta del slot.
 El ID puede ser cualquier identificador válido, pero tres nombres tienen una
 presentación especial:
 
-- `backdrop` o `background`: se dibuja sin panel, borde ni texto `SIN MEDIA`;
-  es apropiado para fanart a pantalla completa.
+- `backdrop` o `background`: se dibuja siempre sin panel, borde ni texto
+  `SIN MEDIA`; es apropiado para fanart a pantalla completa.
 - `logo`: no muestra el texto `SIN MEDIA` cuando no hay asset.
-- Cualquier otro ID: usa el panel y borde de la paleta y muestra `SIN MEDIA`
-  si no encuentra contenido.
+- Cualquier otro ID: usa por defecto el panel y borde de la paleta y muestra
+  `SIN MEDIA` si no encuentra contenido. `chrome="none"` desactiva las tres
+  cosas para cualquier ID.
 
 ### Todas las fuentes `game.*`
 
@@ -321,7 +520,7 @@ Formatos de imagen convencionales: `.png`, `.jpg`, `.jpeg` y `.webp`.
 | `game.mix` | Composición scraper | `mix` | `mix/<rom>.<imagen>` |
 | `game.image` | Imagen genérica | `image` | Fallback a `game.mix`, después `game.box3d` |
 | `game.thumbnail` | Miniatura | `thumbnail` | Fallback a `game.box2d` |
-| `game.marquee` | Marquee de la recreativa | `marquee` | `marquees/<rom>.<imagen>` |
+| `game.marquee` | Marquee de la recreativa | `marquee` | `arcade-marquee/<rom>.<imagen>`, ruta declarada, `screen-marquees/<rom>.<imagen>`, luego `marquees/<rom>.<imagen>` |
 | `game.boxart` | Caja genérica | `boxart` | Fallback a `game.box2d` |
 | `game.cartridge` | Cartucho | `cartridge` | `cartridges/<rom>.<imagen>` |
 | `game.wheel` | Wheel/logo transparente | `wheel` | `logos/<rom>.<imagen>`, luego `wheelhd/<rom>.<imagen>` |
@@ -403,6 +602,7 @@ Una `<layer>` muestra un asset propio del tema, no del juego:
 | `fit` | No | `contain` | `contain`, `cover` o `stretch` |
 | `view` | No | `all` | `library`, `settings` o `all` |
 | `visible` | No | `true` | Muestra u oculta la capa |
+| Efectos/animación | No | neutros | Todos los atributos visuales compartidos |
 
 `view` también acepta `biblioteca`, `ajustes`, `common` y combinaciones
 `library|settings` o `library,settings`.
@@ -412,11 +612,20 @@ ni `..`, de forma que un tema no pueda salir de su propio directorio:
 
 ```text
 themes/
-├── mi-tema.xml
-└── assets/
-    ├── fondo.webp
-    └── marco.png
+├── README.md
+└── MiTema/
+    ├── theme.xml
+    └── assets/
+        ├── fondo.webp
+        ├── fuente.ttf
+        └── marco.png
 ```
+
+El XML y todos los recursos exclusivos del diseño deben permanecer en la misma
+carpeta. El motor ya resuelve las rutas de `<layer>` respecto a `theme.xml`; una
+carpeta `assets/` no se examina como catálogo de temas. Los XML planos del
+formato anterior continúan descubriéndose y una configuración antigua como
+`themes/neon.xml` selecciona el nuevo tema por su ID.
 
 ## Orden de capas
 
@@ -457,6 +666,10 @@ escritura temprano.
 | Presupuesto total de slots media | 16 megapíxeles |
 | Valor absoluto máximo de `x`/`y` ya normalizado | 16384 |
 | Rango de `z` | `-10000..10000` |
+| Brillo/contraste/saturación máximos | `300%` |
+| Radio máximo de blur/sombra/glow | `24` |
+| Duración máxima por animación | `10000 ms` |
+| Amplitud máxima de pulse | `25%` |
 
 Un asset estático ausente genera un aviso y se omite sin inutilizar el resto del
 tema. Un XML estructuralmente inválido, una fuente `game.*` desconocida, un ID
@@ -464,11 +677,15 @@ duplicado o un tamaño fuera de rango impiden aplicar esa versión.
 
 ## Temas incluidos
 
-- `neon.xml`: layout clásico con marquee dinámico sobre la cabinet.
-- `amber.xml`: variante arcade ámbar.
-- `phosphor.xml`: estética de monitor de fósforo.
-- `cyber-list.xml`: lista vertical de siete juegos, marquee, preview y ficha.
-- `console-showcase.xml`: caja, cartucho, marquee, preview y carrusel horizontal.
-- `theme-template.xml.example`: plantilla comentada para crear un tema nuevo.
+- `NGNEONNeon/theme.xml`: layout clásico con marquee dinámico sobre la cabinet.
+- `AmberArcade/theme.xml`: variante arcade ámbar.
+- `GreenPhosphor/theme.xml`: estética de monitor de fósforo.
+- `CyberList/theme.xml`: lista vertical de siete logos, marquee, preview y ficha.
+- `ConsoleShowcase/theme.xml`: caja, cartucho, marquee, preview y carrusel horizontal.
+- `NeoGeoRedCabinet/theme.xml`: cabinet roja, marquee/monitor enmascarados por el marco y carrusel vertical flotante de siete logos, sin tarjetas.
+- `NeoGeoGreenCabinet/theme.xml`: cabinet verde, carrusel flotante de siete logos con nombre como fallback, caja 3D sin marco en el hueco central y descripción auto-scroll integrada sobre el fondo.
+- `NeoGeo29Cabinet/theme.xml`: cabinet Neo Geo 29 blanca, vídeo y marquee bajo el marco y `gamecarousel_right` de logos con escala, opacidad y arco configurables.
+- `FanartHorizon/theme.xml`: fanart tratado con gradiente/colorimetría, logo con glow y entrada animada, nombre real con Rajdhani SemiBold, desarrollador/publisher en las esquinas inferiores y carrusel horizontal de cinco cajas 3D.
+- `ThemeTemplate/theme.xml.example`: plantilla comentada para crear un tema nuevo.
 
 Los XML incluidos son ejemplos funcionales y se pueden copiar y modificar.

@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fanart a pantalla completa y carrusel horizontal de cajas 3D. -->
+<theme version="2" id="fanart-horizon" name="Fanart Horizon" author="NGNEON-EMU">
+  <canvas width="960" height="540"/>
+  <font source="assets/Rajdhani-SemiBold.ttf"/>
+  <palette
+    background="#030508"
+    header="#06090D"
+    panel="#B006090D"
+    panel_alt="#90101820"
+    primary="#F0A629"
+    primary_dark="#75490C"
+    secondary="#4A8DFF"
+    accent="#FFD66B"
+    warning="#FFD66B"
+    success="#66D59A"
+    text="#FFFFFF"
+    text_soft="#E5E8EC"
+    text_dim="#9AA3AE"
+    border="#D7B35B"
+    error="#FF6678"/>
+
+  <component id="library_background" visible="false"/>
+  <component id="header" visible="false"/>
+  <component id="carousel" visible="false"/>
+  <component id="cabinet" visible="false"/>
+  <component id="game_info" visible="false"/>
+  <component id="library_footer" visible="false"/>
+
+  <component id="game_title"
+             x="350" y="18" width="580" height="92"
+             z="120" visible="true" chrome="none"
+             font_size="69" show_with_logo="true"
+             text_color="#FFF7E4"
+             text_align="center" vertical_align="center"
+             text_shadow_color="#C0000000"
+             text_shadow_x="3" text_shadow_y="5" text_shadow_blur="3"
+             text_outline_color="#B04A2B08" text_outline="1"
+             letter_spacing="2" auto_fit="true" min_font_size="30"
+             fade_in="520" slide_in="right" slide_distance="46"
+             slide_duration="620"/>
+  <component id="gamecarousel_horizontal"
+             x="0" y="125" width="960" height="365"
+             z="130" visible="true" artwork="box3d" chrome="none"
+             selected_scale="145%" unselected_opacity="0.68"
+             fade_in="650" slide_in="up" slide_distance="38"
+             slide_duration="720"/>
+  <component id="game_credits"
+             x="20" y="496" width="920" height="36"
+             z="140" visible="true" chrome="none" font_size="20"
+             text_color="#FFF1CE" letter_spacing="1"
+             text_shadow_color="#D0000000"
+             text_shadow_x="2" text_shadow_y="3" text_shadow_blur="2"
+             fade_in="760" slide_in="down" slide_distance="22"
+             slide_duration="760"/>
+
+  <media id="backdrop" source="game.fanart"
+         x="0" y="0" width="960" height="540" z="-100"
+         opacity="0.74" fit="cover" visible="true" chrome="none"
+         brightness="0.70" contrast="1.12" saturation="0.82"
+         gradient_start="#12000000" gradient_end="#B8000000"
+         gradient_direction="vertical"
+         fade_in="700" zoom_in="950" zoom_from="96%"/>
+  <media id="logo" source="game.logo,game.wheel,game.marquee"
+         x="24" y="18" width="292" height="118" z="125"
+         opacity="255" fit="contain" visible="true" chrome="none"
+         shadow_color="#B0000000" shadow_x="5" shadow_y="7" shadow_blur="5"
+         glow_color="#70FFD66B" glow_radius="7"
+         fade_in="540" slide_in="left" slide_distance="58"
+         slide_duration="660" zoom_in="620" zoom_from="86%"
+         pulse="2%" pulse_period="2200"/>
+</theme>

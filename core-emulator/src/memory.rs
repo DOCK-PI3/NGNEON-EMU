@@ -154,18 +154,33 @@ pub struct Z80IoAccess {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputPorts {
     pub p1: u8,
+    pub p2: u8,
+    pub p3: u8,
+    pub p4: u8,
     pub system: u8,
     pub status_a: u8,
+    pub vliner_system: u8,
 }
 
 impl InputPorts {
     pub const RELEASED: Self = Self {
         p1: 0xFF,
-        // Geolith's inactive callbacks expose 0x3F on STATUS_B when no
-        // memory card is inserted, and 0x07 on STATUS_A before RTC bits.
-        system: 0x3F,
+        p2: 0xFF,
+        p3: 0xFF,
+        p4: 0xFF,
+        // Lower four bits are STATUS_B player inputs; upper bits also keep
+        // the latent P3/P4 start lines used by the FTC1B multiplexer.
+        system: 0xFF,
         status_a: 0x07,
+        vliner_system: 0xFF,
     };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputDeviceMode {
+    Standard,
+    IrritatingMaze,
+    Vliner,
 }
 
 impl Default for InputPorts {
@@ -362,7 +377,7 @@ impl Rtc4990a {
 
         let month_days = [
             31,
-            if self.year % 4 == 0 { 29 } else { 28 },
+            if self.year.is_multiple_of(4) { 29 } else { 28 },
             31,
             30,
             31,
@@ -684,8 +699,9 @@ impl Memory {
                 self.palette_ram.get(offset).copied().unwrap_or(0)
             }
             INPUT_P1_PORT => {
-                self.record_bus_access(BusAccessKind::Read, addr, self.input_ports.p1);
-                self.input_ports.p1
+                let value = self.read_controller_port(0);
+                self.record_bus_access(BusAccessKind::Read, addr, value);
+                value
             }
             DIPSW_PORT => self.dip_switches,
             TEST_SWITCH_PORT => self.test_switch & !0x40,
@@ -694,7 +710,7 @@ impl Memory {
                 self.z80_sound_reply
             }
             STATUS_A_PORT => self.read_status_a(),
-            INPUT_P2_PORT => self.p2_port,
+            INPUT_P2_PORT => self.read_controller_port(1),
             SYSTEM_PORT => self.read_system_b(),
             MEMORY_CARD_START..=MEMORY_CARD_END => self.read_memory_card(addr),
             BIOS_ROM_START..=BIOS_ROM_END => self.read_bios_region_byte(addr),
@@ -752,6 +768,8 @@ impl Memory {
             RTC_CONTROL_PORT if self.system_is_mvs => self.rtc.borrow_mut().write_control(value),
             RTC_CONTROL_PORT => {}
             SYSTEM_PORT => {}
+            POUTPUT_START => self.reg_poutput = value,
+            0x380021 if !self.system_is_mvs => self.reg_poutput = value,
             POUTPUT_START..=POUTPUT_END if addr & 1 == 1 => {}
             SYSTEM_LATCH_START..=SYSTEM_LATCH_END => self.write_system_latch(addr),
             MEMORY_CARD_START..=MEMORY_CARD_END => self.write_memory_card(addr, value),
@@ -863,12 +881,14 @@ impl Memory {
                 ])
             }
             INPUT_P1_PORT => {
-                self.record_bus_access(BusAccessKind::Read, addr, self.input_ports.p1);
-                u16::from_be_bytes([self.input_ports.p1, self.input_ports.p1])
+                let value = self.read_controller_port(0);
+                self.record_bus_access(BusAccessKind::Read, addr, value);
+                u16::from_be_bytes([value, value])
             }
             INPUT_P2_PORT => {
-                self.record_bus_access(BusAccessKind::Read, addr, self.p2_port);
-                u16::from_be_bytes([self.p2_port, self.p2_port])
+                let value = self.read_controller_port(1);
+                self.record_bus_access(BusAccessKind::Read, addr, value);
+                u16::from_be_bytes([value, value])
             }
             SYSTEM_PORT => {
                 let value = self.read_system_b();
@@ -1226,6 +1246,7 @@ pub struct Memory {
     persistent_data_enabled: bool,
     dirty_backup_ram: Cell<bool>,
     dirty_memory_card: Cell<bool>,
+    dirty_cartridge_ram: Cell<bool>,
     pub vram_addr: Cell<u16>,
     pub vram_mod: u16,
     pub lspc_mode: u16,
@@ -1256,7 +1277,8 @@ pub struct Memory {
     pub z80_nmi_pending: Cell<bool>,
     pub z80_sound_reply: u8,
     pub ym2610_addr: [u8; 2], // current register address for each YM2610 port
-    pub p2_port: u8,
+    /// Joypad output latch used by FTC1B and Irritating Maze multiplexing.
+    pub reg_poutput: u8,
     pub status_a: u8,
     pub status_a_pulse: Cell<bool>,
     rtc: RefCell<Rtc4990a>,
@@ -1276,6 +1298,12 @@ pub struct Memory {
     pub bus_trace: RefCell<Vec<BusAccess>>,
     pub z80_io_trace: RefCell<Vec<Z80IoAccess>>,
     pub input_ports: InputPorts,
+    pub input_device: InputDeviceMode,
+    pub four_player_enabled: bool,
+    trackball_x: Cell<i32>,
+    trackball_y: Cell<i32>,
+    trackball_axis_x: Cell<i16>,
+    trackball_axis_y: Cell<i16>,
     pub watchdog_cycles: u32,
     pub watchdog_enabled: bool,
     watchdog_limit: u32,
@@ -1323,6 +1351,7 @@ impl Memory {
             persistent_data_enabled: true,
             dirty_backup_ram: Cell::new(false),
             dirty_memory_card: Cell::new(false),
+            dirty_cartridge_ram: Cell::new(false),
             vram_addr: Cell::new(0),
             vram_mod: 1,
             lspc_mode: 0,
@@ -1351,7 +1380,7 @@ impl Memory {
             z80_nmi_pending: Cell::new(false),
             z80_sound_reply: 0,
             ym2610_addr: [0; 2],
-            p2_port: 0xFF,
+            reg_poutput: 0,
             status_a: 0xFF,
             status_a_pulse: Cell::new(true),
             rtc: RefCell::new(Rtc4990a::new()),
@@ -1371,6 +1400,12 @@ impl Memory {
             bus_trace: RefCell::new(Vec::new()),
             z80_io_trace: RefCell::new(Vec::new()),
             input_ports: InputPorts::default(),
+            input_device: InputDeviceMode::Standard,
+            four_player_enabled: false,
+            trackball_x: Cell::new(0),
+            trackball_y: Cell::new(0),
+            trackball_axis_x: Cell::new(0),
+            trackball_axis_y: Cell::new(0),
             watchdog_cycles: 0,
             watchdog_enabled: true,
             watchdog_limit: WATCHDOG_M68K_CYCLES,
@@ -1395,6 +1430,25 @@ impl Memory {
         self.input_ports = input_ports;
     }
 
+    pub fn set_trackball_axes(&self, x: i16, y: i16) {
+        self.trackball_axis_x.set(x);
+        self.trackball_axis_y.set(y);
+    }
+
+    pub fn add_trackball_delta(&self, x: i32, y: i32) {
+        const TRACKBALL_SCALE: i32 = 8192;
+        self.trackball_x.set(
+            self.trackball_x
+                .get()
+                .wrapping_sub(x.saturating_mul(TRACKBALL_SCALE)),
+        );
+        self.trackball_y.set(
+            self.trackball_y
+                .get()
+                .wrapping_sub(y.saturating_mul(TRACKBALL_SCALE)),
+        );
+    }
+
     pub fn set_system_is_mvs(&mut self, is_mvs: bool) {
         self.system_is_mvs = is_mvs;
     }
@@ -1405,6 +1459,7 @@ impl Memory {
 
     /// Apply the three MVS DIP options exposed by Geolith's libretro core.
     pub fn set_dip_options(&mut self, setting_mode: bool, four_player: bool, freeplay: bool) {
+        self.four_player_enabled = four_player;
         self.dip_switches = 0xFF;
         if setting_mode {
             self.dip_switches &= !0x01;
@@ -1478,11 +1533,33 @@ impl Memory {
         };
 
         // Geolith persists backup RAM for MVS and UniBIOS, never for AES.
+        // Its libretro frontend names cartridge RAM `.sav` too, so an exact
+        // 8 KiB BrezzaSoft file is treated as legacy cartridge RAM instead of
+        // being copied into the 64 KiB cabinet backup RAM.
+        let legacy_sav = if self.system_is_mvs {
+            std::fs::read(format!("{save_path}.sav")).ok()
+        } else {
+            None
+        };
         if self.system_is_mvs {
-            let sav_path = format!("{save_path}.sav");
-            if let Ok(data) = std::fs::read(&sav_path) {
+            if let Some(data) = legacy_sav.as_deref().filter(|data| {
+                self.cart_protection != CartProtection::Brezzasoft || data.len() != PVC_CARTRAM_SIZE
+            }) {
                 let len = data.len().min(self.backup_ram.len());
                 self.backup_ram[..len].copy_from_slice(&data[..len]);
+            }
+        }
+
+        if self.cart_protection == CartProtection::Brezzasoft {
+            let cartridge_path = format!("{save_path}.cartram");
+            let cartridge_data = std::fs::read(&cartridge_path).ok().or_else(|| {
+                legacy_sav
+                    .as_ref()
+                    .filter(|data| data.len() == PVC_CARTRAM_SIZE)
+                    .cloned()
+            });
+            if let Some(data) = cartridge_data.filter(|data| data.len() == PVC_CARTRAM_SIZE) {
+                self.pvc_cart_ram.copy_from_slice(&data);
             }
         }
 
@@ -1499,6 +1576,7 @@ impl Memory {
 
         self.dirty_backup_ram.set(false);
         self.dirty_memory_card.set(false);
+        self.dirty_cartridge_ram.set(false);
     }
 
     /// Save backup RAM to disk (if dirty).
@@ -1544,6 +1622,26 @@ impl Memory {
         }
     }
 
+    /// Save battery-backed BrezzaSoft cartridge RAM to its own unambiguous
+    /// host file. PVC and bootleg working RAM are deliberately not persisted.
+    pub fn save_cartridge_ram(&self) {
+        if !self.persistent_data_enabled
+            || self.cart_protection != CartProtection::Brezzasoft
+            || !self.dirty_cartridge_ram.get()
+        {
+            return;
+        }
+        let Some(ref save_path) = self.save_path else {
+            return;
+        };
+        let path = format!("{save_path}.cartram");
+        if let Err(error) = std::fs::write(&path, &self.pvc_cart_ram) {
+            eprintln!("[WARN] No se pudo guardar cartridge RAM en {path}: {error}");
+        } else {
+            self.dirty_cartridge_ram.set(false);
+        }
+    }
+
     /// Save all persistent data to disk (if dirty). Called periodically
     /// by the frontend and when loading a new ROM or exiting.
     pub fn save_persistent_data(&self) {
@@ -1558,6 +1656,7 @@ impl Memory {
         }
         self.save_backup_ram();
         self.save_memory_card();
+        self.save_cartridge_ram();
     }
 
     pub fn set_persistent_data_enabled(&mut self, enabled: bool) {
@@ -1565,8 +1664,10 @@ impl Memory {
         if !enabled {
             self.backup_ram.fill(0);
             self.memory_card.copy_from_slice(&formatted_memory_card());
+            self.pvc_cart_ram.fill(0);
             self.dirty_backup_ram.set(false);
             self.dirty_memory_card.set(false);
+            self.dirty_cartridge_ram.set(false);
         }
     }
 
@@ -1733,6 +1834,7 @@ impl Memory {
         self.memory_card.copy_from_slice(&formatted_memory_card());
         self.dirty_backup_ram.set(false);
         self.dirty_memory_card.set(false);
+        self.dirty_cartridge_ram.set(false);
         self.vram_addr.set(0);
         self.vram_mod = 1;
         self.lspc_mode = 0;
@@ -1757,6 +1859,7 @@ impl Memory {
         self.z80_nmi_pending.set(false);
         self.z80_sound_reply = 0;
         self.ym2610_addr = [0; 2];
+        self.reg_poutput = 0;
         self.status_a_pulse.set(true);
         self.rtc.borrow_mut().reset();
         self.display_enabled = true;
@@ -1776,6 +1879,19 @@ impl Memory {
         self.bus_trace.borrow_mut().clear();
         self.z80_io_trace.borrow_mut().clear();
         self.input_ports = InputPorts::default();
+        self.input_device = match rom
+            .metadata
+            .as_ref()
+            .map_or(0, |metadata| metadata.game_flags)
+        {
+            flags if flags & crate::rom::NEO_FLAG_VLINER != 0 => InputDeviceMode::Vliner,
+            flags if flags & crate::rom::NEO_FLAG_IRRMAZE != 0 => InputDeviceMode::IrritatingMaze,
+            _ => InputDeviceMode::Standard,
+        };
+        self.trackball_x.set(0);
+        self.trackball_y.set(0);
+        self.trackball_axis_x.set(0);
+        self.trackball_axis_y.set(0);
         self.watchdog_cycles = 0;
         self.watchdog_enabled = true;
         self.rom_ngh = rom_ngh(rom);
@@ -1792,6 +1908,7 @@ impl Memory {
 
         // Reset NEO-PVC state
         self.pvc_cart_ram.fill(0);
+        self.dirty_cartridge_ram.set(false);
         self.kof10th_extra_ram.clear();
         self.dynamic_fix_rom.clear();
         if self.cart_protection == CartProtection::Kof10th {
@@ -1895,19 +2012,98 @@ impl Memory {
         (hi << 8) | lo
     }
 
+    fn raw_player_port(&self, player: usize) -> u8 {
+        match player {
+            0 => self.input_ports.p1,
+            1 => self.input_ports.p2,
+            2 => self.input_ports.p3,
+            3 => self.input_ports.p4,
+            _ => 0xFF,
+        }
+    }
+
+    fn read_controller_port(&self, physical_port: usize) -> u8 {
+        match self.input_device {
+            InputDeviceMode::Vliner => {
+                if physical_port == 0 {
+                    self.input_ports.p1
+                } else {
+                    0xFF
+                }
+            }
+            InputDeviceMode::IrritatingMaze => {
+                if physical_port == 0 {
+                    let axis_y = self.reg_poutput & 0x01 != 0;
+                    let (accumulator, axis) = if axis_y {
+                        (&self.trackball_y, self.trackball_axis_y.get())
+                    } else {
+                        (&self.trackball_x, self.trackball_axis_x.get())
+                    };
+                    accumulator.set(accumulator.get().wrapping_sub(i32::from(axis)));
+                    (accumulator.get() / 8192) as u8
+                } else {
+                    0x0F | (self.input_ports.p1 & 0xF0)
+                }
+            }
+            InputDeviceMode::Standard if self.four_player_enabled => {
+                let select = usize::from(self.reg_poutput & 0x01);
+                let player = physical_port.saturating_mul(2).saturating_add(select);
+                let mut value = self.raw_player_port(player);
+                if self.reg_poutput & 0x04 != 0 {
+                    value &= !(1 << (4 + select));
+                }
+                value
+            }
+            InputDeviceMode::Standard => self.raw_player_port(physical_port),
+        }
+    }
+
     fn read_status_a(&self) -> u8 {
-        let mut status = self.status_a & self.input_ports.status_a;
-        if self.coin_slots_34_high {
-            status |= 0x18;
-        } else {
-            status &= !0x18;
+        let mut status = match self.input_device {
+            InputDeviceMode::Vliner => 0x07,
+            _ if self.system_is_mvs => self.status_a & self.input_ports.status_a,
+            _ => (self.status_a & self.input_ports.status_a) | 0x03,
+        };
+        if self.input_device != InputDeviceMode::Vliner {
+            if self.coin_slots_34_high {
+                status |= 0x18;
+            } else {
+                status &= !0x18;
+            }
         }
         let rtc = self.rtc.borrow_mut().read_pins() << 6;
         (status & 0x3F) | rtc
     }
 
     fn read_system_b(&self) -> u8 {
-        let mut value = self.input_ports.system;
+        let mut value = match self.input_device {
+            InputDeviceMode::Vliner => 0x0F,
+            InputDeviceMode::IrritatingMaze => {
+                let mut status = 0x0F;
+                if self.input_ports.system & 0x01 == 0 {
+                    status &= !0x01;
+                }
+                status
+            }
+            InputDeviceMode::Standard if self.four_player_enabled => {
+                let select = usize::from(self.reg_poutput & 0x01);
+                let p1 = select;
+                let p2 = 2 + select;
+                let mut status = 0x0F;
+                if self.input_ports.system & (1 << (p1 * 2)) == 0 {
+                    status &= !0x01;
+                }
+                if self.input_ports.system & (1 << (p2 * 2)) == 0 {
+                    status &= !0x04;
+                }
+                status
+            }
+            InputDeviceMode::Standard => self.input_ports.system,
+        };
+        if self.system_is_mvs && self.input_device == InputDeviceMode::Standard {
+            // Select is a cartridge-slot control on MVS, not a player input.
+            value |= 0x0A;
+        }
         if self.system_is_mvs {
             value |= 0x80;
         } else {
@@ -2041,7 +2237,7 @@ impl Memory {
                         self.pvc_cart_ram[offset.wrapping_add(1) & 0x1fff],
                     ]))
                 } else if addr == 0x280000 {
-                    Some(self.read_system_b() as u16)
+                    Some(self.input_ports.vliner_system as u16)
                 } else if addr == 0x2c0000 {
                     Some(0xffc0)
                 } else {
@@ -2094,6 +2290,7 @@ impl Memory {
                     self.record_bus_access(BusAccessKind::Write, addr, value);
                     let offset = (addr - BANKED_PROM_START) as usize & 0x1fff;
                     self.pvc_cart_ram[offset] = value;
+                    self.dirty_cartridge_ram.set(true);
                 }
                 true
             }
@@ -2197,6 +2394,7 @@ impl Memory {
                     let offset = (addr - BANKED_PROM_START) as usize & 0x1fff;
                     self.pvc_cart_ram[offset] = hi;
                     self.pvc_cart_ram[offset.wrapping_add(1) & 0x1fff] = lo;
+                    self.dirty_cartridge_ram.set(true);
                 }
                 true
             }
@@ -3119,15 +3317,77 @@ mod tests {
         let mut memory = Memory::new();
         memory.backup_ram[0] = 0x12;
         memory.memory_card[0] = 0x34;
+        memory.pvc_cart_ram[0] = 0x56;
         memory.dirty_backup_ram.set(true);
         memory.dirty_memory_card.set(true);
+        memory.dirty_cartridge_ram.set(true);
 
         memory.set_persistent_data_enabled(false);
 
         assert!(memory.backup_ram.iter().all(|byte| *byte == 0));
         assert_eq!(memory.memory_card, formatted_memory_card());
+        assert!(memory.pvc_cart_ram.iter().all(|byte| *byte == 0));
         assert!(!memory.dirty_backup_ram.get());
         assert!(!memory.dirty_memory_card.get());
+        assert!(!memory.dirty_cartridge_ram.get());
+    }
+
+    #[test]
+    fn brezzasoft_cartridge_ram_persists_in_dedicated_file() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ngneon-brezza-cartram-{}-{unique}",
+            std::process::id()
+        ));
+        let save_base = directory.join("jockeygp");
+
+        let mut memory = Memory::new();
+        memory.cart_protection = CartProtection::Brezzasoft;
+        memory.save_path = Some(save_base.to_string_lossy().into_owned());
+        memory.write8(BANKED_PROM_START + 0x123, 0x5a);
+        memory.save_persistent_data();
+
+        let cartridge_path = save_base.with_extension("cartram");
+        assert_eq!(std::fs::metadata(&cartridge_path).unwrap().len(), 0x2000);
+
+        let mut restored = Memory::new();
+        restored.cart_protection = CartProtection::Brezzasoft;
+        restored.save_path = Some(save_base.to_string_lossy().into_owned());
+        restored.load_persistent_data();
+        assert_eq!(restored.pvc_cart_ram[0x123], 0x5a);
+        assert!(!restored.dirty_cartridge_ram.get());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn brezzasoft_imports_exact_geolith_sav_without_polluting_backup_ram() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ngneon-brezza-legacy-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let save_base = directory.join("vliner");
+        let mut legacy = vec![0u8; PVC_CARTRAM_SIZE];
+        legacy[7] = 0xa5;
+        std::fs::write(save_base.with_extension("sav"), legacy).unwrap();
+
+        let mut memory = Memory::new();
+        memory.cart_protection = CartProtection::Brezzasoft;
+        memory.save_path = Some(save_base.to_string_lossy().into_owned());
+        memory.load_persistent_data();
+
+        assert_eq!(memory.pvc_cart_ram[7], 0xa5);
+        assert!(memory.backup_ram.iter().all(|byte| *byte == 0));
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -3732,13 +3992,13 @@ mod tests {
     fn word_reads_of_input_registers_match_geolith_bus_behavior() {
         let mut memory = Memory::new();
         memory.input_ports.p1 = 0xA5;
-        memory.p2_port = 0x5A;
+        memory.input_ports.p2 = 0x5A;
         memory.input_ports.system = 0xC7;
         memory.z80_sound_reply = 0x12;
 
         assert_eq!(memory.read16(INPUT_P1_PORT), 0xA5A5);
         assert_eq!(memory.read16(INPUT_P2_PORT), 0x5A5A);
-        assert_eq!(memory.read16(SYSTEM_PORT), 0xB7B7);
+        assert_eq!(memory.read16(SYSTEM_PORT), 0xBFBF);
         assert_eq!(memory.read16(SOUND_PORT), 0xFFFF);
     }
 
@@ -3959,11 +4219,13 @@ mod tests {
             p1: 0b1111_1110,
             system: 0b1111_1101,
             status_a: 0b1111_1110,
+            ..InputPorts::default()
         });
 
         assert_eq!(memory.read8(INPUT_P1_PORT), 0b1111_1110);
         assert_eq!(memory.read8(DIPSW_PORT), 0xFF);
-        assert_eq!(memory.read8(SYSTEM_PORT), 0b1011_1101);
+        // On MVS, Select lines are cartridge-slot controls and read inactive.
+        assert_eq!(memory.read8(SYSTEM_PORT), 0b1011_1111);
         assert_eq!(memory.read8(STATUS_A_PORT) & 0x01, 0);
     }
 
@@ -3976,6 +4238,38 @@ mod tests {
 
         memory.set_dip_options(false, false, false);
         assert_eq!(memory.read8(DIPSW_PORT), 0xFF);
+    }
+
+    #[test]
+    fn poutput_and_aes_slot_mirror_update_the_hardware_latch() {
+        let mut memory = Memory::new();
+        memory.write8(0x380001, 0x05);
+        assert_eq!(memory.reg_poutput, 0x05);
+
+        memory.set_system_is_mvs(true);
+        memory.write8(0x380021, 0x02);
+        assert_eq!(memory.reg_poutput, 0x05);
+
+        memory.set_system_is_mvs(false);
+        memory.write8(0x380021, 0x02);
+        assert_eq!(memory.reg_poutput, 0x02);
+    }
+
+    #[test]
+    fn vliner_uses_dedicated_system_port_and_unconnected_p2() {
+        let mut memory = Memory::new();
+        memory.cart_protection = CartProtection::Brezzasoft;
+        memory.input_device = InputDeviceMode::Vliner;
+        memory.input_ports.p1 = 0xEF;
+        memory.input_ports.p2 = 0xDF;
+        memory.input_ports.status_a = 0;
+        memory.input_ports.vliner_system = 0x4C;
+
+        assert_eq!(memory.read8(INPUT_P1_PORT), 0xEF);
+        assert_eq!(memory.read8(INPUT_P2_PORT), 0xFF);
+        assert_eq!(memory.read16(0x280000), 0x004C);
+        assert_eq!(memory.read8(STATUS_A_PORT) & 0x3F, 0x07);
+        assert_eq!(memory.read8(SYSTEM_PORT) & 0x0F, 0x0F);
     }
 
     #[test]

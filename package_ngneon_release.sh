@@ -36,6 +36,10 @@ case "$OUT_NAME" in
         printf '%s\n' "ERROR: NGNEON_PACKAGE_OUT debe ser un nombre de directorio simple." >&2
         exit 2
         ;;
+    .git|assets|bios|config|core-emulator|deps|docs|examples|frontend|logs|media|musica|roms|roms_zip|rpi5|saves|screenshots|target|themes)
+        printf '%s\n' "ERROR: NGNEON_PACKAGE_OUT no puede reemplazar un directorio del proyecto." >&2
+        exit 2
+        ;;
 esac
 
 OUT="$ROOT/$OUT_NAME"
@@ -85,6 +89,33 @@ remove_output_path() {
     if [ -e "$target" ]; then
         rm -rf -- "$target"
     fi
+}
+
+copy_missing_tree() {
+    source_dir=$1
+    destination_dir=$2
+    mkdir -p -- "$destination_dir"
+
+    (
+        cd "$source_dir"
+        find . -type d -print
+    ) | while IFS= read -r entry; do
+        relative=${entry#./}
+        [ -n "$relative" ] || continue
+        mkdir -p -- "$destination_dir/$relative"
+    done
+
+    (
+        cd "$source_dir"
+        find . ! -type d -print
+    ) | while IFS= read -r entry; do
+        relative=${entry#./}
+        target="$destination_dir/$relative"
+        if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+            mkdir -p -- "$(dirname -- "$target")"
+            cp -a -- "$source_dir/$relative" "$target"
+        fi
+    done
 }
 
 set_config_key() {
@@ -163,7 +194,9 @@ apply_portable_config() {
     set_config_key "$file" "rom_path" "roms"
     set_config_key "$file" "bios_dir" "bios"
     set_config_key "$file" "media_dir" "auto"
+    set_config_key "$file" "rom_browser_media" "auto"
     set_config_key "$file" "gamepad" "off"
+    set_config_key "$file" "four_player" "off"
     set_config_key "$file" "cpu_overclock" "off"
     set_config_key "$file" "sprite_limit" "96"
     set_config_key "$file" "disable_adpcm_wrap" "off"
@@ -175,7 +208,7 @@ apply_portable_config() {
 }
 
 output_has_personal_files() {
-    for protected_dir in roms media musica saves screenshots logs; do
+    for protected_dir in roms media musica saves screenshots logs config; do
         directory="$OUT/$protected_dir"
         if [ ! -d "$directory" ]; then
             continue
@@ -185,6 +218,8 @@ output_has_personal_files() {
             find "$directory" -type f \
                 ! -path "$OUT/roms/readme.txt" \
                 ! -path "$OUT/musica/README.md" \
+                ! -path "$OUT/musica/README.txt" \
+                ! -path "$OUT/config/ngneon.conf" \
                 -print -quit
         )
         if [ -n "$found" ]; then
@@ -235,6 +270,27 @@ output_config_is_modified() {
         fi
     done < "$TEMP_KEYS"
 
+    awk '
+        /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+        {
+            separator = index($0, "=")
+            if (separator > 0) {
+                key = substr($0, 1, separator - 1)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+                if (key != "") {
+                    print key
+                }
+            }
+        }
+    ' "$actual" > "$TEMP_KEYS"
+
+    while IFS= read -r key; do
+        if ! config_has_key "$TEMP_CONFIG" "$key"; then
+            printf '%s\n' "Configuración personalizada: clave adicional $key" >&2
+            return 0
+        fi
+    done < "$TEMP_KEYS"
+
     return 1
 }
 
@@ -242,10 +298,18 @@ command -v cargo >/dev/null 2>&1 || fail "Cargo no está instalado o no está di
 command -v awk >/dev/null 2>&1 || fail "Se necesita awk para generar la configuración portátil."
 [ -f "$ROOT/Cargo.toml" ] || fail "No se encuentra Cargo.toml en $ROOT"
 [ -f "$CONFIG_TEMPLATE" ] || fail "No se encuentra $CONFIG_TEMPLATE"
+[ -f "$ROOT/iniciar-ngneon.sh" ] || fail "No se encuentra iniciar-ngneon.sh"
+[ -f "$ROOT/configurar-ngneon.sh" ] || fail "No se encuentra configurar-ngneon.sh"
 
-if [ -L "$OUT" ] || [ -L "$OUT/themes" ] || [ -L "$OUT/bios" ]; then
-    fail "La salida, themes o bios no pueden ser enlaces simbólicos."
-fi
+for package_path in \
+    "$OUT" "$OUT/config" "$OUT/roms" "$OUT/media" "$OUT/musica" \
+    "$OUT/saves" "$OUT/screenshots" "$OUT/logs" "$OUT/themes" "$OUT/bios" \
+    "$OUT/assets" "$OUT/rpi5" "$OUT/target" "$OUT/runtime" "$OUT/configurator"
+do
+    if [ -L "$package_path" ]; then
+        fail "Las rutas del paquete no pueden ser enlaces simbólicos: $package_path"
+    fi
+done
 
 if [ -d "$OUT" ] && [ "${NGNEON_ALLOW_PACKAGE_CLEAN:-0}" != "1" ]; then
     if output_has_personal_files || output_config_is_modified; then
@@ -270,6 +334,8 @@ reset_dir "$OUT/musica"
 reset_dir "$OUT/saves"
 reset_dir "$OUT/screenshots"
 reset_dir "$OUT/logs"
+reset_dir "$OUT/assets"
+reset_dir "$OUT/rpi5"
 remove_output_path "$OUT/media"
 remove_output_path "$OUT/target"
 remove_output_path "$OUT/runtime"
@@ -290,16 +356,21 @@ if [ -d "$ROOT/bios" ]; then
     cp -a -- "$ROOT/bios/." "$OUT/bios/"
 fi
 
-if [ -d "$ROOT/config" ]; then
-    cp -a -- "$ROOT/config/." "$OUT/config/"
-    find "$OUT/config" -maxdepth 1 -type f -name 'ngneon*.conf' -delete
-fi
 cp -- "$CONFIG_TEMPLATE" "$OUT/config/ngneon.conf"
 apply_portable_config "$OUT/config/ngneon.conf"
 
+if [ -d "$ROOT/assets" ]; then
+    cp -a -- "$ROOT/assets/." "$OUT/assets/"
+fi
+
+if [ -d "$ROOT/rpi5" ]; then
+    cp -a -- "$ROOT/rpi5/." "$OUT/rpi5/"
+    find "$OUT/rpi5" -type f -name '*.sh' -exec chmod 0755 {} +
+fi
+
 mkdir -p -- "$OUT/themes"
 if [ -d "$ROOT/themes" ]; then
-    cp -a -n -- "$ROOT/themes/." "$OUT/themes/"
+    copy_missing_tree "$ROOT/themes" "$OUT/themes"
 fi
 
 for media_type in \
@@ -333,8 +404,9 @@ Coloca aquí archivos `.mp3`. El frontend los reproduce aleatoriamente cuando
 `frontend_music=on`.
 EOF
 fi
+[ -d "$OUT/musica" ] || fail "No se pudo crear musica/ en el paquete."
 
-for document in README.md CHANGELOG.md LICENSE LICENSE.txt; do
+for document in README.md CHANGELOG.md BUILDING.md LICENSE LICENSE.txt; do
     if [ -f "$ROOT/$document" ]; then
         cp -- "$ROOT/$document" "$OUT/$document"
     fi
@@ -348,13 +420,13 @@ Los ejecutables enlazan con las bibliotecas del sistema. Instala SDL2, ALSA y
 OpenGL, además de sus paquetes de desarrollo si vas a compilar.
 
 Debian / Ubuntu:
-  sudo apt install build-essential pkg-config libsdl2-dev libasound2-dev libgl1-mesa-dev
+  sudo apt install build-essential pkg-config libsdl2-dev libasound2-dev libgl1-mesa-dev libssl-dev
 
 Fedora:
-  sudo dnf install @development-tools pkgconf-pkg-config SDL2-devel alsa-lib-devel mesa-libGL-devel
+  sudo dnf install @development-tools pkgconf-pkg-config SDL2-devel alsa-lib-devel mesa-libGL-devel openssl-devel
 
 Arch Linux:
-  sudo pacman -S --needed base-devel pkgconf sdl2 alsa-lib mesa
+  sudo pacman -S --needed base-devel pkgconf sdl2 alsa-lib mesa openssl
 
 Compilar:
   cargo build --release --workspace
@@ -365,4 +437,4 @@ EOF
 
 printf '\n%s\n' "Paquete Linux creado correctamente:"
 printf '  %s\n' "$OUT"
-printf '%s\n' "Incluye ngneon-emu, ngneon-frontend, scripts, configuración, temas y directorios vacíos de usuario."
+printf '%s\n' "Incluye ngneon-emu, ngneon-frontend, scripts, configuración, temas, assets, soporte RPi5, musica/ y directorios vacíos de usuario."

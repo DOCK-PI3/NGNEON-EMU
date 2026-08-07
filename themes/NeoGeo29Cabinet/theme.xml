@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Neo Geo 29 blanca con gamecarousel curvado de logos a la derecha. -->
+<theme version="2" id="neogeo-29-cabinet" name="Neo Geo 29 Cabinet" author="NGNEON-EMU">
+  <canvas width="960" height="540"/>
+  <palette
+    background="#040507"
+    header="#111318"
+    panel="#D90A0C10"
+    panel_alt="#C9181C23"
+    primary="#D7192D"
+    primary_dark="#68101C"
+    secondary="#8B929D"
+    accent="#F2F4F7"
+    warning="#FFD64A"
+    success="#54D890"
+    text="#FFFFFF"
+    text_soft="#CDD2D9"
+    text_dim="#7B818A"
+    border="#AAB0BA"
+    error="#FF6678"/>
+
+  <component id="library_background" visible="false"/>
+  <component id="header" visible="false"/>
+  <component id="carousel" visible="false"/>
+  <component id="cabinet" visible="false"/>
+  <component id="game_info" visible="false"/>
+  <component id="library_footer" visible="false"/>
+
+  <component id="gamecarousel_right"
+             x="620" y="44" width="330" height="452"
+             z="230" visible="true" artwork="logo" chrome="none"
+             opacity="255" selected_scale="145%"
+             unselected_opacity="0.42" arc="72"/>
+  <component id="page_counter"
+             x="690" y="8" width="230" height="26"
+             z="240" visible="true" chrome="none" opacity="0.90"/>
+  <component id="game_metadata"
+             x="650" y="506" width="280" height="28"
+             z="235" visible="true" chrome="none" opacity="0.85"/>
+
+  <media id="backdrop" source="game.fanart,game.mix,game.image"
+         x="0" y="0" width="960" height="540" z="-100"
+         opacity="0.24" fit="cover" visible="true" chrome="none"/>
+  <media id="preview" source="game.video,game.screenshot,game.titleshot,game.mix,game.image"
+         x="100" y="160" width="355" height="275" z="210"
+         opacity="255" fit="cover" visible="true" chrome="none"/>
+  <media id="logo" source="game.marquee,game.logo,game.wheel"
+         x="116" y="0" width="333" height="76" z="210"
+         opacity="255" fit="stretch" visible="true" chrome="none"/>
+  <layer id="control-deck-fill" source="assets/black.png"
+         x="140" y="482" width="280" height="31" z="219"
+         opacity="255" fit="stretch" view="library" visible="true"/>
+  <layer id="neogeo-29-cabinet" source="assets/cabinet.png"
+         x="0" y="0" width="650" height="540" z="220"
+         opacity="255" fit="stretch" view="library" visible="true"/>
+</theme>

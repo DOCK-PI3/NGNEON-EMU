@@ -7,6 +7,457 @@ El proyecto combina un núcleo Neo Geo en Rust, un frontend de biblioteca SDL2 y
 
 ---
 
+## 2026-07-26 — Resoluciones HD y filtros de escalado GPU
+
+- Añadidos presets de salida `auto`, `720p`, `1080p` y `1440p`; el modo
+  automático conserva `window_scale` y pantalla completa usa la resolución del
+  escritorio.
+- Añadidos los filtros `nearest`, `pixel-perfect` y `sharp-bilinear`.
+  Pixel Perfect centra el mayor múltiplo entero de la imagen visible 304×224;
+  Sharp Bilinear mantiene zonas de píxel planas y suaviza únicamente sus
+  fronteras en escalas no enteras.
+- La relación de aspecto 4:3 sigue siendo el valor predeterminado. Todos los
+  cambios se aplican en SDL2/OpenGL después del framebuffer, sin modificar el
+  render LSPC ni la precisión del núcleo 320×224.
+- Integrados los nuevos ajustes en el menú interno, el frontend nativo, la
+  configuración de ejemplo y la documentación.
+
+---
+
+## 2026-07-25 — Efectos visuales, tipografía y animaciones para temas
+
+- Ampliado el parser XML sin romper temas existentes: `<component>`, `<layer>`
+  y `<media>` comparten ahora `brightness`, `contrast`, `saturation`,
+  `grayscale`, `tint`, `blur`, sombra, glow, rotación, esquinas redondeadas y
+  gradiente vertical/horizontal.
+- Añadidos estilos a `game_title`, `game_description`, `game_metadata`,
+  `game_credits` y `page_counter`: `text_color`, alineación horizontal/vertical,
+  sombra suavizada, contorno, `letter_spacing`, `line_height`, `auto_fit` y
+  `min_font_size`.
+- Añadidas animaciones combinables `fade_in`, `slide_in`, `zoom_in` y `pulse`.
+  Las entradas se reinician al cambiar de juego, tema o vista; `pulse` mantiene
+  el refresco activo sólo cuando un elemento visible lo necesita.
+- Los porcentajes aceptan entero, sufijo `%` o factor decimal según corresponda.
+  El parser valida límites de radios, offsets, escalas y duraciones, exige los
+  dos extremos de un gradiente y sigue rechazando atributos desconocidos.
+- Las capas y la media estática se filtran una sola vez dentro de la caché de
+  imágenes, cuya clave incluye la configuración de efectos. Los componentes se
+  postprocesan tras su render funcional y los frames de vídeo sólo recorren la
+  ruta de filtros cuando el slot declara algún efecto.
+- Refinado **Fanart Horizon** como muestra funcional: fanart con colorimetría y
+  gradiente, logo con sombra/glow/zoom/pulso sutil, título y créditos con
+  tracking/contorno/sombra, y entradas escalonadas del carrusel.
+- Actualizados `themes/README.md`, la plantilla editable, README y guía de
+  agentes con atributos, orden de filtros, límites y recomendaciones de coste.
+- Añadidas pruebas unitarias del parser, filtros, composición alpha,
+  transformaciones animadas, tracking y wrapping de texto.
+- Preparada la distribución de prueba
+  `NGNEON-EMU-Windows-theme-effects-test`, configurada para abrir inicialmente
+  con **Fanart Horizon** y sin ROMs, media, música ni partidas.
+
+---
+
+## 2026-07-24 — Fanart Horizon, fuentes de tema y carrusel horizontal 3D
+
+- Añadido el componente `gamecarousel_horizontal`, interactivo y con cinco
+  cajas 3D. La caja seleccionada se escala hasta ocupar más de media pantalla,
+  se dibuja por encima de sus vecinas y las demás se reducen y atenúan.
+- Los temas v2 pueden incluir una fuente TTF/OTF autocontenida mediante
+  `<font source="assets/fuente.ttf"/>`. La ruta queda confinada a la carpeta
+  del tema y, si la fuente falla, se conserva el fallback del sistema.
+- `game_title` y `game_metadata` admiten `font_size`; el título añade
+  `show_with_logo` y los metadatos pueden elegir `year`, `developer`,
+  `publisher`, `players` y `manufacturer` con `fields`.
+- Añadido **Fanart Horizon**: fanart a pantalla completa, logo flotante, nombre
+  real a tamaño inicial 69, desarrollador/publisher y carrusel horizontal de
+  cajas 3D, sin descripción ni paneles.
+- Refinado **Fanart Horizon**: el carrusel de cajas se desplazó exactamente
+  50 píxeles hacia arriba y el nuevo componente `game_credits` sitúa el
+  desarrollador en la esquina inferior izquierda y el publisher en la derecha.
+- Incluida **Rajdhani SemiBold** bajo licencia SIL Open Font License junto al
+  tema, con su fichero `OFL.txt`.
+- Actualizados parser, navegación, paginación, hitboxes, recarga en caliente,
+  pruebas con media real, documentación y plantilla para los 20 componentes.
+
+---
+
+## 2026-07-23 — Prioridad arcade-marquee
+
+- `game.marquee` usa ahora `roms/media/arcade-marquee` como colección
+  predeterminada para todos los temas. Las rutas locales válidas de
+  `gamelist.xml`, `screen-marquees` y el antiguo `marquees` quedan como
+  fallbacks, en ese orden.
+- Añadida una capa negra completamente opaca detrás de la zona de controles de
+  **Neo Geo 29 Cabinet**, ocultando la abertura transparente del PNG sin cubrir
+  la cabinet ni alterar el carrusel.
+- Preparada la distribución de prueba
+  `NGNEON-EMU-Windows-arcade-marquee-test`.
+- Refinada la altura y posición vertical de `arcade-marquee` en **NGNEON
+  Neon**, **Cyber List**, **Console Showcase** y las cabinets **Neo Geo 29**,
+  **Neo Geo Green** y **Neo Geo Red**. Los tres layouts sin máscara usan
+  `stretch` para conservar la composición completa sin recortar su franja
+  inferior.
+- Preparada la distribución de prueba
+  `NGNEON-EMU-Windows-marquee-fit-test`.
+
+---
+
+## 2026-07-23 — Gamecarousels curvados y Neo Geo 29
+
+- Añadidos los componentes `gamecarousel_left` y `gamecarousel_right`, con siete
+  logos en vertical y una curva especular hacia el centro de la pantalla. Se
+  aceptan también los alias `gamecarrousel_left/right`.
+- El logo seleccionado se renderiza al final, por encima de sus vecinos, y usa
+  `selected_scale` (`100..200`, porcentaje o factor decimal). Los demás usan
+  `unselected_opacity` (`0..255` o `0.0..1.0`) y `arc` controla el desplazamiento
+  horizontal que forma la curva.
+- Todos los componentes aceptan ahora `opacity`; capas y slots media ya
+  disponían de esta propiedad. Los valores omitidos conservan el comportamiento
+  anterior, por lo que los temas existentes siguen siendo compatibles.
+- Añadido **Neo Geo 29 Cabinet** con el asset original autocontenido, monitor y
+  marquee enmascarados por la cabinet y un `gamecarousel_right` de logos sin
+  paneles. El seleccionado usa escala 145 %, los demás 42 % de opacidad y la
+  curva usa 72 píxeles lógicos.
+- Refinada la geometría del marquee de **Neo Geo 29 Cabinet** para mantenerlo
+  completamente dentro de la abertura superior de la máquina.
+- Actualizados parser, hitboxes, navegación, paginación, render de temas,
+  plantilla y documentación para los 18 componentes disponibles.
+- Preparada la distribución de prueba
+  `NGNEON-EMU-Windows-neogeo29-gamecarousel-test`.
+
+---
+
+## 2026-07-22 — Temas autocontenidos y cabinets Neo Geo
+
+### Una carpeta aislada por tema
+
+- Reorganizados todos los diseños incluidos como
+  `themes/NombreSinEspacios/theme.xml`; sus imágenes y demás recursos propios
+  viven ahora bajo `assets/` dentro de esa misma carpeta.
+- El catálogo descubre XML tanto en la raíz de `frontend_theme_dir` como a un
+  nivel de profundidad. Los temas planos antiguos siguen siendo válidos para
+  no romper diseños externos existentes.
+- Las rutas guardadas del formato anterior, como `themes/neon.xml`, se migran
+  automáticamente usando el ID del tema. La nueva configuración predeterminada
+  apunta a `themes/NGNEONNeon/theme.xml`.
+- La plantilla pasó a `themes/ThemeTemplate/theme.xml.example` y documenta el
+  nuevo layout autocontenido. Los empaquetadores Windows/Linux ya copian toda
+  la jerarquía junto con sus assets.
+
+### Carruseles de logos y cajas 3D
+
+- Los componentes `vertical_list` y `horizontal_list` aceptan el nuevo atributo
+  `artwork="logo|box3d"`.
+- `logo` conserva la cadena de fallback logo → wheel → marquee y muestra siete
+  juegos. `box3d` usa caja 3D → caja 2D → box art → miniatura; en vertical
+  muestra cinco elementos de mayor tamaño acompañados por el título.
+- La paginación, la rueda del ratón y los hitboxes se adaptan al número de
+  elementos del carrusel activo.
+
+### Nuevos temas Cabinet
+
+- Añadido **Neo Geo Red Cabinet**, basado en la cabinet roja facilitada por el
+  usuario: vídeo/captura dentro del monitor, marquee en la marquesina y
+  carrusel vertical de logos a la derecha.
+- Añadido **Neo Geo Green Cabinet**, basado en la cabinet verde: vídeo/captura
+  en el monitor, carrusel vertical de siete logos con el nombre como fallback,
+  caja 3D seleccionada entre la cabinet y la lista, y ficha de
+  descripción/metadatos.
+- Refinada la geometría de ambos temas usando las ventanas transparentes del
+  asset original. El marquee usa un rectángulo `395×107`, con 6 píxeles de
+  sangrado por cada lado respecto a la abertura `383×95`, y el monitor conserva
+  `333×243`. La capa PNG de la cabinet se dibuja por encima del marquee y del
+  vídeo, recortando el exceso bajo los biseles y evitando que asome el fondo al
+  cambiar de juego.
+- Añadido `chrome="panel|none"` a componentes alternativos y slots media. El
+  valor predeterminado `panel` mantiene compatibles los temas existentes;
+  `none` deja logos, imágenes y textos flotantes sin panel, borde, tarjeta,
+  banda de selección, flecha ni aviso `SIN MEDIA`.
+- Los dos temas Cabinet usan la variante sin marcos: Red presenta un carrusel
+  limpio de logos; Green integra también caja 3D, descripción, metadatos y
+  contador directamente sobre el fondo.
+- Ambos PNG originales se conservan con transparencia y sin recomprimir dentro
+  de `themes/NeoGeo*Cabinet/assets/cabinet.png`.
+
+### Descripciones con auto-scroll y validación
+
+- `game_description` ya no deja inaccesible el texto que excede su recuadro:
+  espera 2,5 segundos, avanza línea a línea, pausa en el final y reinicia el
+  ciclo. Al cambiar de juego o de vista vuelve al principio.
+- Añadidas pruebas del parser `artwork`, fallbacks de cajas, descubrimiento de
+  subcarpetas, compatibilidad de selectores antiguos y ciclo completo del
+  auto-scroll.
+- Los siete temas incluidos se renderizan en tests tanto en Biblioteca como en
+  Ajustes; los layouts ricos se validaron además con las 157 ROMs y la media
+  real del checkout local, incluyendo vídeo H.264, carruseles de logos y la
+  caja 3D independiente del tema verde.
+- Preparada la distribución independiente
+  `NGNEON-EMU-Windows-cabinet-themes-refined-test`, sin ROMs, saves ni media
+  del usuario.
+- Preparada la revisión
+  `NGNEON-EMU-Windows-cabinet-themes-frameless-test` con el sangrado del
+  marquee y la presentación flotante sin recuadros.
+
+---
+
+## 2026-07-22 — Explorador de ROMs con media seleccionable
+
+### Detección y selección de imágenes
+
+- El explorador interno ya no usa una prioridad cerrada e inmutable de
+  carátulas. Ahora detecta dinámicamente las subcarpetas disponibles bajo la
+  raíz configurada en `media_dir`, que por defecto es `roms/media/`.
+- Solo se ofrecen fuentes que contienen al menos una imagen cuyo nombre base
+  coincide con una ROM de la biblioteca. Esto admite tanto categorías
+  convencionales (`box2d`, `box3d`, `mix`, `screenshots`, `titles`, `fanart`,
+  `logos`, `wheelhd`, `marquees`, `cartridges`) como carpetas creadas por otros
+  scrapers (`steamgrid`, `flyers`, `figurines`, etc.).
+- Añadida la opción `Ctrl+S → RUTAS → Imagen explorador`. La fuente activa se
+  puede cambiar también mientras el explorador está abierto con `Tab` o la
+  acción Neo Geo `C` del gamepad —botón X en el mapeo predeterminado—.
+- La selección global persiste en `config/ngneon.conf` mediante
+  `rom_browser_media=auto|root|<subcarpeta>`.
+- El modo `AUTO` conserva fallbacks por juego: raíz, `box2d`, `box3d`, `mix`,
+  `screenshots` y después las demás fuentes detectadas en orden estable.
+- El nombre de la fuente activa se muestra en la cabecera del explorador y en
+  el menú de configuración.
+
+### Formatos, seguridad y rendimiento
+
+- Se admiten imágenes PNG, JPG, JPEG y WebP; nombres y extensiones se comparan
+  sin distinguir mayúsculas/minúsculas, también en sistemas de archivos
+  sensibles a mayúsculas.
+- Los valores de configuración con rutas inseguras, separadores, componentes
+  ascendentes o caracteres reservados se rechazan y vuelven a `AUTO`.
+- Las carpetas se indexan una vez al actualizar la biblioteca, evitando volver
+  a recorrer una colección completa de media por cada miniatura.
+- Al cambiar la fuente se invalidan únicamente las miniaturas del explorador;
+  la página visible se recarga al instante y el resto continúa siendo lazy.
+
+### Configuración, paquetes y pruebas
+
+- `config/ngneon.example.conf`, README, AGENTS y ambos empaquetadores incluyen
+  la nueva clave `rom_browser_media=auto`.
+- Los paquetes nuevos usan `media_dir=auto`, preparan `roms/media/` y eliminan
+  la antigua carpeta portátil `media/` para evitar dos ubicaciones ambiguas.
+- Añadidas pruebas de detección dinámica, exclusión de vídeos y media no
+  coincidente, resolución sin distinguir mayúsculas, rechazo de subdirectorios
+  inseguros, prioridad `AUTO` y selección explícita de una fuente.
+- Validado con la biblioteca local: se reconocieron 16 categorías de imágenes
+  con media coincidente para las ROMs instaladas.
+- Generada y verificada la distribución independiente
+  `NGNEON-EMU-Windows-rom-browser-media-test`, sin ROMs ni saves y con
+  `roms/media/` preparado.
+
+---
+
+## 2026-07-21 — Frontend, mandos, audio, vídeo y pantalla completa
+
+### Retorno seguro al frontend
+
+- Corregido el relanzamiento involuntario del último juego al regresar a la
+  biblioteca. SDL seguía acumulando eventos mientras el proceso hijo del
+  emulador tenía el control; ahora esa cola se bombea y se descartan botones,
+  ejes y teclas obsoletos antes de volver a aceptar acciones.
+- Un evento `Quit` recibido durante la partida no se pierde al vaciar la cola:
+  se conserva como petición real de cierre del frontend.
+- Después de cerrar el juego se vuelven a abrir los mandos activos, se limpian
+  sus estados analógicos, se restaura la ventana y se reanuda la música del
+  frontend sin reutilizar entradas de la sesión anterior.
+
+### Asignación y navegación con gamepad
+
+- La asignación automática de mandos sigue ahora estrictamente el orden de
+  conexión: el primer gamepad USB es P1, el segundo P2, el tercero P3 y el
+  cuarto P4. Las preferencias antiguas guardadas por GUID ya no pueden hacer
+  que el primer dispositivo aparezca directamente como Player 2.
+- La misma regla se aplica tanto a los mandos presentes al arrancar como a los
+  conectados mediante hotplug.
+- La asignación elegida se comunica también a SDL mediante `player_index`, y
+  la reasignación manual intercambia jugadores sin duplicarlos.
+- El stick analógico izquierdo controla la biblioteca y los ajustes del
+  frontend. Cada cruce de la zona muerta produce un solo movimiento y exige
+  volver al centro o cambiar de dirección, evitando navegación repetida por
+  drift.
+- Al activar el gamepad del frontend se oculta el cursor; al desactivarlo se
+  muestra de nuevo. El cambio se aplica en caliente junto con la reapertura de
+  controladores y la limpieza de estados del stick.
+- Añadidas pruebas para el orden automático P1–P4 y para el comportamiento por
+  flancos del stick analógico.
+
+### Audio Z80/YM2610 en sesiones largas
+
+- Corregido el cálculo de T-states consumidos por cada instrucción Z80 cuando
+  el contador circular de `z80emu` cruza de `i32::MAX` a `i32::MIN`, alrededor
+  de los nueve minutos de ejecución continua.
+- El desbordamiento ya no se interpreta como un bloque de más de dos mil
+  millones de ciclos: se evita el tirón de varios segundos y la pérdida
+  intermitente de música observados durante partidas largas de Metal Slug 5.
+- Añadido un límite defensivo en el mezclador para impedir reservas de audio
+  descontroladas si vuelve a recibirse un bloque temporal imposible.
+- Corregida una segunda causa independiente de pérdida de música: el pulso NMI
+  pendiente del Z80 ya no se borra antes de saber si `z80emu` lo aceptó.
+  Inmediatamente después de `EI` o mientras existe un prefijo DD/FD pendiente,
+  el núcleo puede aplazar la NMI; NGNEON mantiene ahora el comando latched hasta
+  que el Z80 entra realmente en el handler.
+- Esto evita perder un comando musical de una sola vez mientras los comandos
+  posteriores de efectos de sonido continúan funcionando, síntoma observado
+  en Metal Slug 5.
+- Añadidas regresiones para el wrap firmado del contador y para una NMI
+  aplazada por un límite de prefijo Z80.
+- La auditoría de 32.000 frames conserva la cadencia PCM de Geolith y una sonda
+  adicional de 40.000 frames —más de once minutos emulados— termina sin fallos
+  CPU ni desincronización del planificador Z80/YM2610.
+
+### Franja negra horizontal en Samurai Shodown
+
+- Corregida la banda negra horizontal persistente que podía aparecer de lado
+  a lado de la pantalla después de un watchdog/reset.
+- La causa era el borrado de los dos buffers de línea de sprites LSPC al
+  terminar cada frame del planificador host. Cuando la fase LSPC dejaba de
+  coincidir con ese límite, ya estaban precalculadas dos líneas del siguiente
+  tramo y se eliminaban antes de presentarlas.
+- Los buffers `linebuf`/`lbactive` se preservan ahora entre frames host, igual
+  que en Geolith; el framebuffer visible sí continúa limpiándose normalmente.
+- Añadida la prueba
+  `host_frame_boundary_preserves_precalculated_lspc_sprite_lines`, que fuerza
+  el desfase y comprueba que las líneas preparadas sobreviven al cambio de
+  frame.
+- Verificado en el attract mode de Samurai Shodown durante 2.300 frames: ya no
+  reaparece el hueco persistente de dos líneas observado en la captura original.
+
+### Pantalla completa persistente del frontend nativo
+
+- Añadida la preferencia `frontend_fullscreen=on/off`, independiente de
+  `fullscreen`, que sigue controlando exclusivamente la ventana del emulador.
+- La biblioteca puede arrancar directamente a pantalla completa, cambiarse
+  desde Ajustes o alternarse con `F11`; todas las rutas guardan la misma clave.
+- Los textos del menú distinguen ahora claramente «Emulador pantalla completa»
+  y «Frontend pantalla completa».
+- Si SDL rechaza el cambio de modo, el estado y la configuración vuelven al
+  valor realmente aplicado y se muestra un error, evitando guardar una opción
+  que la ventana no pudo cumplir.
+- Actualizadas las pruebas de carga de configuración, índices y scroll de
+  ajustes, persistencia y rollback completo ante errores de escritura.
+
+### Validación y distribuciones
+
+- `cargo fmt --all -- --check`, Clippy estricto para todo el workspace, la
+  suite completa y `cargo build --release --workspace` terminan correctamente.
+- Grupos principales tras los últimos cambios: 372 pruebas del núcleo, 112 de
+  la biblioteca frontend superadas —una prueba opcional de media local
+  ignorada— y 38 del binario `ngneon-emu`.
+- Generadas y verificadas las distribuciones de prueba
+  `NGNEON-EMU-Windows-z80-audio-fix`,
+  `NGNEON-EMU-Windows-audio-video-fullscreen-test` y
+  `NGNEON-EMU-Windows-rom-browser-media-test`.
+
+---
+
+## 2026-07-20 — Paridad de hardware AES/MVS con Geolith
+
+### Temporización, audio y estados
+
+- La frecuencia AES del YM2610 se calcula ahora desde el reloj maestro real
+  (`24,167829 MHz / 6 / 72`) en lugar de usar una aproximación.
+- El save state pasa a la versión 14 y conserva el resto temporal del YM2610 y
+  el registro `POUTPUT`; los estados de versiones anteriores siguen cargando.
+- Al cargar un estado se vacían el ring buffer y el resampler, se inserta el
+  preroll y se reinicia el planificador A/V para evitar audio antiguo y saltos
+  de sincronización.
+- Separados el reset frío y el reset normal del Z80: cargar otro cartucho
+  reinicializa sus bancos, mientras que reset, watchdog y cambio de BIOS los
+  conservan como Geolith.
+- Añadido un controlador de ocupación del audio en el frontend con objetivo de
+  4096 muestras intercaladas, EWMA de 0,05 y corrección de pacing limitada a
+  ±0,5 %. El núcleo continúa siendo determinista y el audio solo ajusta el
+  ritmo de presentación.
+- Ampliado `NGNEON_AUDIO_DIAG` con ocupación filtrada, corrección aplicada y
+  contadores de underrun/overrun.
+
+### Cartridge RAM y hardware de entrada
+
+- La cartridge RAM Brezzasoft de 8 KiB se guarda por juego en
+  `saves/<juego>.cartram`, con detección de cambios, aislamiento entre
+  cartuchos y rechazo seguro de archivos truncados.
+- Se permite importar un `.sav` de Geolith únicamente cuando mide exactamente
+  8192 bytes, evitando confundirlo con la backup RAM de 64 KiB de NGNEON.
+- Añadidos `PlayerId` y entradas independientes para P1–P4; la API anterior
+  `set_input()` se conserva como wrapper compatible para P1.
+- Implementados `POUTPUT`, su espejo AES y la multiplexación FTC1B usada por
+  los mandos P3/P4.
+- Añadida la opción `four_player=off/on` a la configuración y a ambos menús.
+  Permanece desactivada por defecto para conservar el comportamiento clásico.
+- Irritating Maze dispone de trackball X/Y seleccionable por `POUTPUT`, ratón
+  relativo, stick analógico, cuatro botones y Start en sus puertos correctos.
+- V-Liner implementa el puerto especial `0x280000`, STATUS-A y las entradas
+  Coin 1/2, Operator Menu, Clear Credit y Hopper Out.
+- Las entradas auxiliares y de trackball usan APIs separadas de los botones
+  normales de los jugadores.
+
+### Teclado y mandos
+
+- El teclado configurable admite P1 y P2. P1 conserva flechas, ZXCV, Enter y
+  Espacio; P2 usa WASD, FGHJ, T y R.
+- El formato nuevo usa claves `P1.Up=...`, `P2.Up=...` y `Aux...`; los archivos
+  antiguos sin prefijo siguen interpretándose como controles de P1.
+- El overlay permite alternar entre P1, P2 y acciones especiales y evita que
+  una misma tecla pertenezca a varias acciones globales.
+- Hasta cuatro mandos pueden asignarse a P1–P4 con preferencia persistente por
+  GUID, resolución determinista de dispositivos idénticos y compatibilidad con
+  los nombres de configuración antiguos.
+- Al desconectar un mando se liberan sus botones y ejes retenidos. Los mandos
+  adicionales sin jugador conservan los atajos globales.
+
+### Vídeo, validación y distribución
+
+- Eliminado el filtrado específico por NGH de Zed Blade; ya no existe ninguna
+  rama de renderizado condicionada por el cartucho `0x076`.
+- La salida visible de Zed Blade coincide exactamente con Geolith en los frames
+  120, 300 y 600 auditados, tanto en número de píxeles activos como en hash de
+  framebuffer; ambas implementaciones produjeron además la misma cantidad de
+  pares PCM durante 600 frames.
+- Las pruebas largas AES y MVS de 3600 frames mantienen el FIFO acotado, sin
+  pérdida acumulativa, starvation, underruns ni overruns.
+- Verificados con ROM real el arranque y metadata de Irritating Maze y Jockey
+  Grand Prix; POUTPUT, FTC1B, V-Liner y bancos Z80 tienen además pruebas
+  sintéticas deterministas.
+- La referencia auditada queda fijada en Geolith libretro `c5b57a6b31b7abef`
+  y Geolith upstream `4c0db390fdda159b`; hashes y resultados se documentan en
+  `docs/hardware-parity-geolith.md`.
+- El empaquetador Windows admite un directorio de salida opcional sin cambiar
+  su comportamiento por defecto.
+- Los empaquetadores Windows y Linux crean `musica/` con la guía de música del
+  frontend, comprueban su existencia y protegen los MP3 existentes antes de
+  limpiar una salida.
+- Añadida `BUILDING.md` con procedimientos nativos para Windows y Linux x64 y
+  ARM64, requisitos por arquitectura, verificación de binarios y límites de la
+  compilación cruzada; los paquetes futuros incluyen también esta guía.
+- Generada y comprobada la distribución independiente
+  `NGNEON-EMU-Windows-hardware-sync` y su ZIP, sin ROMs, partidas ni
+  credenciales del usuario.
+- Validación final: 367 pruebas del núcleo, 110 de la biblioteca frontend y 37
+  del binario superadas; `cargo fmt`, Clippy estricto y build release correctos.
+
+---
+
+## 2026-07-18 — Scripts nativos para Linux
+
+### Compilación y distribución
+
+- Añadidos `iniciar-ngneon.sh`, `configurar-ngneon.sh` y
+  `package_ngneon_release.sh` como equivalentes Linux de los tres scripts de
+  Windows.
+- El launcher localiza el binario release y compila automáticamente
+  `ngneon-frontend` si todavía no existe.
+- El empaquetador genera `NGNEON-EMU-linux-<arquitectura>/` con ejecutables
+  nativos, configuración portátil, temas, estructura `roms/media/` y
+  documentación de dependencias.
+- La protección del empaquetador detecta ROMs, media, música, partidas,
+  capturas, logs y configuración personalizada antes de limpiar una salida.
+- Documentadas las dependencias y órdenes de instalación para Debian/Ubuntu,
+  Fedora y Arch Linux.
+
 ## 2026-07-17 — Temas completos, media configurable y música del frontend
 
 ### Frontend nativo

@@ -1,7 +1,7 @@
 //! Gamepad manager with hotplug support, analog stick D-pad emulation,
 //! and configurable per-controller button remapping.
 
-use core_emulator::EmuAction;
+use core_emulator::{EmuAction, PlayerId};
 use sdl2::controller::{Axis, Button, GameController};
 use sdl2::event::Event;
 use sdl2::GameControllerSubsystem;
@@ -20,6 +20,7 @@ pub const CONFIG_ACTION_COUNT: usize = ALL_ACTIONS.len() + NUM_SYSTEM_ACTIONS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GamepadAction {
+    pub player: PlayerId,
     pub action: EmuAction,
     pub pressed: bool,
 }
@@ -123,6 +124,7 @@ impl ButtonChord {
 pub struct ControllerMapping {
     pub buttons: [EmuAction; NUM_BUTTONS],
     system_chords: [ButtonChord; NUM_SYSTEM_ACTIONS],
+    preferred_player: Option<PlayerId>,
 }
 
 impl ControllerMapping {
@@ -153,6 +155,7 @@ impl ControllerMapping {
                 ButtonChord::pair(Button::Back, Button::Start),
                 ButtonChord::single(Button::Guide),
             ],
+            preferred_player: None,
         }
     }
 
@@ -172,6 +175,14 @@ impl ControllerMapping {
 
     pub fn set_system_chord(&mut self, action: SystemAction, chord: ButtonChord) {
         self.system_chords[action.index()] = chord;
+    }
+
+    pub fn preferred_player(&self) -> Option<PlayerId> {
+        self.preferred_player
+    }
+
+    pub fn set_preferred_player(&mut self, player: Option<PlayerId>) {
+        self.preferred_player = player;
     }
 }
 
@@ -277,6 +288,7 @@ pub struct GamepadManager {
     sticks: Vec<StickState>,
     buttons_down: Vec<[bool; NUM_BUTTONS]>,
     guids: Vec<String>,
+    players: Vec<Option<PlayerId>>,
 }
 
 impl GamepadManager {
@@ -287,6 +299,7 @@ impl GamepadManager {
             sticks: Vec::new(),
             buttons_down: Vec::new(),
             guids: Vec::new(),
+            players: Vec::new(),
         }
     }
 
@@ -296,20 +309,26 @@ impl GamepadManager {
         let available = sub.num_joysticks().unwrap_or(0);
         for id in 0..available {
             if sub.is_game_controller(id) {
-                if let Ok(ctrl) = sub.open(id) {
-                    let guid = ctrl.mapping();
-                    let mapping = Self::load_mapping_for_guid(&guid);
+                if let Ok(mut ctrl) = sub.open(id) {
+                    let raw_mapping = ctrl.mapping();
+                    let guid = normalized_guid(&raw_mapping);
+                    let mut mapping = Self::load_mapping_for_guid(&raw_mapping);
+                    let player = mgr.available_player();
+                    mapping.set_preferred_player(player);
+                    let _ = ctrl.set_player_index(player.map(|value| value.index() as u32));
                     println!(
-                        "[INFO] Gamepad {}: '{}' (GUID: {})",
+                        "[INFO] Gamepad {}: '{}' (GUID: {}, jugador: {})",
                         mgr.controllers.len() + 1,
                         ctrl.name(),
-                        guid
+                        guid,
+                        player.map(player_name).unwrap_or("sin asignar")
                     );
                     mgr.controllers.push(ctrl);
                     mgr.mappings.push(mapping);
                     mgr.sticks.push(StickState::default());
                     mgr.buttons_down.push([false; NUM_BUTTONS]);
                     mgr.guids.push(guid);
+                    mgr.players.push(player);
                 }
             }
         }
@@ -319,27 +338,39 @@ impl GamepadManager {
     // --- Hotplug -----------------------------------------------------------
 
     /// Handle `ControllerDeviceAdded` / `ControllerDeviceRemoved` events.
-    /// Returns `true` if the event was consumed.
-    pub fn handle_hotplug(&mut self, sub: &GameControllerSubsystem, event: &Event) -> bool {
+    ///
+    /// A disconnect returns explicit releases for every retained button and
+    /// stick direction so the emulated input matrix cannot remain stuck.
+    pub fn handle_hotplug(
+        &mut self,
+        sub: &GameControllerSubsystem,
+        event: &Event,
+    ) -> Vec<GamepadAction> {
         match event {
             Event::ControllerDeviceAdded { which, .. } => {
                 if sub.is_game_controller(*which) {
-                    if let Ok(ctrl) = sub.open(*which) {
-                        let guid = ctrl.mapping();
-                        let mapping = Self::load_mapping_for_guid(&guid);
+                    if let Ok(mut ctrl) = sub.open(*which) {
+                        let raw_mapping = ctrl.mapping();
+                        let guid = normalized_guid(&raw_mapping);
+                        let mut mapping = Self::load_mapping_for_guid(&raw_mapping);
+                        let player = self.available_player();
+                        mapping.set_preferred_player(player);
+                        let _ = ctrl.set_player_index(player.map(|value| value.index() as u32));
                         println!(
-                            "[INFO] Gamepad {} connected: '{}'",
+                            "[INFO] Gamepad {} connected: '{}' ({})",
                             self.controllers.len() + 1,
-                            ctrl.name()
+                            ctrl.name(),
+                            player.map(player_name).unwrap_or("sin asignar")
                         );
                         self.controllers.push(ctrl);
                         self.mappings.push(mapping);
                         self.sticks.push(StickState::default());
                         self.buttons_down.push([false; NUM_BUTTONS]);
                         self.guids.push(guid);
+                        self.players.push(player);
                     }
                 }
-                true
+                Vec::new()
             }
             Event::ControllerDeviceRemoved { which, .. } => {
                 let instance = *which;
@@ -348,16 +379,44 @@ impl GamepadManager {
                     .iter()
                     .position(|c| c.instance_id() == instance)
                 {
+                    let mut releases = Vec::new();
+                    if let Some(player) = self.players[pos] {
+                        for (idx, pressed) in self.buttons_down[pos].iter().copied().enumerate() {
+                            if pressed {
+                                releases.push(GamepadAction {
+                                    player,
+                                    action: self.mappings[pos].action(button_from_index(idx)),
+                                    pressed: false,
+                                });
+                            }
+                        }
+                        let stick = &self.sticks[pos];
+                        for (direction, negative, positive) in [
+                            (stick.left_x, EmuAction::Left, EmuAction::Right),
+                            (stick.left_y, EmuAction::Up, EmuAction::Down),
+                        ] {
+                            let direction = axis_direction(direction, STICK_DEADZONE);
+                            if direction != 0 {
+                                releases.push(GamepadAction {
+                                    player,
+                                    action: axis_action(direction, negative, positive),
+                                    pressed: false,
+                                });
+                            }
+                        }
+                    }
                     println!("[INFO] Gamepad {} disconnected", pos + 1);
                     self.controllers.remove(pos);
                     self.mappings.remove(pos);
                     self.sticks.remove(pos);
                     self.buttons_down.remove(pos);
                     self.guids.remove(pos);
+                    self.players.remove(pos);
+                    return releases;
                 }
-                true
+                Vec::new()
             }
-            _ => false,
+            _ => Vec::new(),
         }
     }
 
@@ -388,7 +447,11 @@ impl GamepadManager {
                     return Vec::new();
                 };
                 self.buttons_down[pos][*button as usize] = true;
+                let Some(player) = self.players[pos] else {
+                    return Vec::new();
+                };
                 vec![GamepadAction {
+                    player,
                     action: self.mappings[pos].action(*button),
                     pressed: true,
                 }]
@@ -398,7 +461,11 @@ impl GamepadManager {
                     return Vec::new();
                 };
                 self.buttons_down[pos][*button as usize] = false;
+                let Some(player) = self.players[pos] else {
+                    return Vec::new();
+                };
                 vec![GamepadAction {
+                    player,
                     action: self.mappings[pos].action(*button),
                     pressed: false,
                 }]
@@ -409,14 +476,23 @@ impl GamepadManager {
                 let Some(pos) = self.position(*which) else {
                     return Vec::new();
                 };
-                self.process_axis_actions(pos, *axis, *value)
+                let Some(player) = self.players[pos] else {
+                    return Vec::new();
+                };
+                self.process_axis_actions(pos, player, *axis, *value)
             }
             _ => Vec::new(),
         }
     }
 
     /// Process an axis movement, returning explicit edge-crossing states.
-    fn process_axis_actions(&mut self, pos: usize, axis: Axis, value: i16) -> Vec<GamepadAction> {
+    fn process_axis_actions(
+        &mut self,
+        pos: usize,
+        player: PlayerId,
+        axis: Axis,
+        value: i16,
+    ) -> Vec<GamepadAction> {
         let state = &mut self.sticks[pos];
         let dead = STICK_DEADZONE;
 
@@ -425,6 +501,7 @@ impl GamepadManager {
                 let prev = state.left_x;
                 state.left_x = value;
                 axis_transition_actions(
+                    player,
                     axis_direction(prev, dead),
                     axis_direction(value, dead),
                     EmuAction::Left,
@@ -435,6 +512,7 @@ impl GamepadManager {
                 let prev = state.left_y;
                 state.left_y = value;
                 axis_transition_actions(
+                    player,
                     axis_direction(prev, dead),
                     axis_direction(value, dead),
                     EmuAction::Up,
@@ -488,6 +566,51 @@ impl GamepadManager {
         self.controllers.is_empty()
     }
 
+    pub fn player(&self, controller_idx: usize) -> Option<PlayerId> {
+        self.players.get(controller_idx).copied().flatten()
+    }
+
+    pub fn player_for_instance(&self, instance_id: u32) -> Option<PlayerId> {
+        self.position(instance_id).and_then(|pos| self.players[pos])
+    }
+
+    pub fn set_controller_player(&mut self, controller_idx: usize, player: PlayerId) {
+        if controller_idx >= self.controllers.len() {
+            return;
+        }
+        let previous = self.players[controller_idx];
+        if let Some(other) = self
+            .players
+            .iter()
+            .position(|assigned| *assigned == Some(player))
+        {
+            self.players[other] = previous;
+            self.mappings[other].set_preferred_player(previous);
+            let _ = self.controllers[other]
+                .set_player_index(previous.map(|value| value.index() as u32));
+        }
+        self.players[controller_idx] = Some(player);
+        self.mappings[controller_idx].set_preferred_player(Some(player));
+        let _ = self.controllers[controller_idx].set_player_index(Some(player.index() as u32));
+    }
+
+    pub fn process_trackball_axis(&mut self, event: &Event) -> Option<(PlayerId, i16, i16)> {
+        let Event::ControllerAxisMotion {
+            which, axis, value, ..
+        } = event
+        else {
+            return None;
+        };
+        let pos = self.position(*which)?;
+        let player = self.players[pos]?;
+        match axis {
+            Axis::LeftX => self.sticks[pos].left_x = *value,
+            Axis::LeftY => self.sticks[pos].left_y = *value,
+            _ => return None,
+        }
+        Some((player, self.sticks[pos].left_x, self.sticks[pos].left_y))
+    }
+
     pub fn chord_for_button_down(
         &mut self,
         instance_id: u32,
@@ -538,10 +661,16 @@ impl GamepadManager {
             .position(|c| c.instance_id() == instance_id)
     }
 
+    fn available_player(&self) -> Option<PlayerId> {
+        PlayerId::ALL
+            .into_iter()
+            .find(|player| !self.players.contains(&Some(*player)))
+    }
+
     // --- Persistence -------------------------------------------------------
 
     fn config_path(guid: &str) -> String {
-        let safe = guid.replace(
+        let safe = normalized_guid(guid).replace(
             |c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_',
             "_",
         );
@@ -550,10 +679,10 @@ impl GamepadManager {
 
     pub fn load_mapping_for_guid(guid: &str) -> ControllerMapping {
         let path = Self::config_path(guid);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(_) => return ControllerMapping::default_mapping(),
-        };
+        let legacy_path = legacy_config_path(guid);
+        let text = std::fs::read_to_string(&path)
+            .or_else(|_| std::fs::read_to_string(&legacy_path))
+            .unwrap_or_default();
 
         let mut mapping = ControllerMapping::default_mapping();
 
@@ -641,6 +770,7 @@ fn axis_action(direction: i8, negative_action: EmuAction, positive_action: EmuAc
 }
 
 fn axis_transition_actions(
+    player: PlayerId,
     prev_direction: i8,
     next_direction: i8,
     negative_action: EmuAction,
@@ -653,17 +783,54 @@ fn axis_transition_actions(
     let mut actions = Vec::with_capacity(2);
     if prev_direction != 0 {
         actions.push(GamepadAction {
+            player,
             action: axis_action(prev_direction, negative_action, positive_action),
             pressed: false,
         });
     }
     if next_direction != 0 {
         actions.push(GamepadAction {
+            player,
             action: axis_action(next_direction, negative_action, positive_action),
             pressed: true,
         });
     }
     actions
+}
+
+fn player_name(player: PlayerId) -> &'static str {
+    match player {
+        PlayerId::P1 => "P1",
+        PlayerId::P2 => "P2",
+        PlayerId::P3 => "P3",
+        PlayerId::P4 => "P4",
+    }
+}
+
+/// SDL returns a full mapping string whose first field is the stable GUID.
+/// Persisting only that first field avoids filenames changing when SDL's
+/// mapping database is updated.
+fn normalized_guid(mapping_or_guid: &str) -> String {
+    let candidate = mapping_or_guid
+        .split(',')
+        .next()
+        .unwrap_or(mapping_or_guid)
+        .trim();
+    if candidate.is_empty() {
+        "unknown-controller".to_string()
+    } else {
+        candidate.to_ascii_lowercase()
+    }
+}
+
+/// Compatibility path used by releases that included the whole SDL mapping
+/// string in the per-controller filename.
+fn legacy_config_path(mapping: &str) -> String {
+    let safe = mapping.replace(
+        |c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_',
+        "_",
+    );
+    format!("config/gamepad/{safe}.conf")
 }
 
 // ---------------------------------------------------------------------------
@@ -797,6 +964,24 @@ mod tests {
     }
 
     #[test]
+    fn automatic_players_follow_connection_order_and_ignore_saved_preferences() {
+        let mut mgr = GamepadManager::new();
+        assert_eq!(mgr.available_player(), Some(PlayerId::P1));
+
+        mgr.players.push(Some(PlayerId::P1));
+        assert_eq!(mgr.available_player(), Some(PlayerId::P2));
+
+        mgr.players.push(Some(PlayerId::P2));
+        assert_eq!(mgr.available_player(), Some(PlayerId::P3));
+
+        mgr.players.push(Some(PlayerId::P3));
+        assert_eq!(mgr.available_player(), Some(PlayerId::P4));
+
+        mgr.players.push(Some(PlayerId::P4));
+        assert_eq!(mgr.available_player(), None);
+    }
+
+    #[test]
     fn analog_axis_direct_reversal_releases_previous_direction() {
         let mut mgr = GamepadManager {
             controllers: Vec::new(),
@@ -804,26 +989,30 @@ mod tests {
             sticks: vec![StickState::default()],
             buttons_down: vec![[false; NUM_BUTTONS]],
             guids: Vec::new(),
+            players: vec![Some(PlayerId::P1)],
         };
 
-        let left = mgr.process_axis_actions(0, Axis::LeftX, -12_000);
+        let left = mgr.process_axis_actions(0, PlayerId::P1, Axis::LeftX, -12_000);
         assert_eq!(
             left,
             vec![GamepadAction {
+                player: PlayerId::P1,
                 action: EmuAction::Left,
                 pressed: true,
             }]
         );
 
-        let right = mgr.process_axis_actions(0, Axis::LeftX, 12_000);
+        let right = mgr.process_axis_actions(0, PlayerId::P1, Axis::LeftX, 12_000);
         assert_eq!(
             right,
             vec![
                 GamepadAction {
+                    player: PlayerId::P1,
                     action: EmuAction::Left,
                     pressed: false,
                 },
                 GamepadAction {
+                    player: PlayerId::P1,
                     action: EmuAction::Right,
                     pressed: true,
                 },
@@ -839,12 +1028,18 @@ mod tests {
             sticks: vec![StickState::default()],
             buttons_down: vec![[false; NUM_BUTTONS]],
             guids: Vec::new(),
+            players: vec![Some(PlayerId::P1)],
         };
 
-        assert_eq!(mgr.process_axis_actions(0, Axis::LeftY, 12_000).len(), 1);
         assert_eq!(
-            mgr.process_axis_actions(0, Axis::LeftY, 0),
+            mgr.process_axis_actions(0, PlayerId::P1, Axis::LeftY, 12_000)
+                .len(),
+            1
+        );
+        assert_eq!(
+            mgr.process_axis_actions(0, PlayerId::P1, Axis::LeftY, 0),
             vec![GamepadAction {
+                player: PlayerId::P1,
                 action: EmuAction::Down,
                 pressed: false,
             }]

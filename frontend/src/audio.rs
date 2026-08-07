@@ -21,8 +21,75 @@ const MVS_MASTER_CLOCK_HZ: u64 = 24_000_000;
 const AES_MASTER_CLOCK_HZ: u64 = 24_167_829;
 const MASTER_CYCLES_PER_FRAME: u64 = 405_504;
 const MVS_Z80_CLOCK_HZ: f64 = 4_000_000.0;
-const AES_YM2610_RATE_HZ: f64 = 55_943.49;
+const AES_YM2610_RATE_HZ: f64 = AES_MASTER_CLOCK_HZ as f64 / 6.0 / 72.0;
 const YM2610_TSTATES_PER_SAMPLE: f64 = 72.0;
+
+/// Desired SDL queue occupancy in interleaved i16 samples.
+pub const AUDIO_PACING_TARGET_SAMPLES: usize = 4096;
+const AUDIO_PACING_EWMA_ALPHA: f64 = 0.05;
+const AUDIO_PACING_PROPORTIONAL_GAIN: f64 = 0.10;
+const AUDIO_PACING_MAX_CORRECTION: f64 = 0.005;
+
+/// Slow host-side A/V pacing controller. It never changes emulated clocks or
+/// samples; it only nudges the frontend frame deadline by at most ±0.5%.
+#[derive(Debug, Clone)]
+pub struct AudioPacingController {
+    ewma_samples: f64,
+    correction: f64,
+    last_generation: Option<u64>,
+}
+
+impl AudioPacingController {
+    pub fn new() -> Self {
+        Self {
+            ewma_samples: AUDIO_PACING_TARGET_SAMPLES as f64,
+            correction: 0.0,
+            last_generation: None,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.ewma_samples = AUDIO_PACING_TARGET_SAMPLES as f64;
+        self.correction = 0.0;
+        self.last_generation = None;
+    }
+
+    pub fn adjusted_frame_duration(
+        &mut self,
+        nominal: Duration,
+        buffered_samples: usize,
+        generation: u64,
+    ) -> Duration {
+        if self.last_generation != Some(generation) {
+            self.ewma_samples = AUDIO_PACING_TARGET_SAMPLES as f64;
+            self.correction = 0.0;
+            self.last_generation = Some(generation);
+            return nominal;
+        }
+
+        let measured = buffered_samples as f64;
+        self.ewma_samples += AUDIO_PACING_EWMA_ALPHA * (measured - self.ewma_samples);
+        let normalized_error = (self.ewma_samples - AUDIO_PACING_TARGET_SAMPLES as f64)
+            / AUDIO_PACING_TARGET_SAMPLES as f64;
+        self.correction = (normalized_error * AUDIO_PACING_PROPORTIONAL_GAIN)
+            .clamp(-AUDIO_PACING_MAX_CORRECTION, AUDIO_PACING_MAX_CORRECTION);
+        Duration::from_secs_f64(nominal.as_secs_f64() * (1.0 + self.correction))
+    }
+
+    pub fn filtered_samples(&self) -> f64 {
+        self.ewma_samples
+    }
+
+    pub fn correction(&self) -> f64 {
+        self.correction
+    }
+}
+
+impl Default for AudioPacingController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Host cadence selected by Geolith for cartridge systems.
 ///
@@ -618,6 +685,8 @@ pub struct AudioRingBuffer {
     overrun_samples: u64,
     /// Samples requested by SDL when no real buffered sample was available.
     underrun_samples: u64,
+    /// Incremented whenever producer/consumer history is intentionally reset.
+    generation: u64,
 }
 
 impl AudioRingBuffer {
@@ -656,6 +725,7 @@ impl AudioRingBuffer {
             underrun_fade_remaining: 0,
             overrun_samples: 0,
             underrun_samples: 0,
+            generation: 0,
         }
     }
 
@@ -742,6 +812,7 @@ impl AudioRingBuffer {
         self.underrun_fade_remaining = 0;
         self.overrun_samples = 0;
         self.underrun_samples = 0;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Number of producer samples lost because the ring was full.
@@ -752,6 +823,10 @@ impl AudioRingBuffer {
     /// Number of callback samples synthesized by the underrun fade/silence.
     pub fn underrun_samples(&self) -> u64 {
         self.underrun_samples
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 }
 
@@ -1414,5 +1489,42 @@ mod tests {
         buf.clear();
         assert_eq!(buf.overrun_samples(), 0);
         assert_eq!(buf.underrun_samples(), 0);
+    }
+
+    #[test]
+    fn pacing_controller_slows_high_queue_and_advances_low_queue() {
+        let nominal = Duration::from_secs_f64(1.0 / 60.0);
+        let mut controller = AudioPacingController::new();
+        let _ = controller.adjusted_frame_duration(nominal, AUDIO_PACING_TARGET_SAMPLES, 0);
+        for _ in 0..200 {
+            let adjusted = controller.adjusted_frame_duration(nominal, 16_384, 0);
+            assert!(adjusted <= nominal.mul_f64(1.005_001));
+        }
+        assert!(controller.correction() > 0.0);
+
+        controller.reset();
+        let _ = controller.adjusted_frame_duration(nominal, AUDIO_PACING_TARGET_SAMPLES, 0);
+        for _ in 0..200 {
+            let adjusted = controller.adjusted_frame_duration(nominal, 0, 0);
+            assert!(adjusted >= nominal.mul_f64(0.994_999));
+        }
+        assert!(controller.correction() < 0.0);
+    }
+
+    #[test]
+    fn pacing_controller_resets_when_audio_generation_changes() {
+        let nominal = Duration::from_secs_f64(1.0 / 60.0);
+        let mut controller = AudioPacingController::new();
+        let _ = controller.adjusted_frame_duration(nominal, AUDIO_PACING_TARGET_SAMPLES, 2);
+        for _ in 0..20 {
+            let _ = controller.adjusted_frame_duration(nominal, 16_384, 2);
+        }
+        assert_ne!(controller.correction(), 0.0);
+        assert_eq!(controller.adjusted_frame_duration(nominal, 0, 3), nominal);
+        assert_eq!(controller.correction(), 0.0);
+        assert_eq!(
+            controller.filtered_samples(),
+            AUDIO_PACING_TARGET_SAMPLES as f64
+        );
     }
 }

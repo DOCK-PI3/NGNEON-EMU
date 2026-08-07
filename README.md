@@ -4,19 +4,23 @@ Emulador NeoGeo nativo y multiplataforma en Rust. La emulación y la presentaci�
 
 ## Ejecutar
 
+Windows:
+
 ```powershell
 cargo run --release --bin ngneon-emu -- --demo
 ```
 
-También puedes pasar una ROM directamente:
+Linux:
 
-```powershell
-cargo run --release --bin ngneon-emu -- C:\ruta\juego.zip
+```sh
+cargo run --release --bin ngneon-emu -- --demo
 ```
 
-Tras compilar en release, también se puede ejecutar el binario directamente:
+También puedes pasar una ROM directamente. Tras compilar en release, se puede ejecutar el binario sin pasar por Cargo:
 
 ```powershell
+# Windows
+cargo run --release --bin ngneon-emu -- C:\ruta\juego.zip
 target\release\ngneon-emu.exe --demo
 target\release\ngneon-emu.exe roms\aof.neo
 target\release\ngneon-emu.exe --clean-start roms\aof.neo
@@ -24,13 +28,47 @@ target\release\ngneon-emu.exe --no-dump-rom-banks roms\aof.neo
 target\release\ngneon-emu.exe --help
 ```
 
+```sh
+# Linux
+cargo run --release --bin ngneon-emu -- /ruta/juego.zip
+target/release/ngneon-emu --demo
+target/release/ngneon-emu roms/aof.neo
+target/release/ngneon-emu --clean-start roms/aof.neo
+target/release/ngneon-emu --no-dump-rom-banks roms/aof.neo
+target/release/ngneon-emu --help
+```
+
 Si no pasas argumentos, se abre un selector de archivos. Si cancelas el selector, arranca la demo interna.
 
 ## Frontend nativo
 
-Ejecuta `iniciar-ngneon.bat` o `ngneon-frontend.exe` para abrir la biblioteca nativa. No usa navegador, Edge, Chrome, Node ni servidor web. Lee `gamelist.xml`, muestra la media local del catálogo, configura el emulador y lanza `ngneon-emu.exe` como un proceso separado.
+En Windows ejecuta `iniciar-ngneon.bat`; en Linux, `./iniciar-ngneon.sh`. Ambos buscan primero el frontend junto al script, después en `target/release/` y lo compilan automáticamente si todavía no existe. También se puede abrir directamente con `ngneon-frontend.exe` en Windows o `ngneon-frontend` en Linux.
 
-El nombre antiguo `configurar-ngneon.bat` se conserva como acceso compatible, pero abre el mismo frontend SDL2.
+No usa navegador, Edge, Chrome, Node ni servidor web. Lee `gamelist.xml`, muestra la media local del catálogo, configura el emulador y lanza `ngneon-emu` como un proceso separado.
+
+Los nombres `configurar-ngneon.bat` y `configurar-ngneon.sh` se conservan como accesos compatibles, pero abren el mismo frontend SDL2.
+
+### Preparar Linux
+
+Instala Rust con `rustup` y las dependencias de SDL2, ALSA y OpenGL de tu distribución:
+
+```sh
+# Debian / Ubuntu
+sudo apt install build-essential pkg-config libsdl2-dev libasound2-dev libgl1-mesa-dev libssl-dev
+
+# Fedora
+sudo dnf install @development-tools pkgconf-pkg-config SDL2-devel alsa-lib-devel mesa-libGL-devel openssl-devel
+
+# Arch Linux
+sudo pacman -S --needed base-devel pkgconf sdl2 alsa-lib mesa openssl
+```
+
+Da permiso de ejecución a los scripts la primera vez y abre el frontend:
+
+```sh
+chmod +x iniciar-ngneon.sh configurar-ngneon.sh package_ngneon_release.sh
+./iniciar-ngneon.sh
+```
 
 Modos de sesión:
 
@@ -42,24 +80,24 @@ Los cambios se guardan directamente en `config/ngneon.conf`. Cada arranque crea 
 
 La carpeta `musica/` admite ficheros `.mp3` para la música de fondo del frontend. Las pistas se reproducen en orden aleatorio, completando una vuelta antes de repetir. La canción se pausa al lanzar un juego y continúa desde el mismo punto cuando el emulador se cierra. **Ajustes → Música del frontend** permite activarla o desactivarla y `Ctrl+N` salta a otra canción.
 
-Abre **Ajustes** con `S` o `F2`. Las flechas arriba/abajo o la rueda del ratón recorren sus 27 opciones; izquierda/derecha cambia el valor. Desde esta pantalla se pueden configurar BIOS, región, hardware MVS/AES de UniBIOS, modo de sesión, pantalla y efectos CRT, relación de aspecto, paleta, escala, volumen, música de fondo, idioma, auto-guardado, volcados, DIP MVS (`setting_mode` y `freeplay`), hacks compatibles con Geolith, Memory Card, gamepad, RetroAchievements Hardcore, el tema del frontend y el directorio global de media. Las sesiones limpia/diagnóstico y Hardcore muestran y fuerzan los valores seguros que correspondan. Las confirmaciones correctas desaparecen automáticamente tras tres segundos; los errores permanecen visibles.
+Abre **Ajustes** con `S` o `F2`. Las flechas arriba/abajo o la rueda del ratón recorren sus 28 opciones; izquierda/derecha cambia el valor. Desde esta pantalla se pueden configurar BIOS, región, hardware MVS/AES de UniBIOS, modo de sesión, pantalla y efectos CRT, relación de aspecto, paleta, escala, volumen, música de fondo, idioma, auto-guardado, volcados, DIP MVS (`setting_mode`, `freeplay` y `four_player`), hacks compatibles con Geolith, Memory Card, gamepad, RetroAchievements Hardcore, el tema del frontend y el directorio global de media. Las sesiones limpia/diagnóstico y Hardcore muestran y fuerzan los valores seguros que correspondan. Las confirmaciones correctas desaparecen automáticamente tras tres segundos; los errores permanecen visibles.
 
 ### Temas externos del frontend
 
-La biblioteca `ngneon-frontend.exe` carga temas editables desde `themes/*.xml`. Junto al diseño integrado incluye **NGNEON Neon**, **Amber Arcade**, **Green Phosphor**, **Cyber List** y **Console Showcase**, seleccionables en **Ajustes → Tema frontend**. Los dos últimos son layouts completos y muestran el marquee del juego sobre la preview, conservando logo/wheel como fallback: Cyber List usa una lista vertical de siete logos; Console Showcase coloca caja y cartucho en marcos adaptados, presenta el vídeo central a pantalla completa dentro de su recuadro y usa un carrusel horizontal donde el nombre sólo aparece si falta el logo. La selección persiste en:
+La biblioteca `ngneon-frontend.exe` descubre cada tema dentro de su propia carpeta `themes/NombreSinEspacios/theme.xml`, donde puede mantener aislados sus imágenes y demás assets. Los XML planos antiguos siguen funcionando. Junto al diseño integrado incluye **NGNEON Neon**, **Amber Arcade**, **Green Phosphor**, **Cyber List**, **Console Showcase**, **Neo Geo Red Cabinet**, **Neo Geo Green Cabinet**, **Neo Geo 29 Cabinet** y **Fanart Horizon**, seleccionables en **Ajustes → Tema frontend**. Red Cabinet usa la recreativa roja con un carrusel vertical flotante de logos; Green Cabinet mantiene también los logos —con el nombre como fallback—, muestra la caja 3D seleccionada entre la cabinet y la lista, y desplaza automáticamente las descripciones largas hasta enseñar el texto completo. Neo Geo 29 incorpora un carrusel curvado: el logo seleccionado crece y los demás quedan atenuados. Fanart Horizon presenta fanart con colorimetría/gradiente, logo con glow y entrada animada, nombre real estilizado, desarrollador y publisher en esquinas inferiores opuestas y cinco cajas 3D en horizontal; la caja seleccionada ocupa más de media pantalla. Los diseños Cabinet prescinden de tarjetas y bordes para acercarse a un carrusel arcade limpio. En todos ellos el PNG de la cabinet queda por encima del marquee y del vídeo, utilizando sus ventanas transparentes como máscara.
 
 ```ini
 frontend_theme_dir=themes
-frontend_theme=themes/neon.xml
+frontend_theme=themes/NGNEONNeon/theme.xml
 ```
 
-Los temas XML v1 siguen siendo compatibles. La versión 2 añade layouts realmente distintos mediante los componentes `vertical_list`, `horizontal_list`, `game_title`, `game_description`, `game_metadata` y `page_counter`, además de los bloques anteriores (`header`, `carousel`, `cabinet`, `game_info`, `settings`, etc.). Todos se pueden mover, escalar, mostrar/ocultar y ordenar con `x`, `y`, `width`, `height`, `visible` y `z`; el dibujo y los hitboxes comparten la misma transformación.
+Los temas XML v1 siguen siendo compatibles. La versión 2 añade layouts realmente distintos mediante los componentes `vertical_list`, `horizontal_list`, `gamecarousel_left`, `gamecarousel_right`, `gamecarousel_horizontal`, `game_title`, `game_description`, `game_metadata`, `game_credits` y `page_counter`, además de los bloques anteriores (`header`, `carousel`, `cabinet`, `game_info`, `settings`, etc.). Todos se pueden mover, escalar, mostrar/ocultar, ordenar y hacer translúcidos con `x`, `y`, `width`, `height`, `visible`, `z` y `opacity`; las listas aceptan además `artwork="logo"` o `artwork="box3d"`. Los gamecarousels añaden `selected_scale`, `unselected_opacity` y `arc`; el horizontal usa cinco cajas grandes. Un `<font source="assets/fuente.ttf"/>` permite incluir tipografía propia; `game_title`/`game_metadata` aceptan `font_size`, `show_with_logo` y selección de `fields`, mientras `game_credits` coloca desarrollador y publisher en esquinas inferiores opuestas. El dibujo y los hitboxes comparten la misma transformación.
 
-Un tema v2 también puede declarar slots `<media>` con fuentes semánticas ordenadas, por ejemplo `game.video,game.screenshot,game.mix`. Así reutiliza vídeo, fanart, capturas, logos/wheels, cajas y cartuchos del juego seleccionado sin fijar rutas específicas en el XML. Las capas estáticas aceptan PNG/JPEG/WebP relativos al tema y los modos `contain`, `cover` y `stretch`. El vídeo se reproduce en streaming, silenciado y en bucle; el backend integrado admite MP4/H.264 y recurre a la siguiente imagen de la lista cuando el clip falta o no se puede decodificar.
+Un tema v2 también puede declarar slots `<media>` con fuentes semánticas ordenadas, por ejemplo `game.video,game.screenshot,game.mix`. Así reutiliza vídeo, fanart, capturas, logos/wheels, cajas y cartuchos del juego seleccionado sin fijar rutas específicas en el XML. Componentes y slots admiten `chrome="none"` para mostrar listas, textos e imágenes sin paneles ni bordes; si se omite mantienen la presentación clásica. Las capas estáticas aceptan PNG/JPEG/WebP relativos al tema y los modos `contain`, `cover` y `stretch`. El vídeo se reproduce en streaming, silenciado y en bucle; el backend integrado admite MP4/H.264 y recurre a la siguiente imagen de la lista cuando el clip falta o no se puede decodificar.
 
-Por defecto `media_dir=auto`: el frontend busca `gamelist.xml` en la carpeta de ROMs y toda la media en su subcarpeta `media/` (`<rom_path>/media/videos`, `marquees`, `logos`, `screenshots`, etc.). **Ajustes → Directorio de media** o `F4` permite elegir otra carpeta global; izquierda sobre ese ajuste restaura el modo automático. Todos los temas usan la misma ruta y los paths locales válidos declarados por `gamelist.xml` siguen teniendo prioridad.
+Por defecto `media_dir=auto`: el frontend busca `gamelist.xml` en la carpeta de ROMs y toda la media en su subcarpeta `media/` (`<rom_path>/media/videos`, `arcade-marquee`, `screen-marquees`, `logos`, `screenshots`, etc.). Para `game.marquee`, todos los temas priorizan `arcade-marquee/<rom>.<imagen>`; si falta usan la ruta local declarada por `gamelist.xml`, después `screen-marquees/<rom>.<imagen>` y finalmente el directorio heredado `marquees/`. **Ajustes → Directorio de media** o `F4` permite elegir otra carpeta global; izquierda sobre ese ajuste restaura el modo automático. Todos los temas usan la misma raíz de media.
 
-Pulsa `F6` para recargar el XML y sus imágenes sin recompilar ni reiniciar. Si el XML activo queda mal formado, el frontend conserva el tema anterior; si un tema no puede cargarse durante el arranque, usa el tema Neon integrado. La referencia completa de los 16 componentes, las 15 fuentes `game.*`, atributos, subdirectorios, fallbacks y ejemplos está en [`themes/README.md`](themes/README.md); la plantilla editable es [`themes/theme-template.xml.example`](themes/theme-template.xml.example).
+Pulsa `F6` para recargar el XML, su fuente y sus imágenes sin recompilar ni reiniciar. Si el XML activo queda mal formado, el frontend conserva el tema anterior; si un tema no puede cargarse durante el arranque, usa el tema Neon integrado. Componentes, capas y media aceptan brillo, contraste, saturación, escala de grises, tintado, blur, sombra, glow, rotación, esquinas, gradiente y animaciones de entrada/pulso; los componentes tipográficos añaden color, alineación, sombra, contorno, tracking, interlineado y autoajuste. La referencia completa de los 20 componentes, las 15 fuentes `game.*`, efectos, límites, subdirectorios, fallbacks y ejemplos está en [`themes/README.md`](themes/README.md); la plantilla editable es [`themes/ThemeTemplate/theme.xml.example`](themes/ThemeTemplate/theme.xml.example).
 
 ## BIOS
 
@@ -139,16 +177,19 @@ La ROM generada contiene una P-ROM mínima con vector reset 68000 válido. El pr
   - `↑`/`↓`: navegar entre filas.
   - `←`/`→`: navegar entre columnas.
   - `Enter`: cargar la ROM seleccionada.
+  - `Tab` o la acción `C` del gamepad: cambiar al siguiente tipo de imagen detectado.
   - `Esc`: cerrar el navegador.
   - Indicador de página: "PAG X/Y - N JUEGOS".
   - Si un juego no tiene box art, se muestra un rectángulo oscuro con el nombre del juego.
 
-  **Carpeta `media/`:**
-  - Coloca tus imágenes de caja frontal/cartucho en `media/` dentro del directorio del emulador, o cambia la carpeta desde `Ctrl+S` → `RUTAS` → `Dir. Media`.
-  - Las imágenes deben tener **el mismo nombre que la ROM**, con extensión `.png`.
-    - Ejemplo: `roms/aof.neo` → `media/aof.png`
-    - Ejemplo: `roms/mslugx.neo` → `media/mslugx.png`
-  - Formato recomendado: **PNG**, cualquier resolución. Se ajusta automáticamente y de forma proporcional dentro del recuadro 150×84.
+  **Carpeta `roms/media/`:**
+  - Con `media_dir=auto`, las imágenes se buscan en `roms/media/`. También puedes cambiar la raíz desde `Ctrl+S` → `RUTAS` → `Dir. Media`.
+  - `Ctrl+S` → `RUTAS` → `Imagen explorador` permite elegir `AUTO`, la raíz o cualquier subcarpeta detectada que contenga imágenes para tus ROMs (`box2d`, `box3d`, `mix`, `screenshots`, `steamgrid`, etc.). La selección se guarda en `rom_browser_media`.
+  - Las imágenes deben tener **el mismo nombre base que la ROM** y pueden ser `.png`, `.jpg`, `.jpeg` o `.webp` sin importar mayúsculas/minúsculas.
+    - Ejemplo: `roms/aof.neo` → `roms/media/box2d/aof.png`
+    - Ejemplo: `roms/mslugx.zip` → `roms/media/screenshots/mslugx.jpg`
+  - En `AUTO` se conserva una prioridad práctica: raíz, `box2d`, `box3d`, `mix`, `screenshots` y después el resto de fuentes detectadas.
+  - Las imágenes se ajustan automáticamente y de forma proporcional dentro del recuadro 150×84.
   - El ROM Browser se muestra sin CRT/scanlines/bloom para mantener las carátulas nítidas.
   - El emulador también escanea el directorio configurado en `rom_path` (clave `rom_path` de `config/ngneon.conf`).
 
@@ -187,11 +228,13 @@ La ROM generada contiene una P-ROM mínima con vector reset 68000 válido. El pr
 
 ### Menú de configuración (Ctrl+S)
 - `Ctrl+S`: abrir/cerrar el menú de configuración con **6 pestañas**:
-  - **VIDEO**: scanlines, CRT curvature, phosphor bloom, fullscreen, **window scale** (2x/3x/4x).
+  - **VIDEO**: scanlines, CRT curvature, phosphor bloom, fullscreen, relación de aspecto,
+    paleta, resolución de salida (**Auto/720p/1080p/1440p**) y filtro de escalado
+    (**Nearest/Pixel Perfect/Sharp Bilinear**).
   - **AUDIO**: volumen + **mute** (ON/OFF). El volumen usa un **modo de ajuste dedicado**: presiona `Enter` sobre «Volume» para entrar, luego `←`/`→` ajustan ±5%, `Enter`/`Esc` salen. La barra muestra bloques `█`/`░`.
-  - **SYSTEM**: idioma, volcados, auto-save, BIOS, tarjeta de memoria y hacks compatibles con Geolith: CPU 24 MHz, límite de sprites y ADPCM wrap.
+  - **SYSTEM**: idioma, volcados, auto-save, BIOS, tarjeta de memoria, adaptador FTC1B de cuatro jugadores y hacks compatibles con Geolith: CPU 24 MHz, límite de sprites y ADPCM wrap.
   - **CONTROLS**: backend **Gamepad SDL2** (ON/OFF, requiere reinicio), configuración de gamepad (`>`), **configuración de teclado** (`>`).
-  - **PATHS**: rutas de ROMs, BIOS, screenshots, saves (solo lectura, **rutas resueltas**).
+  - **PATHS**: rutas de ROMs, BIOS, media, screenshots y saves; además permite elegir la fuente de imagen del explorador de ROMs.
   - `←`/`→`: **siempre** cambian de pestaña (sin sobrecarga de ajuste de volumen).
   - `↑`/`↓`: navegar entre opciones (si estabas en modo ajuste de volumen, sale automáticamente).
   - `Enter`: activar/desactivar toggle, entrar/salir del modo ajuste de volumen, o abrir submenú.
@@ -213,14 +256,14 @@ La ROM generada contiene una P-ROM mínima con vector reset 68000 válido. El pr
   - `R` o botón `C`: restaurar todos los bindings a valores por defecto.
   - `Esc` o botón `B`/`Back`: cancelar escucha o cerrar el overlay.
   - **Atajos globales por defecto**: `Back+Start` sale del emulador sin preguntar; `Guide` abre el ROM Browser.
-  - **Multi-controller**: muestra todos los gamepads conectados, navegables con `←`/`→`.
-  - **Hotplug**: detecta conexión/desconexión de gamepads sin reiniciar.
+  - **Multi-controller**: muestra todos los gamepads conectados, navegables con `←`/`→`; `Tab` asigna el mando seleccionado a P1–P4.
+  - **Hotplug**: detecta conexión/desconexión sin reiniciar y libera las entradas retenidas al desconectar.
   - **Analog stick D-Pad**: el stick izquierdo emula las direcciones (deadzone ±8000).
-  - **Persistencia**: bindings guardados automáticamente en `config/gamepad/<guid>.conf` (un archivo por controller).
+  - **Persistencia**: bindings y jugador preferido guardados automáticamente en `config/gamepad/<guid>.conf`; el GUID se normaliza desde el mapping SDL y se conservan los nombres antiguos como fallback.
 
 ### Keyboard Config (Settings → CONTROLS → Keyboard Config)
 - Accesible desde **Ctrl+S → CONTROLS → Keyboard Config (`Enter`)**.
-- **10 acciones remapeables**: Up, Down, Left, Right, A, B, C, D, Start, Coin.
+- **P1 y P2 remapeables**: `←`/`→` cambia de jugador. P1 conserva flechas, ZXCV, Enter y Espacio; P2 usa WASD, FGHJ, T y R.
 - **Reasignar tecla**: `Enter` sobre una acción → modo escucha (pulso visual). Pulsa cualquier tecla para asignarla.
 - **Restaurar default**: tecla `R` sobre la acción seleccionada.
 - **Cancelar**: `Esc` sale del modo escucha o cierra el overlay.
@@ -255,16 +298,20 @@ bios_region=europe
 unibios_hardware=mvs
 frontend_session=normal
 frontend_theme_dir=themes
-frontend_theme=themes/neon.xml
+frontend_theme=themes/NGNEONNeon/theme.xml
 bios_dir=bios
 media_dir=auto
+rom_browser_media=auto
 lang=es
 scanlines=on
 curvature=off
 bloom=on
 fullscreen=off
+frontend_fullscreen=off
 aspect_ratio=4:3
 palette_mode=resnet
+output_resolution=auto
+scaling_filter=nearest
 rom_path=roms/
 volume=100
 frontend_music=on
@@ -273,6 +320,7 @@ window_scale=3
 auto_save=on
 muted=off
 gamepad=off
+four_player=off
 setting_mode=off
 freeplay=off
 cpu_overclock=off
@@ -290,11 +338,26 @@ ra_hardcore=off
 >
 > **Media del frontend**: `media_dir=auto` usa `<rom_path>/media`. También se puede guardar una ruta absoluta o relativa personalizada desde **Ajustes → Directorio de media**. El `gamelist.xml` se busca primero en `rom_path`.
 >
+> **Imagen del explorador de ROMs**: `rom_browser_media=auto` elige la primera imagen disponible. También acepta `root` o el nombre de una subcarpeta detectada bajo `media_dir` —por ejemplo `box2d`, `mix`, `screenshots` o `steamgrid`— y se puede cambiar desde **Ctrl+S → RUTAS → Imagen explorador** o directamente con `Tab`/acción `C` mientras el explorador está abierto.
+>
 > **Música del frontend**: `frontend_music=on/off` controla la reproducción de los MP3 de `musica/`; `Ctrl+N` cambia de pista.
+
+> **Pantalla completa del frontend**: `frontend_fullscreen=on/off` controla si la biblioteca nativa se abre a pantalla completa. También se puede cambiar desde **Ajustes → Frontend pantalla completa** o con `F11`.
+>
+> **Resolución y escalado del emulador**: `output_resolution=auto|720p|1080p|1440p`
+> selecciona el tamaño de la ventana de salida. En `auto`, `window_scale=2|3|4`
+> conserva la escala inicial clásica; en pantalla completa se usa la resolución
+> del escritorio. `scaling_filter=nearest|pixel-perfect|sharp-bilinear` controla
+> exclusivamente la presentación OpenGL: `nearest` conserva el pixel art,
+> `pixel-perfect` centra el mayor múltiplo entero de la imagen visible 304×224 y
+> `sharp-bilinear` limita el suavizado a los bordes de píxel para escalas no
+> enteras. El framebuffer y la precisión del núcleo permanecen en 320×224.
 >
 > Las claves `ra_token`, `ra_password`, `ra_username` y `ra_hardcore` configuran la integración con [RetroAchievements](https://retroachievements.org). Si hay `ra_token`, se prefiere sobre `ra_password`.
 >
 > **Gamepad SDL2**: `gamepad=off` es el modo seguro por defecto para evitar bloqueos de arranque en algunos backends de mando de Windows. Puedes activarlo desde **Ctrl+S → CONTROLS → Gamepad SDL2** y reiniciar el emulador para que SDL inicialice los mandos.
+>
+> **Cuatro jugadores**: `four_player=on` activa la multiplexación FTC1B de P1–P4 mediante `POUTPUT`. Permanece desactivado por defecto para conservar el comportamiento clásico de P1/P2.
 >
 > **Hacks Geolith**: `cpu_overclock=on` elimina gran parte de la ralentización interna de juegos como Metal Slug 2; `sprite_limit` acepta `96`, `192`, `288` o `381`; `disable_adpcm_wrap=on` corrige efectos concretos de Ganryu/Nightmare in the Dark. Los tres quedan bloqueados en RetroAchievements Hardcore.
 >
@@ -330,6 +393,7 @@ SystemRomBrowser=Guide
 ```
 
 - **Carga automática**: al iniciar (`scan_initial()`) y en cada hotplug connect.
+- **Jugadores por orden de conexión**: el primer mando es P1, el segundo P2 y así hasta P4. Las líneas `Player=` de configuraciones antiguas se ignoran para evitar asignaciones obsoletas.
 - **Guardado automático**: al cerrar overlay, restaurar defaults, reasignar botón, y al salir.
 - **15 botones SDL2** mapeables a **10 acciones NeoGeo** y **2 acciones globales**.
 - Las acciones globales aceptan un botón simple (`Guide`) o una combinación de dos botones (`Back+Start`).
@@ -337,19 +401,20 @@ SystemRomBrowser=Guide
 
 ### Configuración de teclado (`config/keyboard.conf`)
 
-El mapeo de teclas se persiste en `config/keyboard.conf` con formato `ActionName=SDLK_SCANCODE`:
+El mapeo de teclas usa nombres SDL legibles y prefijos de jugador. Los archivos antiguos sin prefijo y los valores numéricos siguen cargándose como P1:
 
 ```
-Up=1073741906
-Down=1073741905
-Left=1073741904
-Right=1073741903
-A=122
-B=120
-C=99
-D=118
-Start=13
-Coin=32
+P1.Up=Up
+P1.A=Z
+P1.Start=Return
+P1.Coin=Space
+P2.Up=W
+P2.A=F
+P2.Start=T
+P2.Coin=R
+Aux.VlinerOperator=O
+Aux.VlinerClearCredit=Backspace
+Aux.VlinerHopperOut=Y
 ```
 
 - Se carga automáticamente al iniciar.
@@ -477,22 +542,42 @@ Todo el texto visible está centralizado en `frontend/src/lang.rs`:
   - Cuadro verde = slot con datos.
   - Cuadro gris = slot vacío.
 - **Auto-save al salir** + **auto-load al iniciar**: sesión reanudable sin intervención.
+- La versión actual guarda también el resto temporal YM2610 y `POUTPUT`; sigue cargando estados antiguos. Al cargar se vacían resampler/ring buffer, se inserta preroll y se reinicia el pacing A/V.
 
 ## Verificación
 
-```powershell
-# Compilar todo en release (genera target/release/ngneon-emu.exe)
-cargo build --release --workspace
+La guía completa para generar y comprobar builds nativas de **Windows x64**,
+**Windows ARM64**, **Linux x64** y **Linux ARM64** está en
+[`BUILDING.md`](BUILDING.md). Incluye targets de Rust, dependencias nativas,
+arquitectura de SDL2/VCRuntime, nombres de salida y límites de la compilación
+cruzada.
 
+Los empaquetadores actuales compilan para la arquitectura del host. Para una
+release ARM64 se recomienda ejecutarlos en Windows ARM64 o Linux ARM64 con
+todas las dependencias nativas ARM64; no basta con añadir el target mediante
+`rustup`.
+
+```powershell
+# Windows: compilar y crear NGNEON-EMU/
+cargo build --release --workspace
+.\package_ngneon_release.bat
+```
+
+```sh
+# Linux: compilar y crear NGNEON-EMU-linux-<arquitectura>/
+cargo build --release --workspace
+./package_ngneon_release.sh
+```
+
+Comprobaciones comunes a ambos sistemas:
+
+```sh
 # Ejecutar todos los tests
 cargo test --workspace
 
 # Formateo y linting
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
-
-# Crear el paquete nativo en NGNEON-EMU/
-.\package_ngneon_release.bat
 
 # Tests específicos
 cargo test -p frontend -- ui::tests           # UI (notificaciones, overlays, fuente)
@@ -503,19 +588,32 @@ cargo test -p core-emulator -- memory::tests::rtc_control  # RTC
 
 ### Binarios generados
 
-Tras compilar en release, los ejecutables están en `target/release/`:
+Tras compilar en release, los ejecutables están en `target/release/`. Linux usa los mismos nombres sin la extensión `.exe`:
 
 | Binario | Descripción |
 |---|---|
-| `ngneon-frontend.exe` | Biblioteca/configurador SDL2 que lanza el emulador como proceso separado |
-| `ngneon-emu.exe` | Emulador principal con frontend SDL2+OpenGL (4.5 MB) |
-| `probe_rom.exe` | Sonda headless para diagnóstico de ROMs |
-| `diagnose_rom.exe` | Diagnóstico detallado de bancos ROM `.neo` y `.zip` |
-| `make_test_neo.exe` | Genera ROM sintética `.neo` de prueba |
-| `render_test_neo.exe` | Renderiza la ROM de prueba sin GUI |
-| `profile_resampler.exe` | Benchmark del resampler de audio |
+| `ngneon-frontend[.exe]` | Biblioteca/configurador SDL2 que lanza el emulador como proceso separado |
+| `ngneon-emu[.exe]` | Emulador principal con frontend SDL2+OpenGL |
+| `probe_rom[.exe]` | Sonda headless para diagnóstico de ROMs |
+| `diagnose_rom[.exe]` | Diagnóstico detallado de bancos ROM `.neo` y `.zip` |
+| `make_test_neo[.exe]` | Genera ROM sintética `.neo` de prueba |
+| `render_test_neo[.exe]` | Renderiza la ROM de prueba sin GUI |
+| `profile_resampler[.exe]` | Benchmark del resampler de audio |
 
-El empaquetador aborta antes de limpiar una carpeta `NGNEON-EMU/` que contenga ROMs, media, saves, capturas, logs o configuración modificada. Los ficheros ya existentes en `themes/` se preservan y solo se copian los temas incluidos que falten. Para una limpieza intencionada debe definirse explícitamente `NGNEON_ALLOW_PACKAGE_CLEAN=1` antes de ejecutarlo.
+Los empaquetadores abortan antes de limpiar `NGNEON-EMU/` o `NGNEON-EMU-linux-<arquitectura>/` si contienen ROMs, media, música, saves, capturas, logs o configuración modificada. Ambos crean `musica/` con su guía para colocar los MP3 del frontend y protegen las canciones existentes. Las carpetas ya existentes dentro de `themes/` se preservan y solo se copian los temas y assets incluidos que falten.
+
+Para una limpieza intencionada debe definirse explícitamente `NGNEON_ALLOW_PACKAGE_CLEAN=1`:
+
+```powershell
+$env:NGNEON_ALLOW_PACKAGE_CLEAN='1'
+.\package_ngneon_release.bat
+```
+
+```sh
+NGNEON_ALLOW_PACKAGE_CLEAN=1 ./package_ngneon_release.sh
+```
+
+El paquete Linux contiene ejecutables nativos sin `.exe`, los launchers `.sh`, configuración portátil, temas, `roms/media/`, `musica/` y `LINUX-DEPENDENCIES.txt`. No copia DLL de Windows ni intenta incluir bibliotecas `.so` del sistema.
 
 ## Estado actual
 
@@ -531,7 +629,7 @@ El empaquetador aborta antes de limpiar una carpeta `NGNEON-EMU/` que contenga R
 - Demo interna visible y controlable sin requerir BIOS ni ROM comercial.
 - Carga de `.neo` NeoSD/TerraOnion con cabecera de 4 KB, partición de bancos `P,S,M,V1,V2,C`, metadata básica, validación y avisos de bancos ausentes.
 - Carga básica de `.zip` con detección de chips por nombre y resumen de bancos.
-- Puertos de entrada básicos memory-mapped en modo active-low para que el 68000 pueda leer controles.
+- Entrada active-low completa para P1–P4: `POUTPUT` y su espejo AES controlan la multiplexación FTC1B; P2 ya no es un valor fijo. Irritating Maze acepta ratón relativo o stick analógico, selecciona X/Y mediante `POUTPUT` y conserva contadores de trackball. V-Liner implementa su puerto `0x280000`, STATUS-A y las líneas Coin 1/2, Operator Menu, Clear Credit y Hopper Out.
 - `probe_rom` puede mantener inputs durante un número configurable de frames: `probe_rom <rom> [captura.bmp] [frames] [inputs] [input_frames]`, por ejemplo `coin,start 5000`.
 - DIP switch/watchdog en `0x300001`, test switch en `0x300081`, latch de sonido en `0x320000`, `STATUS_A` con salida RTC uPD4990A básica en `0x320001` y registros básicos de I/O/latches en `0x3800xx` y `0x3A00xx`.
 - CPU de sonido Z80 integrada con `z80emu`: `REG_SOUND` (`0x320000`) guarda el último comando 68k->Z80, dispara NMI pendiente y el Z80 lee ese comando por el puerto `0x00`; la respuesta vuelve por el puerto `0x0C` hacia el 68000.
@@ -541,6 +639,7 @@ El empaquetador aborta antes de limpiar una carpeta `NGNEON-EMU/` que contenga R
 - Carga opcional de BIOS real desde `bios/`, con soporte para ZIPs y normalización de byte order. También extrae `000-lo.lo` como tabla L0 de 128 KB para shrink/zoom de sprites y `sfix.sfix` como fix ROM de placa.
 - BIOS diagnóstica mínima como fallback en `0xC00000..0xC7FFFF` cuando no hay BIOS real.
 - Backup RAM MVS en `0xD00000..0xD0FFFF`.
+- Los cartuchos Brezzasoft guardan sus 8 KiB de cartridge RAM en `saves/<juego>.cartram`. Un `.sav` Geolith solo se importa cuando mide exactamente 8192 bytes, sin confundirse con la backup RAM MVS de 64 KiB.
 - Rango de memory card en `0x800000..0xBFFFFF`: con tarjeta ausente devuelve `0xFF` como hardware conocido; con tarjeta insertada usa un buffer de 8 KB espejado y solo permite escritura si el latch de memory card está desbloqueado.
 - Bus principal del 68000 normalizado a 24 bits antes del mapa de memoria, evitando aliases fantasma de 32 bits en ROMs reales.
 - Registros LSPC/video mínimos en `0x3C0000..0x3C000E`: VRAM address, VRAM read/write, modulo, modo/scanline, timer e IRQ ack.
@@ -558,12 +657,13 @@ El empaquetador aborta antes de limpiar una carpeta `NGNEON-EMU/` que contenga R
 - La ROM sintética `examples/ngneon_test.neo` ya valida el camino CPU -> LSPC -> VRAM -> sprite/fix -> framebuffer.
 - La selección de sprites y sus estadísticas se derivan del recorrido SCB/scanline real; las palabras VRAM `$8600/$8680` no se usan como filtros globales ni se sobrescriben con listas sintéticas.
 - YM2610 inicial: registros SSG/FM/ADPCM, timers, lectura de V-ROM para ADPCM y generación de muestras estéreo a la tasa nativa aproximada del chip.
-- Frontend SDL2 conecta audio real: el core genera muestras YM2610 siguiendo la cadencia de Geolith (1 muestra cada 72 tstates Z80, patrón MVS 938/939/939), las remuestrea de ~55.5 kHz a 44.1 kHz con un resampler Lanczos/lineal y las entrega a un ring buffer usado por el callback de audio.
+- Frontend SDL2 conecta audio real: el core genera muestras YM2610 siguiendo la cadencia de Geolith (1 muestra cada 72 tstates Z80, patrón MVS 938/939/939), con frecuencia AES derivada de `24.167829 MHz / 6 / 72`; las remuestrea a 44.1 kHz con Lanczos-3 y las entrega al callback SDL2. Un controlador de ocupación con objetivo de 4096 muestras, EWMA `α=0,05` y corrección limitada a ±0,5 % ajusta únicamente el pacing del frontend, nunca los relojes deterministas del núcleo.
 - El Z80/YM2610 se sincroniza con el 68K por contadores de ciclo maestro estilo `geo_exec()` (`DIV_M68K=2`, `DIV_Z80=6`, `MCYC_PER_FRAME=405504`), conservando el desfase entre frames. El estado BUSY reinicia su periodo con cada escritura en vez de acumularlo; esto desbloquea los drivers M1 de Metal Slug 3 y Metal Slug X `.neo`, que antes quedaban mudos leyendo `YM_A0 = 0x80`.
 - CPU 68000 integrada mediante `m68k`, con mitigación de fallos: se pausa la emulación y el frontend sigue vivo.
 - `probe_rom` permite diagnosticar ROMs reales `.neo` y `.zip`, ejecutar frames headless y guardar BMP. `diagnose_rom` usa el mismo criterio por extensión para cargar `.neo` con `RomData::from_neo()` y `.zip` con `RomData::from_zip()`.
 - `probe_rom` muestra una traza de bus para encontrar accesos a hardware todavía no mapeado, estado Z80 (`PC`, HALT, T-states, `IFF1/IFF2`, modo IRQ, línea YM, NMI y tamaño M-ROM), estado de timers YM2610 (`0x27`, contadores A/B, BUSY e IRQ), traza de puertos Z80/YM2610 y estadísticas de VRAM derivadas del recorrido LSPC real (`sprites_h`, `visible_sprites`, `gen_lines`, `gen_max`, `gen_overflow`, `h_shrink`, `v_shrink`, `fix_visible`, `fix_drawable`, `fix_unique`, `fix_pixels`, `palette_banks`).
 - Gamepad: los botones SDL2 mantienen remapeo persistente por GUID y el stick izquierdo emite estados explícitos de press/release, incluyendo reversas directas izquierda→derecha o arriba→abajo sin dejar direcciones opuestas activas. El overlay de remapeo ignora ejes mientras escucha para evitar drift accidental.
+- Zed Blade: eliminado el filtrado FIX específico por NGH. Con Geolith `c5b57a6b` como referencia, los frames 120, 300 y 600 coinciden exactamente en píxeles no negros y hash FNV del área visible 304×224.
 - Icono: el frontend usa un icono NGNEON embebido para la ventana SDL y el build Windows incrusta `frontend/assets/ngneon_icon.ico` como recurso del ejecutable.
 - Probado con `roms/diggerma.neo`: el bucle Z80 en `0x00BA` es la espera normal del Timer B, no un bloqueo. En reposo el prototipo permanece mudo; con pulsos tardíos `coin/start/a`, la sonda obtiene audio en 1337/2000 frames, pico `13001` y canales ADPCM-A activos.
 - Barrida `.neo` de compatibilidad con entradas tardías: AOF, Metal Slug X, Metal Slug 3 y KOF2003 entran en código de cartucho, muestran escenas reconocibles y producen audio. Tras limpiar las métricas de sprites, AOF reporta `visible_sprites=51`, `gen_max=46`; KOF2003 reporta `visible_sprites=69`, `gen_max=47`; ambos sin overflow y con capturas idénticas byte a byte respecto al renderer anterior.

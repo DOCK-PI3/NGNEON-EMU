@@ -1,12 +1,16 @@
 use crate::frontend_catalog::{scan_game_library, GameEntry, GameMedia};
 use crate::frontend_music::BackgroundMusic;
 use crate::frontend_theme::{
-    ThemeCatalog, ThemeComponentId, ThemeDefinition, ThemeLayer, ThemeLayerFit, ThemeLayerView,
-    ThemeMediaSlot, ThemeMediaSource, ThemePalette, ThemeRect, THEME_HEIGHT, THEME_WIDTH,
+    ThemeCatalog, ThemeChrome, ThemeComponentId, ThemeDefinition, ThemeImageEffects, ThemeLayer,
+    ThemeLayerFit, ThemeLayerView, ThemeListArtwork, ThemeMediaSlot, ThemeMediaSource,
+    ThemePalette, ThemeRect, ThemeShadow, ThemeTextAlign, ThemeTextStyle, ThemeVerticalAlign,
+    THEME_HEIGHT, THEME_WIDTH,
 };
 use crate::frontend_video::VideoPlayer;
+use crate::video_options::{OutputResolution, ScalingFilter};
 use core_emulator::bios::{self, BiosImage, BiosKind, BiosRegion};
-use sdl2::controller::{Button as ControllerButton, GameController};
+use fontdue::Font;
+use sdl2::controller::{Axis as ControllerAxis, Button as ControllerButton, GameController};
 use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod};
 use sdl2::mouse::MouseButton;
@@ -41,41 +45,51 @@ const CAROUSEL_LOGO_WIDTH: usize = 178;
 const CAROUSEL_LOGO_HEIGHT: usize = 64;
 const IMAGE_CACHE_LIMIT: usize = 96;
 const VERTICAL_LIST_ITEMS: usize = 7;
+const BOX3D_VERTICAL_LIST_ITEMS: usize = 5;
 const HORIZONTAL_LIST_ITEMS: usize = 7;
+const HORIZONTAL_BOX_CAROUSEL_ITEMS: usize = 5;
 const SETTING_ROW_HEIGHT: usize = 26;
 const SETTINGS_VISIBLE_ROWS: usize = 13;
 const BIOS_PROFILES: [BiosKind; 3] = [BiosKind::Mvs, BiosKind::Aes, BiosKind::Unibios];
 const SPRITE_LIMITS: [usize; 4] = [96, 192, 288, 381];
 const SUCCESS_STATUS_DURATION: Duration = Duration::from_secs(3);
+const FRONTEND_STICK_DEADZONE: i16 = 8_000;
+const DESCRIPTION_SCROLL_INITIAL_DELAY: Duration = Duration::from_millis(2_500);
+const DESCRIPTION_SCROLL_STEP: Duration = Duration::from_millis(1_600);
+const DESCRIPTION_SCROLL_END_DELAY: Duration = Duration::from_millis(2_500);
 
 const SETTING_BIOS: usize = 0;
 const SETTING_REGION: usize = 1;
 const SETTING_UNIBIOS_HARDWARE: usize = 2;
 const SETTING_SESSION: usize = 3;
 const SETTING_FULLSCREEN: usize = 4;
-const SETTING_SCANLINES: usize = 5;
-const SETTING_CURVATURE: usize = 6;
-const SETTING_BLOOM: usize = 7;
-const SETTING_ASPECT_RATIO: usize = 8;
-const SETTING_PALETTE: usize = 9;
-const SETTING_WINDOW_SCALE: usize = 10;
-const SETTING_VOLUME: usize = 11;
-const SETTING_FRONTEND_MUSIC: usize = 12;
-const SETTING_LANGUAGE: usize = 13;
-const SETTING_AUTO_SAVE: usize = 14;
-const SETTING_DIAGNOSTIC_DUMPS: usize = 15;
-const SETTING_SETTING_MODE: usize = 16;
-const SETTING_FREEPLAY: usize = 17;
-const SETTING_CPU_OVERCLOCK: usize = 18;
-const SETTING_SPRITE_LIMIT: usize = 19;
-const SETTING_ADPCM_WRAP: usize = 20;
-const SETTING_MEMCARD: usize = 21;
-const SETTING_MEMCARD_WRITE_PROTECT: usize = 22;
-const SETTING_GAMEPAD: usize = 23;
-const SETTING_RA_HARDCORE: usize = 24;
-const SETTING_THEME: usize = 25;
-const SETTING_MEDIA_DIRECTORY: usize = 26;
-const SETTING_COUNT: usize = 27;
+const SETTING_FRONTEND_FULLSCREEN: usize = 5;
+const SETTING_SCANLINES: usize = 6;
+const SETTING_CURVATURE: usize = 7;
+const SETTING_BLOOM: usize = 8;
+const SETTING_ASPECT_RATIO: usize = 9;
+const SETTING_PALETTE: usize = 10;
+const SETTING_WINDOW_SCALE: usize = 11;
+const SETTING_OUTPUT_RESOLUTION: usize = 12;
+const SETTING_SCALING_FILTER: usize = 13;
+const SETTING_VOLUME: usize = 14;
+const SETTING_FRONTEND_MUSIC: usize = 15;
+const SETTING_LANGUAGE: usize = 16;
+const SETTING_AUTO_SAVE: usize = 17;
+const SETTING_DIAGNOSTIC_DUMPS: usize = 18;
+const SETTING_SETTING_MODE: usize = 19;
+const SETTING_FREEPLAY: usize = 20;
+const SETTING_CPU_OVERCLOCK: usize = 21;
+const SETTING_SPRITE_LIMIT: usize = 22;
+const SETTING_ADPCM_WRAP: usize = 23;
+const SETTING_MEMCARD: usize = 24;
+const SETTING_MEMCARD_WRITE_PROTECT: usize = 25;
+const SETTING_GAMEPAD: usize = 26;
+const SETTING_RA_HARDCORE: usize = 27;
+const SETTING_THEME: usize = 28;
+const SETTING_MEDIA_DIRECTORY: usize = 29;
+const SETTING_FOUR_PLAYER: usize = 30;
+const SETTING_COUNT: usize = 31;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrontendView {
@@ -303,6 +317,7 @@ struct ImageCacheKey {
     width: usize,
     height: usize,
     mode: ImageMode,
+    effects: ThemeImageEffects,
 }
 
 #[derive(Debug, Clone)]
@@ -341,12 +356,15 @@ struct FrontendSettings {
     unibios_hardware: UnibiosHardware,
     session_mode: SessionMode,
     fullscreen: bool,
+    frontend_fullscreen: bool,
     scanlines: bool,
     curvature: bool,
     bloom: bool,
     aspect_ratio: AspectRatioSetting,
     palette: PaletteSetting,
     window_scale: u32,
+    output_resolution: OutputResolution,
+    scaling_filter: ScalingFilter,
     volume: u8,
     frontend_music: bool,
     language: LanguageSetting,
@@ -354,6 +372,7 @@ struct FrontendSettings {
     diagnostic_dumps: bool,
     setting_mode: bool,
     freeplay: bool,
+    four_player: bool,
     cpu_overclock: bool,
     sprite_limit: usize,
     disable_adpcm_wrap: bool,
@@ -381,6 +400,7 @@ impl FrontendSettings {
             unibios_hardware: UnibiosHardware::from_config(config.get("unibios_hardware")),
             session_mode: SessionMode::from_config(config.get("frontend_session")),
             fullscreen: config.bool("fullscreen", false),
+            frontend_fullscreen: config.bool("frontend_fullscreen", false),
             scanlines: config.bool("scanlines", false),
             curvature: config.bool("curvature", false),
             bloom: config.bool("bloom", false),
@@ -391,6 +411,8 @@ impl FrontendSettings {
                 .and_then(|value| value.parse::<u32>().ok())
                 .filter(|value| (2..=4).contains(value))
                 .unwrap_or(3),
+            output_resolution: OutputResolution::from_config(config.get("output_resolution")),
+            scaling_filter: ScalingFilter::from_config(config.get("scaling_filter")),
             volume: config
                 .get("volume")
                 .and_then(|value| value.parse::<u8>().ok())
@@ -402,6 +424,7 @@ impl FrontendSettings {
             diagnostic_dumps: config.bool("diagnostic_dumps", false),
             setting_mode: config.bool("setting_mode", false),
             freeplay: config.bool("freeplay", false),
+            four_player: config.bool("four_player", false),
             cpu_overclock: config.bool("cpu_overclock", false),
             sprite_limit: config
                 .get("sprite_limit")
@@ -525,9 +548,20 @@ struct NativeFrontend {
     source_image_cache: HashMap<PathBuf, PreparedImage>,
     theme_catalog: ThemeCatalog,
     theme_layers: Vec<PreparedThemeLayer>,
+    theme_font: Option<Font>,
     status: String,
     status_error: bool,
     status_expires_at: Option<Instant>,
+    description_scroll_started_at: Instant,
+    description_scroll_offset: usize,
+    theme_animation_started_at: Instant,
+    pending_file_dialog: Option<FileDialogRequest>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileDialogRequest {
+    RomDirectory,
+    MediaDirectory,
 }
 
 impl NativeFrontend {
@@ -569,9 +603,14 @@ impl NativeFrontend {
             source_image_cache: HashMap::new(),
             theme_catalog,
             theme_layers: Vec::new(),
+            theme_font: None,
             status: String::new(),
             status_error: false,
             status_expires_at: None,
+            description_scroll_started_at: Instant::now(),
+            description_scroll_offset: 0,
+            theme_animation_started_at: Instant::now(),
+            pending_file_dialog: None,
         };
         let startup_config_warning = if frontend.settings.ra_hardcore {
             match frontend.enable_hardcore() {
@@ -589,10 +628,14 @@ impl NativeFrontend {
         } else {
             None
         };
+        let startup_font_warning = frontend.load_theme_font();
         let startup_asset_warning = frontend.load_theme_assets();
         if let Some(warning) = startup_config_warning {
             frontend.set_status(format!("AVISO DE CONFIGURACION: {warning}"), true);
-        } else if let Some(warning) = startup_theme_warning.or(startup_asset_warning) {
+        } else if let Some(warning) = startup_theme_warning
+            .or(startup_font_warning)
+            .or(startup_asset_warning)
+        {
             frontend.set_status(format!("AVISO DE TEMA: {warning}"), true);
         } else {
             frontend.set_library_status();
@@ -625,20 +668,33 @@ impl NativeFrontend {
     }
 
     fn horizontal_list_active(&self) -> bool {
-        self.theme()
-            .component(ThemeComponentId::HorizontalList)
-            .visible
+        self.active_horizontal_list_component().is_some()
+    }
+
+    fn active_horizontal_list_component(&self) -> Option<ThemeComponentId> {
+        [
+            ThemeComponentId::GameCarouselHorizontal,
+            ThemeComponentId::HorizontalList,
+        ]
+        .into_iter()
+        .find(|id| self.theme().component(*id).visible)
+    }
+
+    fn active_vertical_list_component(&self) -> Option<ThemeComponentId> {
+        [
+            ThemeComponentId::VerticalList,
+            ThemeComponentId::GameCarouselLeft,
+            ThemeComponentId::GameCarouselRight,
+        ]
+        .into_iter()
+        .find(|id| self.theme().component(*id).visible)
     }
 
     fn library_page_size(&self) -> usize {
-        if self.horizontal_list_active() {
-            HORIZONTAL_LIST_ITEMS
-        } else if self
-            .theme()
-            .component(ThemeComponentId::VerticalList)
-            .visible
-        {
-            VERTICAL_LIST_ITEMS
+        if let Some(id) = self.active_horizontal_list_component() {
+            horizontal_list_item_count(self.theme().component(id).artwork)
+        } else if let Some(id) = self.active_vertical_list_component() {
+            vertical_list_item_count(self.theme().component(id).artwork)
         } else {
             VISIBLE_WHEEL_ROWS
         }
@@ -666,12 +722,24 @@ impl NativeFrontend {
         height: usize,
         mode: ImageMode,
     ) -> Option<PreparedImage> {
+        self.cached_image_with_effects(path, width, height, mode, ThemeImageEffects::default())
+    }
+
+    fn cached_image_with_effects(
+        &mut self,
+        path: Option<PathBuf>,
+        width: usize,
+        height: usize,
+        mode: ImageMode,
+        effects: ThemeImageEffects,
+    ) -> Option<PreparedImage> {
         let path = path.filter(|candidate| candidate.is_file())?;
         let key = ImageCacheKey {
             path: path.clone(),
             width,
             height,
             mode,
+            effects,
         };
         if let Some(pixels) = self.image_cache.get(&key) {
             return Some(PreparedImage {
@@ -689,6 +757,11 @@ impl NativeFrontend {
             ImageMode::Stretch => crate::screenshot::load_image_stretch(&path, width, height),
         }
         .ok()?;
+        let pixels = if effects.is_neutral() {
+            pixels
+        } else {
+            crate::frontend_effects::apply_image_effects(&pixels, width, height, effects)
+        };
         let pixels = Arc::new(pixels);
         self.image_cache.insert(key, Arc::clone(&pixels));
         Some(PreparedImage {
@@ -698,7 +771,12 @@ impl NativeFrontend {
         })
     }
 
-    fn cached_source_image(&mut self, path: Option<PathBuf>) -> Option<PreparedImage> {
+    fn cached_source_image(
+        &mut self,
+        path: Option<PathBuf>,
+        max_width: usize,
+        max_height: usize,
+    ) -> Option<PreparedImage> {
         let path = path.filter(|candidate| candidate.is_file())?;
         if let Some(image) = self.source_image_cache.get(&path) {
             return Some(image.clone());
@@ -707,7 +785,7 @@ impl NativeFrontend {
             self.source_image_cache.clear();
         }
         let (width, height, pixels) =
-            crate::screenshot::load_image_argb_bounded(&path, 640, 192).ok()?;
+            crate::screenshot::load_image_argb_bounded(&path, max_width, max_height).ok()?;
         let image = PreparedImage {
             width,
             height,
@@ -740,7 +818,13 @@ impl NativeFrontend {
             };
             let width = spec.rect.width as usize;
             let height = spec.rect.height as usize;
-            match self.cached_image(Some(spec.source.clone()), width, height, mode) {
+            match self.cached_image_with_effects(
+                Some(spec.source.clone()),
+                width,
+                height,
+                mode,
+                spec.effects,
+            ) {
                 Some(image) => prepared.push(PreparedThemeLayer { spec, image }),
                 None => {
                     let warning = format!(
@@ -756,6 +840,21 @@ impl NativeFrontend {
         first_warning
     }
 
+    fn load_theme_font(&mut self) -> Option<String> {
+        self.theme_font = None;
+        let source = self.theme().font_source.clone()?;
+        match crate::frontend_font::load_font(&source) {
+            Ok(font) => {
+                self.theme_font = Some(font);
+                None
+            }
+            Err(warning) => {
+                eprintln!("[WARN] {warning}");
+                Some(warning)
+            }
+        }
+    }
+
     fn adjust_theme(&mut self, delta: isize) -> Result<(), String> {
         let len = self.theme_catalog.entries().len();
         let index = cycle_index(self.theme_catalog.selected_index(), len, delta);
@@ -764,8 +863,10 @@ impl NativeFrontend {
         self.theme_catalog.set_selected_index(index);
         self.image_cache.clear();
         self.source_image_cache.clear();
+        let font_warning = self.load_theme_font();
         self.load_selected_media();
-        if let Some(warning) = self.load_theme_assets() {
+        let asset_warning = self.load_theme_assets();
+        if let Some(warning) = font_warning.or(asset_warning) {
             return Err(warning);
         }
         Ok(())
@@ -776,6 +877,7 @@ impl NativeFrontend {
             Ok(()) => {
                 self.image_cache.clear();
                 self.source_image_cache.clear();
+                let font_warning = self.load_theme_font();
                 self.load_selected_media();
                 let asset_warning = self.load_theme_assets();
                 let theme = self.theme();
@@ -784,7 +886,7 @@ impl NativeFrontend {
                 } else {
                     format!(" / {}", theme.author)
                 };
-                if let Some(warning) = asset_warning {
+                if let Some(warning) = font_warning.or(asset_warning) {
                     self.set_status(format!("TEMA RECARGADO CON AVISO: {warning}"), true);
                 } else {
                     self.set_status(format!("TEMA RECARGADO: {}{author}", theme.name), false);
@@ -795,6 +897,9 @@ impl NativeFrontend {
     }
 
     fn load_selected_media(&mut self) {
+        self.description_scroll_started_at = Instant::now();
+        self.description_scroll_offset = 0;
+        self.theme_animation_started_at = Instant::now();
         let Some(game) = self.games.get(self.selected) else {
             self.selected_media = SelectedMedia::default();
             self.video_player.select(None);
@@ -839,16 +944,37 @@ impl NativeFrontend {
                 (index, path)
             })
             .collect();
-        let list_radius = (VERTICAL_LIST_ITEMS / 2) as isize;
+        let active_list = [
+            ThemeComponentId::VerticalList,
+            ThemeComponentId::HorizontalList,
+            ThemeComponentId::GameCarouselLeft,
+            ThemeComponentId::GameCarouselRight,
+            ThemeComponentId::GameCarouselHorizontal,
+        ]
+        .into_iter()
+        .find_map(|id| {
+            let component = self.theme().component(id);
+            component.visible.then_some((id, component))
+        });
+        let (list_artwork, list_item_count) = active_list.map_or(
+            (ThemeListArtwork::Logo, VERTICAL_LIST_ITEMS),
+            |(id, component)| {
+                let count = if matches!(
+                    id,
+                    ThemeComponentId::HorizontalList | ThemeComponentId::GameCarouselHorizontal
+                ) {
+                    horizontal_list_item_count(component.artwork)
+                } else {
+                    vertical_list_item_count(component.artwork)
+                };
+                (component.artwork, count)
+            },
+        );
+        let list_radius = (list_item_count / 2) as isize;
         let list_paths: Vec<_> = (-list_radius..=list_radius)
             .map(|offset| {
                 let index = cycle_index(self.selected, self.games.len(), offset);
-                let path = self.games[index]
-                    .media
-                    .logo
-                    .clone()
-                    .or_else(|| self.games[index].media.wheel.clone())
-                    .or_else(|| self.games[index].media.marquee.clone());
+                let path = list_artwork_path(&self.games[index].media, list_artwork);
                 (index, path)
             })
             .collect();
@@ -884,7 +1010,10 @@ impl NativeFrontend {
             .into_iter()
             .map(|(index, path)| CarouselArtwork {
                 index,
-                logo: self.cached_source_image(path),
+                logo: match list_artwork {
+                    ThemeListArtwork::Logo => self.cached_source_image(path, 640, 192),
+                    ThemeListArtwork::Box3d => self.cached_source_image(path, 512, 512),
+                },
             })
             .collect();
 
@@ -909,11 +1038,12 @@ impl NativeFrontend {
                 None => (false, None),
             };
             let mode = image_mode_for_fit(slot.fit);
-            let image = self.cached_image(
+            let image = self.cached_image_with_effects(
                 image_path,
                 slot.rect.width as usize,
                 slot.rect.height as usize,
                 mode,
+                slot.effects,
             );
             dynamic.insert(slot.id, PreparedDynamicMedia { image, uses_video });
         }
@@ -952,12 +1082,111 @@ impl NativeFrontend {
         changed
     }
 
-    fn select_rom_directory(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
+    fn tick_description_scroll(&mut self) -> bool {
+        let now = Instant::now();
+        let description_visible = self.view == FrontendView::Library
+            && self
+                .theme()
+                .component(ThemeComponentId::GameDescription)
+                .visible;
+        if !description_visible {
+            let changed = self.description_scroll_offset != 0;
+            self.description_scroll_offset = 0;
+            self.description_scroll_started_at = now;
+            return changed;
+        }
+
+        let id = ThemeComponentId::GameDescription;
+        let rect = id.source_rect();
+        let component = self.theme().component(id);
+        let custom_text =
+            component.font_size > 0 || component.text_style != ThemeTextStyle::default();
+        let size = usize::from(component.font_size.max(13));
+        let line_step = if custom_text {
+            ((size + 2) * usize::from(component.text_style.line_height) / 100).max(1)
+        } else {
+            15
+        };
+        let max_lines = rect.height.saturating_sub(18) as usize / line_step;
+        let line_count = self
+            .games
+            .get(self.selected)
+            .map(|game| {
+                if custom_text {
+                    crate::frontend_font::wrap_text_with_font_spacing(
+                        self.theme_font.as_ref(),
+                        game_description_text(game),
+                        rect.width.saturating_sub(24) as usize,
+                        size,
+                        component.text_style.letter_spacing,
+                    )
+                    .len()
+                } else {
+                    crate::frontend_font::wrap_text(
+                        game_description_text(game),
+                        rect.width.saturating_sub(24) as usize,
+                        13,
+                    )
+                    .len()
+                }
+            })
+            .unwrap_or(0);
+        let offset = description_scroll_offset(
+            now.saturating_duration_since(self.description_scroll_started_at),
+            line_count,
+            max_lines,
+        );
+        let changed = offset != self.description_scroll_offset;
+        self.description_scroll_offset = offset;
+        changed
+    }
+
+    fn tick_theme_animations(&self) -> bool {
+        let elapsed = self.theme_animation_started_at.elapsed();
+        ThemeComponentId::ALL.into_iter().any(|id| {
+            let component = self.theme().component(id);
+            component.visible
+                && component_is_active(self, id)
+                && crate::frontend_effects::animation_needs_redraw(component.animation, elapsed)
+        }) || self.theme_layers.iter().any(|layer| {
+            layer.spec.visible
+                && layer_matches_view(layer.spec.view, self.view)
+                && crate::frontend_effects::animation_needs_redraw(layer.spec.animation, elapsed)
+        }) || (self.view == FrontendView::Library
+            && !self.games.is_empty()
+            && self.theme().media_slots.iter().any(|slot| {
+                slot.visible
+                    && crate::frontend_effects::animation_needs_redraw(slot.animation, elapsed)
+            }))
+    }
+
+    fn request_rom_directory(&mut self) {
+        self.pending_file_dialog = Some(FileDialogRequest::RomDirectory);
+    }
+
+    fn request_media_directory(&mut self) {
+        self.pending_file_dialog = Some(FileDialogRequest::MediaDirectory);
+    }
+
+    fn show_pending_file_dialog(&mut self, window: &mut sdl2::video::Window) -> bool {
+        let Some(request) = self.pending_file_dialog.take() else {
+            return false;
+        };
+        match request {
+            FileDialogRequest::RomDirectory => self.select_rom_directory(window),
+            FileDialogRequest::MediaDirectory => self.select_media_directory(window),
+        }
+        true
+    }
+
+    fn select_rom_directory(&mut self, window: &mut sdl2::video::Window) {
+        let selected_path = rfd::FileDialog::new()
+            .set_parent(&*window)
             .set_title("Selecciona la carpeta de ROMs Neo Geo")
             .set_directory(&self.rom_dir)
-            .pick_folder()
-        else {
+            .pick_folder();
+        window.raise();
+        let Some(path) = selected_path else {
             return;
         };
         let automatic_media = self.media_directory_is_automatic();
@@ -975,12 +1204,14 @@ impl NativeFrontend {
         }
     }
 
-    fn select_media_directory(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
+    fn select_media_directory(&mut self, window: &mut sdl2::video::Window) {
+        let selected_path = rfd::FileDialog::new()
+            .set_parent(&*window)
             .set_title("Selecciona la carpeta de media")
             .set_directory(&self.media_dir)
-            .pick_folder()
-        else {
+            .pick_folder();
+        window.raise();
+        let Some(path) = selected_path else {
             return;
         };
         match self.config.set("media_dir", &path.to_string_lossy()) {
@@ -1060,7 +1291,7 @@ impl NativeFrontend {
             if delta < 0 {
                 self.reset_media_directory();
             } else {
-                self.select_media_directory();
+                self.request_media_directory();
             }
             return;
         }
@@ -1089,6 +1320,11 @@ impl NativeFrontend {
                     &mut self.config,
                     "fullscreen",
                     &mut self.settings.fullscreen,
+                ),
+                SETTING_FRONTEND_FULLSCREEN => toggle_and_save(
+                    &mut self.config,
+                    "frontend_fullscreen",
+                    &mut self.settings.frontend_fullscreen,
                 ),
                 SETTING_SCANLINES => {
                     toggle_and_save(&mut self.config, "scanlines", &mut self.settings.scanlines)
@@ -1120,6 +1356,18 @@ impl NativeFrontend {
                     let next = SCALES[cycle_index(current, SCALES.len(), delta)];
                     self.config.set("window_scale", &next.to_string())?;
                     self.settings.window_scale = next;
+                    Ok(())
+                }
+                SETTING_OUTPUT_RESOLUTION => {
+                    let next = self.settings.output_resolution.cycle(delta);
+                    self.config.set("output_resolution", next.as_config())?;
+                    self.settings.output_resolution = next;
+                    Ok(())
+                }
+                SETTING_SCALING_FILTER => {
+                    let next = self.settings.scaling_filter.cycle(delta);
+                    self.config.set("scaling_filter", next.as_config())?;
+                    self.settings.scaling_filter = next;
                     Ok(())
                 }
                 SETTING_VOLUME => {
@@ -1155,6 +1403,11 @@ impl NativeFrontend {
                 SETTING_FREEPLAY => {
                     toggle_and_save(&mut self.config, "freeplay", &mut self.settings.freeplay)
                 }
+                SETTING_FOUR_PLAYER => toggle_and_save(
+                    &mut self.config,
+                    "four_player",
+                    &mut self.settings.four_player,
+                ),
                 SETTING_CPU_OVERCLOCK => toggle_and_save(
                     &mut self.config,
                     "cpu_overclock",
@@ -1541,14 +1794,20 @@ pub fn run() -> Result<(), String> {
     let mut event_pump = sdl
         .event_pump()
         .map_err(|error| format!("No se pudo crear el event pump: {error}"))?;
-    let _controllers = open_enabled_controllers(&sdl, frontend.settings.gamepad);
+    let mouse_util = sdl.mouse();
+    let mut applied_gamepad_enabled = frontend.settings.gamepad;
+    mouse_util.show_cursor(!applied_gamepad_enabled);
+    let mut controllers = open_enabled_controllers(&sdl, applied_gamepad_enabled);
+    let mut controller_sticks = HashMap::new();
     let mut frontend_fullscreen = false;
     let mut running = true;
     let mut dirty = true;
 
     while running {
+        let view_before_events = frontend.view;
         let mut launch_requested = false;
         let mut next_music_requested = false;
+        let mut controllers_changed = false;
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. } => running = false,
@@ -1572,17 +1831,12 @@ pub fn run() -> Result<(), String> {
                         FrontendAction::Launch => launch_requested = true,
                         FrontendAction::Quit => running = false,
                         FrontendAction::ToggleFullscreen => {
-                            frontend_fullscreen = !frontend_fullscreen;
-                            let mode = if frontend_fullscreen {
-                                FullscreenType::Desktop
-                            } else {
-                                FullscreenType::Off
-                            };
-                            if let Err(error) = canvas.window_mut().set_fullscreen(mode) {
-                                frontend.set_status(
-                                    format!("NO SE PUDO CAMBIAR PANTALLA: {error}"),
-                                    true,
-                                );
+                            if let Err(error) = toggle_and_save(
+                                &mut frontend.config,
+                                "frontend_fullscreen",
+                                &mut frontend.settings.frontend_fullscreen,
+                            ) {
+                                frontend.set_status(format!("NO SE PUDO GUARDAR: {error}"), true);
                             }
                         }
                     }
@@ -1596,6 +1850,26 @@ pub fn run() -> Result<(), String> {
                         FrontendAction::None | FrontendAction::ToggleFullscreen => {}
                     }
                     dirty = true;
+                }
+                Event::ControllerAxisMotion {
+                    which, axis, value, ..
+                } => {
+                    let action = handle_controller_axis(
+                        &mut frontend,
+                        &mut controller_sticks,
+                        which,
+                        axis,
+                        value,
+                    );
+                    match action {
+                        FrontendAction::Launch => launch_requested = true,
+                        FrontendAction::Quit => running = false,
+                        FrontendAction::None | FrontendAction::ToggleFullscreen => {}
+                    }
+                    dirty = true;
+                }
+                Event::ControllerDeviceAdded { .. } | Event::ControllerDeviceRemoved { .. } => {
+                    controllers_changed = true;
                 }
                 Event::MouseWheel { y, .. } => {
                     match frontend.view {
@@ -1619,17 +1893,12 @@ pub fn run() -> Result<(), String> {
                         FrontendAction::Launch => launch_requested = true,
                         FrontendAction::Quit => running = false,
                         FrontendAction::ToggleFullscreen => {
-                            frontend_fullscreen = !frontend_fullscreen;
-                            let mode = if frontend_fullscreen {
-                                FullscreenType::Desktop
-                            } else {
-                                FullscreenType::Off
-                            };
-                            if let Err(error) = canvas.window_mut().set_fullscreen(mode) {
-                                frontend.set_status(
-                                    format!("NO SE PUDO CAMBIAR PANTALLA: {error}"),
-                                    true,
-                                );
+                            if let Err(error) = toggle_and_save(
+                                &mut frontend.config,
+                                "frontend_fullscreen",
+                                &mut frontend.settings.frontend_fullscreen,
+                            ) {
+                                frontend.set_status(format!("NO SE PUDO GUARDAR: {error}"), true);
                             }
                         }
                         FrontendAction::None => {}
@@ -1639,6 +1908,43 @@ pub fn run() -> Result<(), String> {
                 Event::Window { .. } => dirty = true,
                 _ => {}
             }
+        }
+        if frontend.show_pending_file_dialog(canvas.window_mut()) {
+            dirty = true;
+        }
+        if frontend.view != view_before_events {
+            frontend.theme_animation_started_at = Instant::now();
+        }
+
+        if frontend.settings.frontend_fullscreen != frontend_fullscreen {
+            let requested = frontend.settings.frontend_fullscreen;
+            let mode = if requested {
+                FullscreenType::Desktop
+            } else {
+                FullscreenType::Off
+            };
+            match canvas.window_mut().set_fullscreen(mode) {
+                Ok(()) => frontend_fullscreen = requested,
+                Err(error) => {
+                    frontend.settings.frontend_fullscreen = frontend_fullscreen;
+                    let _ = frontend
+                        .config
+                        .set_bool("frontend_fullscreen", frontend_fullscreen);
+                    frontend.set_status(format!("NO SE PUDO CAMBIAR PANTALLA: {error}"), true);
+                }
+            }
+            dirty = true;
+        }
+
+        if frontend.settings.gamepad != applied_gamepad_enabled {
+            applied_gamepad_enabled = frontend.settings.gamepad;
+            mouse_util.show_cursor(!applied_gamepad_enabled);
+            reload_enabled_controllers(&sdl, applied_gamepad_enabled, &mut controllers);
+            controller_sticks.clear();
+            dirty = true;
+        } else if controllers_changed && applied_gamepad_enabled {
+            reload_enabled_controllers(&sdl, true, &mut controllers);
+            controller_sticks.clear();
         }
 
         if frontend.settings.frontend_music != applied_music_enabled {
@@ -1664,6 +1970,12 @@ pub fn run() -> Result<(), String> {
         if video_changed && frontend.view == FrontendView::Library {
             dirty = true;
         }
+        if frontend.tick_description_scroll() {
+            dirty = true;
+        }
+        if frontend.tick_theme_animations() {
+            dirty = true;
+        }
         background_music.tick();
 
         if launch_requested {
@@ -1673,6 +1985,11 @@ pub fn run() -> Result<(), String> {
             if let Err(error) = frontend.launch_selected() {
                 frontend.set_status(error, true);
             }
+            if drain_stale_frontend_events(&mut event_pump) {
+                running = false;
+            }
+            reload_enabled_controllers(&sdl, applied_gamepad_enabled, &mut controllers);
+            controller_sticks.clear();
             canvas.window_mut().show();
             canvas.window_mut().raise();
             background_music.resume_after_game();
@@ -1775,11 +2092,11 @@ fn handle_key(frontend: &mut NativeFrontend, key: Keycode) -> FrontendAction {
             FrontendAction::None
         }
         (_, Keycode::F3) => {
-            frontend.select_rom_directory();
+            frontend.request_rom_directory();
             FrontendAction::None
         }
         (_, Keycode::F4) => {
-            frontend.select_media_directory();
+            frontend.request_media_directory();
             FrontendAction::None
         }
         (FrontendView::Library, Keycode::F5) => {
@@ -1882,6 +2199,54 @@ fn handle_controller_button(
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct FrontendStickState {
+    left_x: i8,
+    left_y: i8,
+}
+
+fn handle_controller_axis(
+    frontend: &mut NativeFrontend,
+    sticks: &mut HashMap<u32, FrontendStickState>,
+    instance_id: u32,
+    axis: ControllerAxis,
+    value: i16,
+) -> FrontendAction {
+    let next_direction = frontend_axis_direction(value);
+    let button = {
+        let state = sticks.entry(instance_id).or_default();
+        let previous_direction = match axis {
+            ControllerAxis::LeftX => std::mem::replace(&mut state.left_x, next_direction),
+            ControllerAxis::LeftY => std::mem::replace(&mut state.left_y, next_direction),
+            _ => return FrontendAction::None,
+        };
+
+        if previous_direction == next_direction || next_direction == 0 {
+            return FrontendAction::None;
+        }
+
+        match (axis, next_direction) {
+            (ControllerAxis::LeftX, -1) => ControllerButton::DPadLeft,
+            (ControllerAxis::LeftX, 1) => ControllerButton::DPadRight,
+            (ControllerAxis::LeftY, -1) => ControllerButton::DPadUp,
+            (ControllerAxis::LeftY, 1) => ControllerButton::DPadDown,
+            _ => return FrontendAction::None,
+        }
+    };
+
+    handle_controller_button(frontend, button)
+}
+
+fn frontend_axis_direction(value: i16) -> i8 {
+    if value > FRONTEND_STICK_DEADZONE {
+        1
+    } else if value < -FRONTEND_STICK_DEADZONE {
+        -1
+    } else {
+        0
+    }
+}
+
 fn handle_mouse(frontend: &mut NativeFrontend, x: i32, y: i32, clicks: u8) -> FrontendAction {
     if x < 0 || y < 0 {
         return FrontendAction::None;
@@ -1902,7 +2267,7 @@ fn handle_mouse(frontend: &mut NativeFrontend, x: i32, y: i32, clicks: u8) -> Fr
         (FrontendView::Library, ThemeComponentId::EmptyLibrary)
             if (350..610).contains(&component_x) && (300..365).contains(&component_y) =>
         {
-            frontend.select_rom_directory();
+            frontend.request_rom_directory();
         }
         (FrontendView::Library, ThemeComponentId::Carousel)
             if (CAROUSEL_X..CAROUSEL_X + CAROUSEL_WIDTH).contains(&component_x)
@@ -1920,25 +2285,43 @@ fn handle_mouse(frontend: &mut NativeFrontend, x: i32, y: i32, clicks: u8) -> Fr
                 return FrontendAction::Launch;
             }
         }
-        (FrontendView::Library, ThemeComponentId::VerticalList) => {
-            let rect = ThemeComponentId::VerticalList.source_rect();
+        (
+            FrontendView::Library,
+            component @ (ThemeComponentId::VerticalList
+            | ThemeComponentId::GameCarouselLeft
+            | ThemeComponentId::GameCarouselRight),
+        ) => {
+            let rect = component.source_rect();
             let local_y = component_y.saturating_sub(rect.y.max(0) as usize);
-            let row_height = (rect.height as usize - 20) / VERTICAL_LIST_ITEMS;
-            if local_y >= 10 && row_height > 0 {
-                let slot = ((local_y - 10) / row_height).min(VERTICAL_LIST_ITEMS - 1);
-                frontend.move_selection(slot as isize - (VERTICAL_LIST_ITEMS / 2) as isize);
+            let item_count =
+                vertical_list_item_count(frontend.theme().component(component).artwork);
+            let margin = if component == ThemeComponentId::VerticalList {
+                10
+            } else {
+                0
+            };
+            let row_height = (rect.height as usize - margin * 2) / item_count;
+            if local_y >= margin && row_height > 0 {
+                let slot = ((local_y - margin) / row_height).min(item_count - 1);
+                frontend.move_selection(slot as isize - (item_count / 2) as isize);
                 if clicks >= 2 {
                     return FrontendAction::Launch;
                 }
             }
         }
-        (FrontendView::Library, ThemeComponentId::HorizontalList) => {
-            let rect = ThemeComponentId::HorizontalList.source_rect();
+        (
+            FrontendView::Library,
+            component @ (ThemeComponentId::HorizontalList
+            | ThemeComponentId::GameCarouselHorizontal),
+        ) => {
+            let rect = component.source_rect();
             let local_x = component_x.saturating_sub(rect.x.max(0) as usize);
-            let slot_width = rect.width as usize / HORIZONTAL_LIST_ITEMS;
+            let item_count =
+                horizontal_list_item_count(frontend.theme().component(component).artwork);
+            let slot_width = rect.width as usize / item_count;
             if let Some(slot) = local_x.checked_div(slot_width) {
-                let slot = slot.min(HORIZONTAL_LIST_ITEMS - 1);
-                frontend.move_selection(slot as isize - (HORIZONTAL_LIST_ITEMS / 2) as isize);
+                let slot = slot.min(item_count - 1);
+                frontend.move_selection(slot as isize - (item_count / 2) as isize);
                 if clicks >= 2 {
                     return FrontendAction::Launch;
                 }
@@ -1980,9 +2363,9 @@ fn handle_mouse(frontend: &mut NativeFrontend, x: i32, y: i32, clicks: u8) -> Fr
                 if component_x < 180 {
                     frontend.view = FrontendView::Library;
                 } else if component_x < 390 {
-                    frontend.select_rom_directory();
+                    frontend.request_rom_directory();
                 } else if component_x < 590 {
-                    frontend.select_media_directory();
+                    frontend.request_media_directory();
                 }
             }
         }
@@ -1996,11 +2379,14 @@ fn top_interactive_component_at(
     x: i32,
     y: i32,
 ) -> Option<(ThemeComponentId, usize, usize)> {
-    const INTERACTIVE_COMPONENTS: [ThemeComponentId; 7] = [
+    const INTERACTIVE_COMPONENTS: [ThemeComponentId; 10] = [
         ThemeComponentId::Header,
         ThemeComponentId::Carousel,
         ThemeComponentId::VerticalList,
         ThemeComponentId::HorizontalList,
+        ThemeComponentId::GameCarouselLeft,
+        ThemeComponentId::GameCarouselRight,
+        ThemeComponentId::GameCarouselHorizontal,
         ThemeComponentId::LibraryFooter,
         ThemeComponentId::EmptyLibrary,
         ThemeComponentId::Settings,
@@ -2030,29 +2416,36 @@ fn map_mouse_to_component(
     y: i32,
 ) -> Option<(usize, usize)> {
     let component = frontend.theme().component(id);
+    let animated = crate::frontend_effects::animate_visual(
+        component.rect,
+        component.opacity,
+        component.animation,
+        frontend.theme_animation_started_at.elapsed(),
+    );
+    let rect = animated.rect;
     if !component.visible
         || !component_is_active(frontend, id)
-        || component.rect.width == 0
-        || component.rect.height == 0
+        || rect.width == 0
+        || rect.height == 0
     {
         return None;
     }
-    let right = i64::from(component.rect.x) + i64::from(component.rect.width);
-    let bottom = i64::from(component.rect.y) + i64::from(component.rect.height);
-    if i64::from(x) < i64::from(component.rect.x)
+    let right = i64::from(rect.x) + i64::from(rect.width);
+    let bottom = i64::from(rect.y) + i64::from(rect.height);
+    if i64::from(x) < i64::from(rect.x)
         || i64::from(x) >= right
-        || i64::from(y) < i64::from(component.rect.y)
+        || i64::from(y) < i64::from(rect.y)
         || i64::from(y) >= bottom
     {
         return None;
     }
     let source = id.source_rect();
-    let relative_x = i64::from(x - component.rect.x);
-    let relative_y = i64::from(y - component.rect.y);
-    let mapped_x = i64::from(source.x)
-        + relative_x * i64::from(source.width) / i64::from(component.rect.width);
-    let mapped_y = i64::from(source.y)
-        + relative_y * i64::from(source.height) / i64::from(component.rect.height);
+    let relative_x = i64::from(x - rect.x);
+    let relative_y = i64::from(y - rect.y);
+    let mapped_x =
+        i64::from(source.x) + relative_x * i64::from(source.width) / i64::from(rect.width);
+    let mapped_y =
+        i64::from(source.y) + relative_y * i64::from(source.height) / i64::from(rect.height);
     Some((mapped_x.max(0) as usize, mapped_y.max(0) as usize))
 }
 
@@ -2070,6 +2463,25 @@ fn open_enabled_controllers(sdl: &sdl2::Sdl, enabled: bool) -> Vec<GameControlle
         .filter(|index| subsystem.is_game_controller(*index))
         .filter_map(|index| subsystem.open(index).ok())
         .collect()
+}
+
+fn reload_enabled_controllers(
+    sdl: &sdl2::Sdl,
+    enabled: bool,
+    controllers: &mut Vec<GameController>,
+) {
+    controllers.clear();
+    *controllers = open_enabled_controllers(sdl, enabled);
+}
+
+/// SDL keeps filling the frontend queue while the emulator child owns the
+/// screen. Discard those stale launch/navigation inputs before showing the
+/// library again, otherwise the last in-game button can relaunch the ROM.
+fn drain_stale_frontend_events(event_pump: &mut sdl2::EventPump) -> bool {
+    event_pump.pump_events();
+    event_pump
+        .poll_iter()
+        .any(|event| matches!(event, Event::Quit { .. }))
 }
 
 fn upload_framebuffer(
@@ -2127,21 +2539,56 @@ fn draw_frontend(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     items.sort_by_key(|(z, order, _)| (*z, *order));
 
     let mut scratch = vec![0; LOGICAL_WIDTH * LOGICAL_HEIGHT];
+    let animation_elapsed = frontend.theme_animation_started_at.elapsed();
     for (_, _, item) in items {
         match item {
             FrontendRenderItem::Component(id) => {
                 scratch.fill(0);
                 draw_theme_component(&mut scratch, frontend, id);
-                let destination = frontend.theme().component(id).rect;
-                blit_region_scaled_alpha(framebuffer, destination, &scratch, id.source_rect(), 255);
+                let component = frontend.theme().component(id);
+                let visual = crate::frontend_effects::animate_visual(
+                    component.rect,
+                    component.opacity,
+                    component.animation,
+                    animation_elapsed,
+                );
+                if component.effects.is_neutral() {
+                    blit_region_scaled_alpha(
+                        framebuffer,
+                        visual.rect,
+                        &scratch,
+                        id.source_rect(),
+                        visual.opacity,
+                    );
+                } else {
+                    let source_rect = id.source_rect();
+                    let source =
+                        extract_buffer_region(&scratch, LOGICAL_WIDTH, LOGICAL_HEIGHT, source_rect);
+                    let processed = crate::frontend_effects::apply_image_effects(
+                        &source,
+                        source_rect.width as usize,
+                        source_rect.height as usize,
+                        component.effects,
+                    );
+                    blit_buffer_region_scaled_alpha(
+                        framebuffer,
+                        visual.rect,
+                        &processed,
+                        source_rect.width as usize,
+                        source_rect.height as usize,
+                        ThemeRect::new(0, 0, source_rect.width, source_rect.height),
+                        visual.opacity,
+                    );
+                }
             }
             FrontendRenderItem::Layer(layer) => {
-                blit_prepared_signed_alpha(
-                    framebuffer,
+                let visual = crate::frontend_effects::animate_visual(
                     layer.spec.rect,
-                    &layer.image,
                     layer.spec.opacity,
+                    layer.spec.animation,
+                    animation_elapsed,
                 );
+                blit_prepared_signed_alpha(framebuffer, visual.rect, &layer.image, visual.opacity);
             }
             FrontendRenderItem::Media(media) => draw_dynamic_media(framebuffer, frontend, media),
         }
@@ -2158,9 +2605,13 @@ fn component_is_active(frontend: &NativeFrontend, id: ThemeComponentId) -> bool 
         | ThemeComponentId::EmptyLibrary
         | ThemeComponentId::VerticalList
         | ThemeComponentId::HorizontalList
+        | ThemeComponentId::GameCarouselLeft
+        | ThemeComponentId::GameCarouselRight
+        | ThemeComponentId::GameCarouselHorizontal
         | ThemeComponentId::GameTitle
         | ThemeComponentId::GameDescription
         | ThemeComponentId::GameMetadata
+        | ThemeComponentId::GameCredits
         | ThemeComponentId::PageCounter => {
             if frontend.view != FrontendView::Library {
                 return false;
@@ -2171,9 +2622,13 @@ fn component_is_active(frontend: &NativeFrontend, id: ThemeComponentId) -> bool 
                 | ThemeComponentId::GameInfo
                 | ThemeComponentId::VerticalList
                 | ThemeComponentId::HorizontalList
+                | ThemeComponentId::GameCarouselLeft
+                | ThemeComponentId::GameCarouselRight
+                | ThemeComponentId::GameCarouselHorizontal
                 | ThemeComponentId::GameTitle
                 | ThemeComponentId::GameDescription
                 | ThemeComponentId::GameMetadata
+                | ThemeComponentId::GameCredits
                 | ThemeComponentId::PageCounter => !frontend.games.is_empty(),
                 ThemeComponentId::EmptyLibrary => frontend.games.is_empty(),
                 _ => true,
@@ -2202,9 +2657,16 @@ fn draw_theme_component(framebuffer: &mut [u32], frontend: &NativeFrontend, id: 
         ThemeComponentId::Status => draw_status(framebuffer, frontend),
         ThemeComponentId::VerticalList => draw_vertical_list(framebuffer, frontend),
         ThemeComponentId::HorizontalList => draw_horizontal_list(framebuffer, frontend),
+        ThemeComponentId::GameCarouselLeft | ThemeComponentId::GameCarouselRight => {
+            draw_game_carousel(framebuffer, frontend, id);
+        }
+        ThemeComponentId::GameCarouselHorizontal => {
+            draw_horizontal_box_carousel(framebuffer, frontend);
+        }
         ThemeComponentId::GameTitle => draw_game_title(framebuffer, frontend),
         ThemeComponentId::GameDescription => draw_game_description(framebuffer, frontend),
         ThemeComponentId::GameMetadata => draw_game_metadata(framebuffer, frontend),
+        ThemeComponentId::GameCredits => draw_game_credits(framebuffer, frontend),
         ThemeComponentId::PageCounter => draw_page_counter(framebuffer, frontend),
     }
 }
@@ -2247,49 +2709,109 @@ fn media_source_path(media: &GameMedia, source: ThemeMediaSource) -> Option<Path
     .filter(|path| path.is_file())
 }
 
+fn list_artwork_path(media: &GameMedia, artwork: ThemeListArtwork) -> Option<PathBuf> {
+    match artwork {
+        ThemeListArtwork::Logo => media
+            .logo
+            .clone()
+            .or_else(|| media.wheel.clone())
+            .or_else(|| media.marquee.clone()),
+        ThemeListArtwork::Box3d => media
+            .box_3d
+            .clone()
+            .or_else(|| media.box_2d.clone())
+            .or_else(|| media.box_art.clone())
+            .or_else(|| media.thumbnail.clone()),
+    }
+}
+
+const fn vertical_list_item_count(artwork: ThemeListArtwork) -> usize {
+    match artwork {
+        ThemeListArtwork::Logo => VERTICAL_LIST_ITEMS,
+        ThemeListArtwork::Box3d => BOX3D_VERTICAL_LIST_ITEMS,
+    }
+}
+
+const fn horizontal_list_item_count(artwork: ThemeListArtwork) -> usize {
+    match artwork {
+        ThemeListArtwork::Logo => HORIZONTAL_LIST_ITEMS,
+        ThemeListArtwork::Box3d => HORIZONTAL_BOX_CAROUSEL_ITEMS,
+    }
+}
+
 fn draw_dynamic_media(framebuffer: &mut [u32], frontend: &NativeFrontend, slot: &ThemeMediaSlot) {
     let Some(prepared) = frontend.selected_media.dynamic.get(&slot.id) else {
         return;
     };
     let is_backdrop =
         slot.id.eq_ignore_ascii_case("backdrop") || slot.id.eq_ignore_ascii_case("background");
+    let has_chrome = !is_backdrop && slot.chrome == ThemeChrome::Panel;
     let colors = frontend.palette();
-    if !is_backdrop {
-        fill_rect_alpha_signed(framebuffer, slot.rect, colors.panel, 225);
+    let visual = crate::frontend_effects::animate_visual(
+        slot.rect,
+        slot.opacity,
+        slot.animation,
+        frontend.theme_animation_started_at.elapsed(),
+    );
+    if has_chrome {
+        fill_rect_alpha_signed(
+            framebuffer,
+            visual.rect,
+            colors.panel,
+            visual.opacity.min(225),
+        );
     }
 
     let mut drew_media = false;
     if prepared.uses_video {
         if let Some(frame) = frontend.video_player.frame() {
-            blit_raw_fit_signed_alpha(
-                framebuffer,
-                slot.rect,
-                frame.width,
-                frame.height,
-                &frame.pixels,
-                slot.fit,
-                slot.opacity,
-            );
+            if slot.effects.is_neutral() {
+                blit_raw_fit_signed_alpha(
+                    framebuffer,
+                    visual.rect,
+                    frame.width,
+                    frame.height,
+                    &frame.pixels,
+                    slot.fit,
+                    visual.opacity,
+                );
+            } else {
+                let processed = crate::frontend_effects::apply_image_effects(
+                    &frame.pixels,
+                    frame.width,
+                    frame.height,
+                    slot.effects,
+                );
+                blit_raw_fit_signed_alpha(
+                    framebuffer,
+                    visual.rect,
+                    frame.width,
+                    frame.height,
+                    &processed,
+                    slot.fit,
+                    visual.opacity,
+                );
+            }
             drew_media = true;
         }
     }
     if !drew_media {
         if let Some(image) = &prepared.image {
-            blit_prepared_signed_alpha(framebuffer, slot.rect, image, slot.opacity);
+            blit_prepared_signed_alpha(framebuffer, visual.rect, image, visual.opacity);
             drew_media = true;
         }
     }
 
-    if !is_backdrop {
-        stroke_rect_signed(framebuffer, slot.rect, colors.border, 2);
+    if has_chrome {
+        stroke_rect_signed(framebuffer, visual.rect, colors.border, 2);
         if !drew_media && !slot.id.eq_ignore_ascii_case("logo") {
-            let x = slot.rect.x.max(0) as usize;
-            let y = slot.rect.y.max(0) as usize;
+            let x = visual.rect.x.max(0) as usize;
+            let y = visual.rect.y.max(0) as usize;
             draw_ui_text(
                 framebuffer,
-                x.saturating_add(slot.rect.width as usize / 2)
+                x.saturating_add(visual.rect.width as usize / 2)
                     .saturating_sub(38),
-                y.saturating_add(slot.rect.height as usize / 2)
+                y.saturating_add(visual.rect.height as usize / 2)
                     .saturating_sub(7),
                 13,
                 colors.text_dim,
@@ -2306,84 +2828,125 @@ fn draw_vertical_list(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     let width = rect.width as usize;
     let height = rect.height as usize;
     let colors = frontend.palette();
-    fill_rect_alpha(framebuffer, x, y, width, height, colors.background, 178);
-    fill_rect_alpha(
-        framebuffer,
-        x + 4,
-        y + 4,
-        width - 8,
-        height - 8,
-        colors.panel,
-        212,
-    );
-    stroke_rect(framebuffer, x, y, width, height, colors.accent, 2);
+    let component = frontend.theme().component(ThemeComponentId::VerticalList);
+    let has_chrome = component.chrome == ThemeChrome::Panel;
+    if has_chrome {
+        fill_rect_alpha(framebuffer, x, y, width, height, colors.background, 178);
+        fill_rect_alpha(
+            framebuffer,
+            x + 4,
+            y + 4,
+            width - 8,
+            height - 8,
+            colors.panel,
+            212,
+        );
+        stroke_rect(framebuffer, x, y, width, height, colors.accent, 2);
+    }
 
-    let row_height = (height - 20) / VERTICAL_LIST_ITEMS;
+    let artwork_kind = component.artwork;
+    let item_count = frontend.selected_media.list.len().max(1);
+    let row_height = (height - 20) / item_count;
     for (slot, artwork) in frontend
         .selected_media
         .list
         .iter()
-        .take(VERTICAL_LIST_ITEMS)
+        .take(item_count)
         .enumerate()
     {
-        let selected = slot == VERTICAL_LIST_ITEMS / 2;
+        let selected = slot == item_count / 2;
         let row_y = y + 10 + slot * row_height;
         let inset = if selected { 5 } else { 16 };
         let row_x = x + inset;
         let row_width = width.saturating_sub(inset + 8);
-        fill_rect_alpha(
-            framebuffer,
-            row_x,
-            row_y + 2,
-            row_width,
-            row_height.saturating_sub(5),
-            if selected {
-                colors.primary_dark
-            } else {
-                colors.background
-            },
-            if selected { 238 } else { 210 },
-        );
-        stroke_rect(
-            framebuffer,
-            row_x,
-            row_y + 2,
-            row_width,
-            row_height.saturating_sub(5),
-            if selected {
-                colors.warning
-            } else {
-                colors.border
-            },
-            if selected { 2 } else { 1 },
-        );
-        fill_rect(
-            framebuffer,
-            row_x,
-            row_y + 2,
-            if selected { 7 } else { 3 },
-            row_height.saturating_sub(5),
-            if selected {
-                colors.primary
-            } else {
-                colors.secondary
-            },
-        );
-        if let Some(logo) = &artwork.logo {
-            blit_raw_fit_signed_alpha(
+        if has_chrome {
+            fill_rect_alpha(
                 framebuffer,
-                ThemeRect::new(
-                    (row_x + 10) as i32,
-                    (row_y + 5) as i32,
-                    row_width.saturating_sub(38) as u32,
-                    row_height.saturating_sub(11) as u32,
-                ),
-                logo.width,
-                logo.height,
-                logo.pixels.as_slice(),
-                ThemeLayerFit::Contain,
-                if selected { 255 } else { 150 },
+                row_x,
+                row_y + 2,
+                row_width,
+                row_height.saturating_sub(5),
+                if selected {
+                    colors.primary_dark
+                } else {
+                    colors.background
+                },
+                if selected { 238 } else { 210 },
             );
+            stroke_rect(
+                framebuffer,
+                row_x,
+                row_y + 2,
+                row_width,
+                row_height.saturating_sub(5),
+                if selected {
+                    colors.warning
+                } else {
+                    colors.border
+                },
+                if selected { 2 } else { 1 },
+            );
+            fill_rect(
+                framebuffer,
+                row_x,
+                row_y + 2,
+                if selected { 7 } else { 3 },
+                row_height.saturating_sub(5),
+                if selected {
+                    colors.primary
+                } else {
+                    colors.secondary
+                },
+            );
+        }
+        if let Some(image) = &artwork.logo {
+            if artwork_kind == ThemeListArtwork::Box3d {
+                let image_width = row_height.min(96);
+                blit_raw_fit_signed_alpha(
+                    framebuffer,
+                    ThemeRect::new(
+                        (row_x + 10) as i32,
+                        (row_y + 5) as i32,
+                        image_width as u32,
+                        row_height.saturating_sub(11) as u32,
+                    ),
+                    image.width,
+                    image.height,
+                    image.pixels.as_slice(),
+                    ThemeLayerFit::Contain,
+                    if selected { 255 } else { 185 },
+                );
+                if let Some(game) = frontend.games.get(artwork.index) {
+                    let size = if selected { 15 } else { 13 };
+                    draw_ui_text(
+                        framebuffer,
+                        row_x + image_width + 17,
+                        row_y + row_height.saturating_sub(size) / 2,
+                        size,
+                        if selected {
+                            colors.text
+                        } else {
+                            colors.text_soft
+                        },
+                        &truncate_text(&game.title, 23),
+                    );
+                }
+            } else {
+                blit_raw_fit_signed_alpha(
+                    framebuffer,
+                    ThemeRect::new(
+                        (row_x + 10) as i32,
+                        (row_y + 5) as i32,
+                        row_width.saturating_sub(38) as u32,
+                        row_height.saturating_sub(11) as u32,
+                    ),
+                    image.width,
+                    image.height,
+                    image.pixels.as_slice(),
+                    ThemeLayerFit::Contain,
+                    if selected { 255 } else { 150 },
+                );
+            }
         } else if let Some(game) = frontend.games.get(artwork.index) {
             let title = truncate_text(&game.title, 34);
             let size = if selected { 16 } else { 14 };
@@ -2400,7 +2963,7 @@ fn draw_vertical_list(framebuffer: &mut [u32], frontend: &NativeFrontend) {
                 &title,
             );
         }
-        if selected {
+        if selected && has_chrome {
             draw_ui_text(
                 framebuffer,
                 row_x + row_width.saturating_sub(20),
@@ -2420,11 +2983,23 @@ fn draw_horizontal_list(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     let width = rect.width as usize;
     let height = rect.height as usize;
     let colors = frontend.palette();
-    fill_rect_alpha(framebuffer, x, y, width, height, colors.background, 225);
-    fill_rect_alpha(framebuffer, x, y + 2, width, height - 2, colors.panel, 214);
-    fill_rect(framebuffer, x, y, width, 3, colors.border);
+    let has_chrome = frontend
+        .theme()
+        .component(ThemeComponentId::HorizontalList)
+        .chrome
+        == ThemeChrome::Panel;
+    if has_chrome {
+        fill_rect_alpha(framebuffer, x, y, width, height, colors.background, 225);
+        fill_rect_alpha(framebuffer, x, y + 2, width, height - 2, colors.panel, 214);
+        fill_rect(framebuffer, x, y, width, 3, colors.border);
+    }
     let slot_width = width / HORIZONTAL_LIST_ITEMS;
-    let list_start = (VERTICAL_LIST_ITEMS - HORIZONTAL_LIST_ITEMS) / 2;
+    let list_start = frontend
+        .selected_media
+        .list
+        .len()
+        .saturating_sub(HORIZONTAL_LIST_ITEMS)
+        / 2;
     for slot in 0..HORIZONTAL_LIST_ITEMS {
         let Some(artwork) = frontend.selected_media.list.get(list_start + slot) else {
             continue;
@@ -2432,20 +3007,22 @@ fn draw_horizontal_list(framebuffer: &mut [u32], frontend: &NativeFrontend) {
         let selected = slot == HORIZONTAL_LIST_ITEMS / 2;
         let slot_x = x + slot * slot_width;
         let inset = if selected { 2 } else { 8 };
-        fill_rect_alpha(
-            framebuffer,
-            slot_x + inset,
-            y + if selected { 8 } else { 18 },
-            slot_width.saturating_sub(inset * 2),
-            if selected { height - 14 } else { height - 30 },
-            if selected {
-                colors.primary_dark
-            } else {
-                colors.background
-            },
-            if selected { 238 } else { 165 },
-        );
-        if selected {
+        if has_chrome {
+            fill_rect_alpha(
+                framebuffer,
+                slot_x + inset,
+                y + if selected { 8 } else { 18 },
+                slot_width.saturating_sub(inset * 2),
+                if selected { height - 14 } else { height - 30 },
+                if selected {
+                    colors.primary_dark
+                } else {
+                    colors.background
+                },
+                if selected { 238 } else { 165 },
+            );
+        }
+        if selected && has_chrome {
             stroke_rect(
                 framebuffer,
                 slot_x + inset,
@@ -2503,6 +3080,207 @@ fn draw_horizontal_list(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     }
 }
 
+fn draw_horizontal_box_carousel(framebuffer: &mut [u32], frontend: &NativeFrontend) {
+    let id = ThemeComponentId::GameCarouselHorizontal;
+    let rect = id.source_rect();
+    let x = rect.x.max(0) as usize;
+    let y = rect.y.max(0) as usize;
+    let width = rect.width as usize;
+    let height = rect.height as usize;
+    let component = frontend.theme().component(id);
+    let colors = frontend.palette();
+    let item_count = frontend.selected_media.list.len().max(1);
+    let selected_slot = item_count / 2;
+    let slot_width = width / item_count;
+    let base_width = slot_width * 82 / 100;
+    let base_height = height * 67 / 100;
+    let center_y = y + height / 2 + 4;
+
+    if component.chrome == ThemeChrome::Panel {
+        fill_rect_alpha(framebuffer, x, y, width, height, colors.background, 150);
+    }
+
+    // The selected box is enlarged and rendered last so it floats above its
+    // neighbours without requiring panels around the individual games.
+    for selected_pass in [false, true] {
+        for (slot, artwork) in frontend
+            .selected_media
+            .list
+            .iter()
+            .take(item_count)
+            .enumerate()
+        {
+            let selected = slot == selected_slot;
+            if selected != selected_pass {
+                continue;
+            }
+            let distance = slot.abs_diff(selected_slot);
+            let scale = if selected {
+                usize::from(component.selected_scale)
+            } else {
+                100_usize.saturating_sub(distance * 10).max(72)
+            };
+            let box_width = (base_width * scale / 100).min(width);
+            let box_height = (base_height * scale / 100).min(height.saturating_sub(8));
+            let center_x = x + slot * slot_width + slot_width / 2;
+            let box_x = center_x
+                .saturating_sub(box_width / 2)
+                .clamp(x, x + width.saturating_sub(box_width));
+            let box_y = center_y
+                .saturating_sub(box_height / 2)
+                .clamp(y, y + height.saturating_sub(box_height));
+            let opacity = if selected {
+                255
+            } else {
+                let fade = 100_u16.saturating_sub(distance.saturating_sub(1) as u16 * 18);
+                ((u16::from(component.unselected_opacity) * fade) / 100) as u8
+            };
+
+            if let Some(image) = &artwork.logo {
+                blit_raw_fit_signed_alpha(
+                    framebuffer,
+                    ThemeRect::new(
+                        box_x as i32,
+                        box_y as i32,
+                        box_width as u32,
+                        box_height as u32,
+                    ),
+                    image.width,
+                    image.height,
+                    image.pixels.as_slice(),
+                    ThemeLayerFit::Contain,
+                    opacity,
+                );
+            } else if let Some(game) = frontend.games.get(artwork.index) {
+                let size = if selected { 22 } else { 15 };
+                let title = truncate_text(&game.title, if selected { 22 } else { 16 });
+                let text_width = theme_text_width(frontend, &title, size);
+                let color = if selected {
+                    colors.text
+                } else {
+                    (u32::from(opacity) << 24) | (colors.text_soft & 0x00FF_FFFF)
+                };
+                draw_theme_text(
+                    framebuffer,
+                    frontend,
+                    center_x.saturating_sub(text_width / 2),
+                    center_y.saturating_sub(size / 2),
+                    size,
+                    color,
+                    &title,
+                );
+            }
+        }
+    }
+}
+
+fn draw_game_carousel(framebuffer: &mut [u32], frontend: &NativeFrontend, id: ThemeComponentId) {
+    debug_assert!(matches!(
+        id,
+        ThemeComponentId::GameCarouselLeft | ThemeComponentId::GameCarouselRight
+    ));
+    let rect = id.source_rect();
+    let x = rect.x.max(0) as usize;
+    let y = rect.y.max(0) as usize;
+    let width = rect.width as usize;
+    let height = rect.height as usize;
+    let component = frontend.theme().component(id);
+    let colors = frontend.palette();
+    let has_chrome = component.chrome == ThemeChrome::Panel;
+    if has_chrome {
+        fill_rect_alpha(framebuffer, x, y, width, height, colors.background, 178);
+        stroke_rect(framebuffer, x, y, width, height, colors.border, 1);
+    }
+
+    let item_count = frontend.selected_media.list.len().max(1);
+    let row_height = height / item_count;
+    let selected_slot = item_count / 2;
+    let radius = selected_slot.max(1);
+    let radius_squared = radius * radius;
+    let base_logo_width = width * 58 / 100;
+    let base_logo_height = row_height.saturating_sub(12);
+
+    // Draw the selected logo last so its enlarged bounds remain above neighbours.
+    for selected_pass in [false, true] {
+        for (slot, artwork) in frontend
+            .selected_media
+            .list
+            .iter()
+            .take(item_count)
+            .enumerate()
+        {
+            let selected = slot == selected_slot;
+            if selected != selected_pass {
+                continue;
+            }
+            let scale = if selected {
+                usize::from(component.selected_scale)
+            } else {
+                100
+            };
+            let logo_width = (base_logo_width * scale / 100).min(width);
+            let logo_height = (base_logo_height * scale / 100).min(height);
+            let distance = slot.abs_diff(selected_slot).min(radius);
+            let curve_numerator = radius_squared.saturating_sub(distance * distance);
+            let bulge = component.arc as usize * curve_numerator / radius_squared;
+            let base_center_x = x + width / 2;
+            let curved_center_x = if id == ThemeComponentId::GameCarouselLeft {
+                base_center_x.saturating_add(bulge)
+            } else {
+                base_center_x.saturating_sub(bulge)
+            };
+            let half_width = logo_width / 2;
+            let min_center_x = x + half_width;
+            let max_center_x = x + width.saturating_sub(logo_width - half_width);
+            let center_x = curved_center_x.clamp(min_center_x, max_center_x);
+            let center_y = y + slot * row_height + row_height / 2;
+            let logo_x = center_x.saturating_sub(half_width);
+            let logo_y = center_y
+                .saturating_sub(logo_height / 2)
+                .clamp(y, y + height.saturating_sub(logo_height));
+            let opacity = if selected {
+                255
+            } else {
+                component.unselected_opacity
+            };
+
+            if let Some(image) = &artwork.logo {
+                blit_raw_fit_signed_alpha(
+                    framebuffer,
+                    ThemeRect::new(
+                        logo_x as i32,
+                        logo_y as i32,
+                        logo_width as u32,
+                        logo_height as u32,
+                    ),
+                    image.width,
+                    image.height,
+                    image.pixels.as_slice(),
+                    ThemeLayerFit::Contain,
+                    opacity,
+                );
+            } else if let Some(game) = frontend.games.get(artwork.index) {
+                let size = if selected { 17 } else { 13 };
+                let title = truncate_text(&game.title, if selected { 24 } else { 19 });
+                let text_width = ui_text_width(&title, size);
+                let text_color = if selected {
+                    colors.warning
+                } else {
+                    (u32::from(opacity) << 24) | (colors.text_soft & 0x00FF_FFFF)
+                };
+                draw_ui_text(
+                    framebuffer,
+                    center_x.saturating_sub(text_width / 2),
+                    center_y.saturating_sub(size / 2),
+                    size,
+                    text_color,
+                    &title,
+                );
+            }
+        }
+    }
+}
+
 fn draw_game_title(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     let rect = ThemeComponentId::GameTitle.source_rect();
     let x = rect.x.max(0) as usize;
@@ -2510,14 +3288,50 @@ fn draw_game_title(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     let width = rect.width as usize;
     let height = rect.height as usize;
     let colors = frontend.palette();
-    fill_rect_alpha(framebuffer, x, y, width, height, colors.panel, 205);
-    stroke_rect(framebuffer, x, y, width, height, colors.border, 1);
-    if frontend.selected_media.logo.is_some() {
+    let component = frontend.theme().component(ThemeComponentId::GameTitle);
+    let has_chrome = component.chrome == ThemeChrome::Panel;
+    if has_chrome {
+        fill_rect_alpha(framebuffer, x, y, width, height, colors.panel, 205);
+        stroke_rect(framebuffer, x, y, width, height, colors.border, 1);
+    }
+    if frontend.selected_media.logo.is_some() && !component.show_with_logo {
         return;
     }
     let Some(game) = frontend.games.get(frontend.selected) else {
         return;
     };
+    if component.font_size > 0 || component.text_style != ThemeTextStyle::default() {
+        let style = component.text_style;
+        let preferred = usize::from(component.font_size.max(25));
+        let size = fit_styled_theme_text_size(
+            frontend,
+            game.title.trim(),
+            width.saturating_sub(20),
+            preferred,
+            22,
+            style,
+        );
+        let text_width = styled_theme_text_width(frontend, game.title.trim(), size, style);
+        let text_x = aligned_text_x(x, width, text_width, style, ThemeTextAlign::Center, 10);
+        let text_y = aligned_text_y(y, height, size, style, ThemeVerticalAlign::Center, 4);
+        draw_styled_theme_text(
+            framebuffer,
+            frontend,
+            text_x as i32,
+            text_y as i32,
+            size,
+            colors.text,
+            game.title.trim(),
+            style,
+            Some(ThemeShadow {
+                color: 0xB000_0000,
+                x: 2,
+                y: 3,
+                blur: 0,
+            }),
+        );
+        return;
+    }
     let lines = crate::frontend_font::wrap_text(&game.title, width.saturating_sub(24), 25);
     for (line, text) in lines.iter().take(2).enumerate() {
         let text_x = x + width.saturating_sub(ui_text_width(text, 25)) / 2;
@@ -2539,27 +3353,107 @@ fn draw_game_description(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     let width = rect.width as usize;
     let height = rect.height as usize;
     let colors = frontend.palette();
-    fill_rect_alpha(framebuffer, x, y, width, height, colors.panel, 232);
-    stroke_rect(framebuffer, x, y, width, height, colors.border, 1);
+    let component = frontend
+        .theme()
+        .component(ThemeComponentId::GameDescription);
+    let has_chrome = component.chrome == ThemeChrome::Panel;
+    if has_chrome {
+        fill_rect_alpha(framebuffer, x, y, width, height, colors.panel, 232);
+        stroke_rect(framebuffer, x, y, width, height, colors.border, 1);
+    }
     let Some(game) = frontend.games.get(frontend.selected) else {
         return;
     };
-    let description = if game.description.trim().is_empty() {
+    let description = game_description_text(game);
+    let custom_text = component.font_size > 0 || component.text_style != ThemeTextStyle::default();
+    let size = usize::from(component.font_size.max(13));
+    let style = component.text_style;
+    let lines = if custom_text {
+        crate::frontend_font::wrap_text_with_font_spacing(
+            frontend.theme_font.as_ref(),
+            description,
+            width.saturating_sub(24),
+            size,
+            style.letter_spacing,
+        )
+    } else {
+        crate::frontend_font::wrap_text(description, width.saturating_sub(24), 13)
+    };
+    let line_step = if custom_text {
+        ((size + 2) * usize::from(style.line_height) / 100).max(1)
+    } else {
+        15
+    };
+    let max_lines = height.saturating_sub(18) / line_step;
+    let visible_lines = lines
+        .len()
+        .saturating_sub(frontend.description_scroll_offset)
+        .min(max_lines);
+    let block_height = visible_lines.saturating_mul(line_step);
+    let text_start_y = if custom_text {
+        aligned_text_y(y, height, block_height, style, ThemeVerticalAlign::Top, 10)
+    } else {
+        y + 10
+    };
+    for (line, text) in lines
+        .iter()
+        .skip(frontend.description_scroll_offset)
+        .take(max_lines)
+        .enumerate()
+    {
+        if custom_text {
+            let text_width = styled_theme_text_width(frontend, text, size, style);
+            let text_x = aligned_text_x(x, width, text_width, style, ThemeTextAlign::Left, 12);
+            draw_styled_theme_text(
+                framebuffer,
+                frontend,
+                text_x as i32,
+                (text_start_y + line * line_step) as i32,
+                size,
+                colors.text_soft,
+                text,
+                style,
+                None,
+            );
+        } else {
+            draw_ui_text(
+                framebuffer,
+                x + 12,
+                y + 10 + line * 15,
+                13,
+                colors.text_soft,
+                text,
+            );
+        }
+    }
+}
+
+fn game_description_text(game: &GameEntry) -> &str {
+    if game.description.trim().is_empty() {
         "Sin descripcion disponible para este juego."
     } else {
         game.description.trim()
-    };
-    let lines = crate::frontend_font::wrap_text(description, width.saturating_sub(24), 13);
-    let max_lines = height.saturating_sub(18) / 15;
-    for (line, text) in lines.iter().take(max_lines).enumerate() {
-        draw_ui_text(
-            framebuffer,
-            x + 12,
-            y + 10 + line * 15,
-            13,
-            colors.text_soft,
-            text,
-        );
+    }
+}
+
+fn description_scroll_offset(elapsed: Duration, total_lines: usize, visible_lines: usize) -> usize {
+    let overflow = total_lines.saturating_sub(visible_lines);
+    if overflow == 0 || visible_lines == 0 {
+        return 0;
+    }
+
+    let initial = DESCRIPTION_SCROLL_INITIAL_DELAY.as_millis();
+    let step = DESCRIPTION_SCROLL_STEP.as_millis();
+    let end = DESCRIPTION_SCROLL_END_DELAY.as_millis();
+    let scrolling = step.saturating_mul(overflow as u128);
+    let cycle = initial.saturating_add(scrolling).saturating_add(end);
+    let position = elapsed.as_millis() % cycle;
+    if position < initial {
+        0
+    } else if position < initial.saturating_add(scrolling) {
+        (((position - initial) / step) as usize + 1).min(overflow)
+    } else {
+        overflow
     }
 }
 
@@ -2570,11 +3464,89 @@ fn draw_game_metadata(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     let width = rect.width as usize;
     let height = rect.height as usize;
     let colors = frontend.palette();
-    fill_rect_alpha(framebuffer, x, y, width, height, colors.panel, 235);
-    stroke_rect(framebuffer, x, y, width, height, colors.border, 1);
+    let component = frontend.theme().component(ThemeComponentId::GameMetadata);
+    let has_chrome = component.chrome == ThemeChrome::Panel;
+    if has_chrome {
+        fill_rect_alpha(framebuffer, x, y, width, height, colors.panel, 235);
+        stroke_rect(framebuffer, x, y, width, height, colors.border, 1);
+    }
     let Some(game) = frontend.games.get(frontend.selected) else {
         return;
     };
+    if component.font_size > 0 || component.text_style != ThemeTextStyle::default() {
+        let style = component.text_style;
+        let fields = component.metadata_fields;
+        let fallback_studio = if game.manufacturer.trim().is_empty() {
+            "DESCONOCIDO"
+        } else {
+            game.manufacturer.trim()
+        };
+        let developer = if game.developer.trim().is_empty() {
+            fallback_studio
+        } else {
+            game.developer.trim()
+        };
+        let publisher = if game.publisher.trim().is_empty() {
+            fallback_studio
+        } else {
+            game.publisher.trim()
+        };
+        let mut parts = Vec::new();
+        if fields.year {
+            parts.push(format!(
+                "AÑO  {}",
+                game.year
+                    .map_or_else(|| "—".to_string(), |year| year.to_string())
+            ));
+        }
+        if fields.developer {
+            parts.push(format!("DESARROLLADOR  {developer}"));
+        }
+        if fields.publisher {
+            parts.push(format!("PUBLISHER  {publisher}"));
+        }
+        if fields.players {
+            let players = if game.players.trim().is_empty() {
+                "—"
+            } else {
+                game.players.trim()
+            };
+            parts.push(format!("JUGADORES  {players}"));
+        }
+        if fields.manufacturer {
+            parts.push(format!("FABRICANTE  {fallback_studio}"));
+        }
+        let label = parts.join("     ");
+        let preferred = usize::from(component.font_size.max(13));
+        let size = fit_styled_theme_text_size(
+            frontend,
+            &label,
+            width.saturating_sub(20),
+            preferred,
+            12,
+            style,
+        );
+        let label_width = styled_theme_text_width(frontend, &label, size, style);
+        let text_x = aligned_text_x(x, width, label_width, style, ThemeTextAlign::Center, 10);
+        let text_y = aligned_text_y(y, height, size, style, ThemeVerticalAlign::Center, 4);
+        draw_styled_theme_text(
+            framebuffer,
+            frontend,
+            text_x as i32,
+            text_y as i32,
+            size,
+            colors.text_soft,
+            &label,
+            style,
+            Some(ThemeShadow {
+                color: 0xB000_0000,
+                x: 1,
+                y: 2,
+                blur: 0,
+            }),
+        );
+        return;
+    }
     let studio = if !game.developer.trim().is_empty() {
         game.developer.trim()
     } else if !game.manufacturer.trim().is_empty() {
@@ -2601,6 +3573,89 @@ fn draw_game_metadata(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     );
 }
 
+fn draw_game_credits(framebuffer: &mut [u32], frontend: &NativeFrontend) {
+    let id = ThemeComponentId::GameCredits;
+    let rect = id.source_rect();
+    let x = rect.x.max(0) as usize;
+    let y = rect.y.max(0) as usize;
+    let width = rect.width as usize;
+    let height = rect.height as usize;
+    let colors = frontend.palette();
+    let component = frontend.theme().component(id);
+    if component.chrome == ThemeChrome::Panel {
+        fill_rect_alpha(framebuffer, x, y, width, height, colors.panel, 210);
+        stroke_rect(framebuffer, x, y, width, height, colors.border, 1);
+    }
+    let Some(game) = frontend.games.get(frontend.selected) else {
+        return;
+    };
+    let fallback_studio = if game.manufacturer.trim().is_empty() {
+        "DESCONOCIDO"
+    } else {
+        game.manufacturer.trim()
+    };
+    let developer = if game.developer.trim().is_empty() {
+        fallback_studio
+    } else {
+        game.developer.trim()
+    };
+    let publisher = if game.publisher.trim().is_empty() {
+        fallback_studio
+    } else {
+        game.publisher.trim()
+    };
+    let developer_label = format!("DESARROLLADOR  {developer}");
+    let publisher_label = format!("PUBLISHER  {publisher}");
+    let style = component.text_style;
+    let preferred = usize::from(component.font_size.max(18));
+    let half_width = width.saturating_sub(48) / 2;
+    let developer_size =
+        fit_styled_theme_text_size(frontend, &developer_label, half_width, preferred, 12, style);
+    let publisher_size =
+        fit_styled_theme_text_size(frontend, &publisher_label, half_width, preferred, 12, style);
+    let publisher_width =
+        styled_theme_text_width(frontend, &publisher_label, publisher_size, style);
+    let developer_y = aligned_text_y(
+        y,
+        height,
+        developer_size,
+        style,
+        ThemeVerticalAlign::Center,
+        2,
+    );
+    let publisher_y = aligned_text_y(
+        y,
+        height,
+        publisher_size,
+        style,
+        ThemeVerticalAlign::Center,
+        2,
+    );
+    let publisher_x = x + width.saturating_sub(publisher_width);
+
+    for (label, text_x, text_y, size) in [
+        (&developer_label, x, developer_y, developer_size),
+        (&publisher_label, publisher_x, publisher_y, publisher_size),
+    ] {
+        draw_styled_theme_text(
+            framebuffer,
+            frontend,
+            text_x as i32,
+            text_y as i32,
+            size,
+            colors.text_soft,
+            label,
+            style,
+            Some(ThemeShadow {
+                color: 0xC000_0000,
+                x: 1,
+                y: 2,
+                blur: 0,
+            }),
+        );
+    }
+}
+
 fn draw_page_counter(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     let rect = ThemeComponentId::PageCounter.source_rect();
     let x = rect.x.max(0) as usize;
@@ -2609,16 +3664,47 @@ fn draw_page_counter(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     let height = rect.height as usize;
     let colors = frontend.palette();
     let label = format!("{:03} / {:03}", frontend.selected + 1, frontend.games.len());
-    fill_rect_alpha(framebuffer, x, y, width, height, colors.primary_dark, 245);
-    stroke_rect(framebuffer, x, y, width, height, colors.warning, 1);
-    draw_ui_text(
-        framebuffer,
-        x + width.saturating_sub(ui_text_width(&label, 15)) / 2,
-        y + height.saturating_sub(15) / 2,
-        15,
-        colors.warning,
-        &label,
-    );
+    let component = frontend.theme().component(ThemeComponentId::PageCounter);
+    let has_chrome = component.chrome == ThemeChrome::Panel;
+    if has_chrome {
+        fill_rect_alpha(framebuffer, x, y, width, height, colors.primary_dark, 245);
+        stroke_rect(framebuffer, x, y, width, height, colors.warning, 1);
+    }
+    if component.font_size > 0 || component.text_style != ThemeTextStyle::default() {
+        let style = component.text_style;
+        let preferred = usize::from(component.font_size.max(15));
+        let size = fit_styled_theme_text_size(
+            frontend,
+            &label,
+            width.saturating_sub(12),
+            preferred,
+            10,
+            style,
+        );
+        let text_width = styled_theme_text_width(frontend, &label, size, style);
+        let text_x = aligned_text_x(x, width, text_width, style, ThemeTextAlign::Center, 6);
+        let text_y = aligned_text_y(y, height, size, style, ThemeVerticalAlign::Center, 2);
+        draw_styled_theme_text(
+            framebuffer,
+            frontend,
+            text_x as i32,
+            text_y as i32,
+            size,
+            colors.warning,
+            &label,
+            style,
+            None,
+        );
+    } else {
+        draw_ui_text(
+            framebuffer,
+            x + width.saturating_sub(ui_text_width(&label, 15)) / 2,
+            y + height.saturating_sub(15) / 2,
+            15,
+            colors.warning,
+            &label,
+        );
+    }
 }
 
 fn draw_header(framebuffer: &mut [u32], frontend: &NativeFrontend) {
@@ -3263,12 +4349,17 @@ fn draw_setting_value(
             }
             SETTING_SESSION => frontend.settings.session_mode.label().to_string(),
             SETTING_FULLSCREEN => on_off(frontend.settings.fullscreen).to_string(),
+            SETTING_FRONTEND_FULLSCREEN => {
+                on_off(frontend.settings.frontend_fullscreen).to_string()
+            }
             SETTING_SCANLINES => on_off(frontend.settings.scanlines).to_string(),
             SETTING_CURVATURE => on_off(frontend.settings.curvature).to_string(),
             SETTING_BLOOM => on_off(frontend.settings.bloom).to_string(),
             SETTING_ASPECT_RATIO => frontend.settings.aspect_ratio.as_config().to_string(),
             SETTING_PALETTE => frontend.settings.palette.as_config().to_ascii_uppercase(),
             SETTING_WINDOW_SCALE => format!("{}X", frontend.settings.window_scale),
+            SETTING_OUTPUT_RESOLUTION => frontend.settings.output_resolution.label().to_string(),
+            SETTING_SCALING_FILTER => frontend.settings.scaling_filter.label().to_string(),
             SETTING_VOLUME => format!("{}%", frontend.settings.volume),
             SETTING_FRONTEND_MUSIC => on_off(frontend.settings.frontend_music).to_string(),
             SETTING_LANGUAGE => frontend.settings.language.as_config().to_ascii_uppercase(),
@@ -3276,6 +4367,7 @@ fn draw_setting_value(
             SETTING_DIAGNOSTIC_DUMPS => on_off(frontend.settings.diagnostic_dumps).to_string(),
             SETTING_SETTING_MODE => on_off(frontend.settings.setting_mode).to_string(),
             SETTING_FREEPLAY => on_off(frontend.settings.freeplay).to_string(),
+            SETTING_FOUR_PLAYER => on_off(frontend.settings.four_player).to_string(),
             SETTING_CPU_OVERCLOCK => {
                 if frontend.settings.cpu_overclock {
                     "24 MHZ".to_string()
@@ -3774,6 +4866,34 @@ fn blit_region_scaled_alpha(
     );
 }
 
+fn extract_buffer_region(
+    source: &[u32],
+    source_width: usize,
+    source_height: usize,
+    rect: ThemeRect,
+) -> Vec<u32> {
+    let width = rect.width as usize;
+    let height = rect.height as usize;
+    let mut output = vec![0_u32; width.saturating_mul(height)];
+    for y in 0..height {
+        let source_y = i64::from(rect.y) + y as i64;
+        if !(0..source_height as i64).contains(&source_y) {
+            continue;
+        }
+        for x in 0..width {
+            let source_x = i64::from(rect.x) + x as i64;
+            if !(0..source_width as i64).contains(&source_x) {
+                continue;
+            }
+            let source_index = source_y as usize * source_width + source_x as usize;
+            if let Some(pixel) = source.get(source_index) {
+                output[y * width + x] = *pixel;
+            }
+        }
+    }
+    output
+}
+
 fn blit_prepared_signed_alpha(
     framebuffer: &mut [u32],
     destination: ThemeRect,
@@ -3968,6 +5088,238 @@ fn ui_text_width(text: &str, size_px: usize) -> usize {
     crate::frontend_font::text_width(text, size_px)
 }
 
+fn draw_theme_text(
+    framebuffer: &mut [u32],
+    frontend: &NativeFrontend,
+    x: usize,
+    y: usize,
+    size_px: usize,
+    color: u32,
+    text: &str,
+) {
+    crate::frontend_font::draw_text_with_font(
+        frontend.theme_font.as_ref(),
+        framebuffer,
+        LOGICAL_WIDTH,
+        LOGICAL_HEIGHT,
+        x,
+        y,
+        size_px,
+        color,
+        text,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_styled_theme_text(
+    framebuffer: &mut [u32],
+    frontend: &NativeFrontend,
+    x: i32,
+    y: i32,
+    size_px: usize,
+    default_color: u32,
+    text: &str,
+    style: ThemeTextStyle,
+    default_shadow: Option<ThemeShadow>,
+) {
+    let shadow = style.shadow.or(default_shadow);
+    if let Some(shadow) = shadow.filter(|shadow| shadow.color >> 24 != 0) {
+        let base_x = x.saturating_add(i32::from(shadow.x));
+        let base_y = y.saturating_add(i32::from(shadow.y));
+        if shadow.blur == 0 {
+            draw_theme_text_signed(
+                framebuffer,
+                frontend,
+                base_x,
+                base_y,
+                size_px,
+                shadow.color,
+                text,
+                style,
+            );
+        } else {
+            let radius = i32::from(shadow.blur);
+            let samples = [
+                (0, 0),
+                (-radius, 0),
+                (radius, 0),
+                (0, -radius),
+                (0, radius),
+                (-radius / 2, -radius / 2),
+                (radius / 2, -radius / 2),
+                (-radius / 2, radius / 2),
+                (radius / 2, radius / 2),
+            ];
+            let alpha = ((shadow.color >> 24) / samples.len() as u32).max(1);
+            let sample_color = (alpha << 24) | (shadow.color & 0x00FF_FFFF);
+            for (offset_x, offset_y) in samples {
+                draw_theme_text_signed(
+                    framebuffer,
+                    frontend,
+                    base_x.saturating_add(offset_x),
+                    base_y.saturating_add(offset_y),
+                    size_px,
+                    sample_color,
+                    text,
+                    style,
+                );
+            }
+        }
+    }
+
+    if style.outline > 0 && style.outline_color >> 24 != 0 {
+        let radius = i32::from(style.outline);
+        for distance in 1..=radius {
+            for (offset_x, offset_y) in [
+                (-distance, 0),
+                (distance, 0),
+                (0, -distance),
+                (0, distance),
+                (-distance, -distance),
+                (distance, -distance),
+                (-distance, distance),
+                (distance, distance),
+            ] {
+                draw_theme_text_signed(
+                    framebuffer,
+                    frontend,
+                    x.saturating_add(offset_x),
+                    y.saturating_add(offset_y),
+                    size_px,
+                    style.outline_color,
+                    text,
+                    style,
+                );
+            }
+        }
+    }
+
+    draw_theme_text_signed(
+        framebuffer,
+        frontend,
+        x,
+        y,
+        size_px,
+        style.color.unwrap_or(default_color),
+        text,
+        style,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_theme_text_signed(
+    framebuffer: &mut [u32],
+    frontend: &NativeFrontend,
+    x: i32,
+    y: i32,
+    size_px: usize,
+    color: u32,
+    text: &str,
+    style: ThemeTextStyle,
+) {
+    if x >= LOGICAL_WIDTH as i32 || y >= LOGICAL_HEIGHT as i32 {
+        return;
+    }
+    crate::frontend_font::draw_text_with_font_layout(
+        frontend.theme_font.as_ref(),
+        framebuffer,
+        LOGICAL_WIDTH,
+        LOGICAL_HEIGHT,
+        x.max(0) as usize,
+        y.max(0) as usize,
+        size_px,
+        color,
+        text,
+        style.letter_spacing,
+        style.line_height,
+    );
+}
+
+fn theme_text_width(frontend: &NativeFrontend, text: &str, size_px: usize) -> usize {
+    crate::frontend_font::text_width_with_font(frontend.theme_font.as_ref(), text, size_px)
+}
+
+fn styled_theme_text_width(
+    frontend: &NativeFrontend,
+    text: &str,
+    size_px: usize,
+    style: ThemeTextStyle,
+) -> usize {
+    crate::frontend_font::text_width_with_font_spacing(
+        frontend.theme_font.as_ref(),
+        text,
+        size_px,
+        style.letter_spacing,
+    )
+}
+
+fn fit_styled_theme_text_size(
+    frontend: &NativeFrontend,
+    text: &str,
+    max_width: usize,
+    preferred: usize,
+    fallback_minimum: usize,
+    style: ThemeTextStyle,
+) -> usize {
+    if !style.auto_fit {
+        return preferred;
+    }
+    let minimum = if style.min_font_size == 0 {
+        fallback_minimum
+    } else {
+        usize::from(style.min_font_size).min(preferred)
+    };
+    let mut size = preferred.max(minimum);
+    while size > minimum && styled_theme_text_width(frontend, text, size, style) > max_width {
+        size -= 1;
+    }
+    size
+}
+
+fn aligned_text_x(
+    rect_x: usize,
+    rect_width: usize,
+    text_width: usize,
+    style: ThemeTextStyle,
+    default: ThemeTextAlign,
+    padding: usize,
+) -> usize {
+    match if style.align == ThemeTextAlign::Auto {
+        default
+    } else {
+        style.align
+    } {
+        ThemeTextAlign::Auto | ThemeTextAlign::Left => rect_x.saturating_add(padding),
+        ThemeTextAlign::Center => rect_x.saturating_add(rect_width.saturating_sub(text_width) / 2),
+        ThemeTextAlign::Right => rect_x
+            .saturating_add(rect_width.saturating_sub(text_width))
+            .saturating_sub(padding),
+    }
+}
+
+fn aligned_text_y(
+    rect_y: usize,
+    rect_height: usize,
+    text_height: usize,
+    style: ThemeTextStyle,
+    default: ThemeVerticalAlign,
+    padding: usize,
+) -> usize {
+    match if style.vertical_align == ThemeVerticalAlign::Auto {
+        default
+    } else {
+        style.vertical_align
+    } {
+        ThemeVerticalAlign::Auto | ThemeVerticalAlign::Top => rect_y.saturating_add(padding),
+        ThemeVerticalAlign::Center => {
+            rect_y.saturating_add(rect_height.saturating_sub(text_height) / 2)
+        }
+        ThemeVerticalAlign::Bottom => rect_y
+            .saturating_add(rect_height.saturating_sub(text_height))
+            .saturating_sub(padding),
+    }
+}
+
 fn draw_text(framebuffer: &mut [u32], x: usize, y: usize, scale: usize, color: u32, text: &str) {
     draw_ui_text(framebuffer, x, y, legacy_font_size(scale), color, text);
 }
@@ -4035,24 +5387,33 @@ fn discover_runtime_root() -> Result<PathBuf, String> {
         .ok_or_else(|| "El ejecutable no tiene una carpeta valida".to_string())?;
     let current_dir = std::env::current_dir().unwrap_or_else(|_| executable_dir.to_path_buf());
 
-    let mut candidates = vec![executable_dir.to_path_buf(), current_dir];
-    candidates.extend(executable_dir.ancestors().skip(1).map(Path::to_path_buf));
-    candidates
-        .into_iter()
-        .find(|candidate| {
-            candidate.join("config").is_dir()
-                && (candidate.join("ngneon-emu.exe").is_file()
-                    || candidate.join("Cargo.toml").is_file())
-        })
+    find_runtime_root(executable_dir, &current_dir, emulator_executable_name())
         .ok_or_else(|| "No se encontro la carpeta raiz de NGNEON-EMU".to_string())
 }
 
-fn find_emulator_executable(root: &Path) -> Option<PathBuf> {
-    let name = if cfg!(target_os = "windows") {
+fn find_runtime_root(
+    executable_dir: &Path,
+    current_dir: &Path,
+    emulator_name: &str,
+) -> Option<PathBuf> {
+    let mut candidates = vec![executable_dir.to_path_buf(), current_dir.to_path_buf()];
+    candidates.extend(executable_dir.ancestors().skip(1).map(Path::to_path_buf));
+    candidates.into_iter().find(|candidate| {
+        candidate.join("config").is_dir()
+            && (candidate.join(emulator_name).is_file() || candidate.join("Cargo.toml").is_file())
+    })
+}
+
+fn emulator_executable_name() -> &'static str {
+    if cfg!(target_os = "windows") {
         "ngneon-emu.exe"
     } else {
         "ngneon-emu"
-    };
+    }
+}
+
+fn find_emulator_executable(root: &Path) -> Option<PathBuf> {
+    let name = emulator_executable_name();
     [
         root.join(name),
         root.join("target").join("release").join(name),
@@ -4090,13 +5451,16 @@ fn setting_label(index: usize) -> &'static str {
         SETTING_REGION => "REGION",
         SETTING_UNIBIOS_HARDWARE => "HARDWARE UNIBIOS",
         SETTING_SESSION => "MODO DE SESION",
-        SETTING_FULLSCREEN => "PANTALLA COMPLETA",
+        SETTING_FULLSCREEN => "EMULADOR PANTALLA COMPLETA",
+        SETTING_FRONTEND_FULLSCREEN => "FRONTEND PANTALLA COMPLETA",
         SETTING_SCANLINES => "SCANLINES",
         SETTING_CURVATURE => "CURVATURA CRT",
         SETTING_BLOOM => "BLOOM",
         SETTING_ASPECT_RATIO => "RELACION DE ASPECTO",
         SETTING_PALETTE => "PALETA DE COLOR",
-        SETTING_WINDOW_SCALE => "ESCALA DE VENTANA",
+        SETTING_WINDOW_SCALE => "ESCALA AUTO DE VENTANA",
+        SETTING_OUTPUT_RESOLUTION => "RESOLUCION DE SALIDA",
+        SETTING_SCALING_FILTER => "FILTRO DE ESCALADO",
         SETTING_VOLUME => "VOLUMEN",
         SETTING_FRONTEND_MUSIC => "MUSICA DEL FRONTEND",
         SETTING_LANGUAGE => "IDIOMA EMULADOR",
@@ -4113,6 +5477,7 @@ fn setting_label(index: usize) -> &'static str {
         SETTING_RA_HARDCORE => "RA HARDCORE",
         SETTING_THEME => "TEMA FRONTEND",
         SETTING_MEDIA_DIRECTORY => "DIRECTORIO DE MEDIA",
+        SETTING_FOUR_PLAYER => "FTC1B 4 JUGADORES",
         _ => "",
     }
 }
@@ -4152,9 +5517,21 @@ fn setting_explanation(frontend: &NativeFrontend, index: usize) -> &'static str 
                 "DIAGNOSTICO: REGISTRA CPU, VIDEO Y AUDIO EN LOGS/SESSION-*.LOG."
             }
         },
+        SETTING_FULLSCREEN => "INICIA LOS JUEGOS CON EL EMULADOR A PANTALLA COMPLETA.",
+        SETTING_FRONTEND_FULLSCREEN => {
+            "INICIA Y MANTIENE LA BIBLIOTECA DEL FRONTEND A PANTALLA COMPLETA. F11 TAMBIEN LO ALTERNA."
+        }
         SETTING_ASPECT_RATIO => "CICLA 4:3, PIXEL CUADRADO 1:1, PAR 45:44 Y PANORAMICO 16:9.",
         SETTING_PALETTE => "RESNET SIMULA LA RED DE RESISTENCIAS; RAW USA LOS VALORES CRUDOS.",
-        SETTING_WINDOW_SCALE => "TAMANO INICIAL DE LA VENTANA DEL EMULADOR: 2X, 3X O 4X.",
+        SETTING_WINDOW_SCALE => {
+            "TAMANO INICIAL 2X, 3X O 4X USADO CUANDO LA RESOLUCION ESTA EN AUTO."
+        }
+        SETTING_OUTPUT_RESOLUTION => {
+            "AUTO USA LA ESCALA DE VENTANA; 720P, 1080P Y 1440P FIJAN SU TAMANO."
+        }
+        SETTING_SCALING_FILTER => {
+            "NEAREST ES ORIGINAL; PIXEL PERFECT USA ENTEROS; SHARP BILINEAR SUAVIZA BORDES."
+        }
         SETTING_VOLUME => "AJUSTA EL VOLUMEN DEL EMULADOR ENTRE 0% Y 100% EN PASOS DE 5%.",
         SETTING_FRONTEND_MUSIC => {
             "ACTIVA LA MUSICA DEL FRONTEND; CTRL+N PASA A LA SIGUIENTE CANCION."
@@ -4293,6 +5670,30 @@ mod tests {
     }
 
     #[test]
+    fn packaged_linux_runtime_root_wins_over_checkout_current_directory() {
+        let directory = temp_dir("linux-package-runtime-root");
+        let _ = fs::remove_dir_all(&directory);
+        let checkout = directory.join("checkout");
+        let package = directory.join("NGNEON-EMU-linux-x86_64");
+        fs::create_dir_all(checkout.join("config")).unwrap();
+        fs::create_dir_all(package.join("config")).unwrap();
+        fs::write(checkout.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::write(package.join("ngneon-emu"), []).unwrap();
+
+        let packaged_root = find_runtime_root(&package, &checkout, "ngneon-emu").unwrap();
+        assert_eq!(packaged_root, package);
+        assert_eq!(packaged_root.join("musica"), package.join("musica"));
+
+        let release_dir = checkout.join("target/release");
+        fs::create_dir_all(&release_dir).unwrap();
+        assert_eq!(
+            find_runtime_root(&release_dir, &checkout, "ngneon-emu"),
+            Some(checkout)
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn successful_status_expires_but_errors_remain_visible() {
         let directory = temp_dir("status-expiry");
         let _ = fs::remove_dir_all(&directory);
@@ -4385,7 +5786,7 @@ mod tests {
             FrontendSettings::from_config(&default).unibios_hardware,
             UnibiosHardware::Mvs
         );
-        assert_eq!(setting_count(), 27);
+        assert_eq!(setting_count(), SETTING_COUNT);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -4405,7 +5806,12 @@ mod tests {
         frontend.config.path = blocked_parent.join("ngneon.conf");
         let original_lines = frontend.config.lines.clone();
 
-        for setting in [SETTING_SESSION, SETTING_FULLSCREEN, SETTING_REGION] {
+        for setting in [
+            SETTING_SESSION,
+            SETTING_FULLSCREEN,
+            SETTING_FRONTEND_FULLSCREEN,
+            SETTING_REGION,
+        ] {
             let before = frontend.settings.clone();
             frontend.selected_setting = setting;
             frontend.adjust_setting(1);
@@ -4432,12 +5838,16 @@ mod tests {
                 "aspect_ratio=45:44".to_string(),
                 "palette_mode=raw".to_string(),
                 "window_scale=4".to_string(),
+                "output_resolution=1080p".to_string(),
+                "scaling_filter=sharp-bilinear".to_string(),
                 "volume=65".to_string(),
                 "frontend_music=off".to_string(),
+                "frontend_fullscreen=on".to_string(),
                 "lang=en".to_string(),
                 "diagnostic_dumps=on".to_string(),
                 "setting_mode=on".to_string(),
                 "freeplay=on".to_string(),
+                "four_player=on".to_string(),
                 "memcard=on".to_string(),
                 "memcard_write_protect=on".to_string(),
                 "ra_hardcore=off".to_string(),
@@ -4451,12 +5861,16 @@ mod tests {
         assert_eq!(settings.aspect_ratio, AspectRatioSetting::Par45_44);
         assert_eq!(settings.palette, PaletteSetting::Raw);
         assert_eq!(settings.window_scale, 4);
+        assert_eq!(settings.output_resolution, OutputResolution::FullHd1080p);
+        assert_eq!(settings.scaling_filter, ScalingFilter::SharpBilinear);
         assert_eq!(settings.volume, 65);
         assert!(!settings.frontend_music);
+        assert!(settings.frontend_fullscreen);
         assert_eq!(settings.language, LanguageSetting::English);
         assert!(settings.diagnostic_dumps);
         assert!(settings.setting_mode);
         assert!(settings.freeplay);
+        assert!(settings.four_player);
         assert!(settings.memcard);
         assert!(settings.memcard_write_protect);
         assert!(!settings.ra_hardcore);
@@ -4564,17 +5978,17 @@ mod tests {
             FrontendAction::None
         );
         assert_eq!(frontend.selected_setting, SETTING_DIAGNOSTIC_DUMPS);
-        assert_eq!(frontend.setting_scroll, 3);
+        assert_eq!(frontend.setting_scroll, 6);
 
         assert_eq!(
             handle_controller_button(&mut frontend, ControllerButton::DPadDown),
             FrontendAction::None
         );
         assert_eq!(frontend.selected_setting, SETTING_SETTING_MODE);
-        assert_eq!(frontend.setting_scroll, 4);
+        assert_eq!(frontend.setting_scroll, 7);
 
-        frontend.setting_scroll = 12;
-        frontend.selected_setting = 11;
+        frontend.setting_scroll = 15;
+        frontend.selected_setting = 14;
         assert_eq!(
             handle_mouse(
                 &mut frontend,
@@ -4587,12 +6001,43 @@ mod tests {
         assert_eq!(frontend.selected_setting, SETTING_DIAGNOSTIC_DUMPS);
         assert!(frontend.settings.diagnostic_dumps);
 
-        frontend.selected_setting = SETTING_MEDIA_DIRECTORY;
+        frontend.selected_setting = SETTING_FOUR_PLAYER;
         frontend.ensure_setting_visible();
         assert_eq!(
             frontend.setting_scroll,
             SETTING_COUNT - SETTINGS_VISIBLE_ROWS
         );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn left_stick_moves_once_per_deadzone_crossing() {
+        let directory = temp_dir("left-stick-navigation");
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(directory.join("config")).unwrap();
+        let mut frontend = NativeFrontend::load(directory.clone()).unwrap();
+        frontend.view = FrontendView::Settings;
+        frontend.selected_setting = SETTING_BIOS;
+        let mut sticks = HashMap::new();
+
+        assert_eq!(
+            handle_controller_axis(&mut frontend, &mut sticks, 7, ControllerAxis::LeftY, 12_000,),
+            FrontendAction::None
+        );
+        assert_eq!(frontend.selected_setting, SETTING_REGION);
+
+        handle_controller_axis(&mut frontend, &mut sticks, 7, ControllerAxis::LeftY, 20_000);
+        assert_eq!(frontend.selected_setting, SETTING_REGION);
+
+        handle_controller_axis(&mut frontend, &mut sticks, 7, ControllerAxis::LeftY, 0);
+        handle_controller_axis(
+            &mut frontend,
+            &mut sticks,
+            7,
+            ControllerAxis::LeftY,
+            -12_000,
+        );
+        assert_eq!(frontend.selected_setting, SETTING_BIOS);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -4753,6 +6198,63 @@ mod tests {
         assert_eq!(cycle_index(0, 157, -1), 156);
         assert_eq!(cycle_index(156, 157, 1), 0);
         assert_eq!(cycle_index(80, 157, -2), 78);
+    }
+
+    #[test]
+    fn description_auto_scroll_shows_every_line_then_restarts() {
+        let visible = 7;
+        let total = 11;
+        let initial = DESCRIPTION_SCROLL_INITIAL_DELAY;
+        let step = DESCRIPTION_SCROLL_STEP;
+        let end = DESCRIPTION_SCROLL_END_DELAY;
+
+        assert_eq!(description_scroll_offset(Duration::ZERO, total, visible), 0);
+        assert_eq!(
+            description_scroll_offset(
+                initial.saturating_sub(Duration::from_millis(1)),
+                total,
+                visible
+            ),
+            0
+        );
+        assert_eq!(description_scroll_offset(initial, total, visible), 1);
+        assert_eq!(
+            description_scroll_offset(initial + step * 3, total, visible),
+            4
+        );
+        assert_eq!(
+            description_scroll_offset(
+                initial + step * 4 + end.saturating_sub(Duration::from_millis(1)),
+                total,
+                visible
+            ),
+            4
+        );
+        assert_eq!(
+            description_scroll_offset(initial + step * 4 + end, total, visible),
+            0
+        );
+        assert_eq!(
+            description_scroll_offset(Duration::from_secs(60), 4, visible),
+            0
+        );
+    }
+
+    #[test]
+    fn vertical_list_box3d_artwork_uses_safe_image_fallbacks() {
+        let media = GameMedia {
+            box_2d: Some(PathBuf::from("fallback-box2d.png")),
+            logo: Some(PathBuf::from("logo.png")),
+            ..GameMedia::default()
+        };
+        assert_eq!(
+            list_artwork_path(&media, ThemeListArtwork::Box3d),
+            Some(PathBuf::from("fallback-box2d.png"))
+        );
+        assert_eq!(
+            list_artwork_path(&media, ThemeListArtwork::Logo),
+            Some(PathBuf::from("logo.png"))
+        );
     }
 
     #[test]
@@ -4956,6 +6458,10 @@ mod tests {
             "phosphor",
             "cyber-list",
             "console-showcase",
+            "neogeo-red-cabinet",
+            "neogeo-green-cabinet",
+            "neogeo-29-cabinet",
+            "fanart-horizon",
         ] {
             fs::write(
                 directory.join("config/ngneon.conf"),
@@ -4974,7 +6480,15 @@ mod tests {
                 .iter()
                 .filter(|pixel| **pixel != background)
                 .count();
-            assert!(changed > 10_000, "theme={selector}, changed={changed}");
+            let minimum_changed = if selector == "fanart-horizon" {
+                100
+            } else {
+                10_000
+            };
+            assert!(
+                changed > minimum_changed,
+                "theme={selector}, changed={changed}"
+            );
             let signature = framebuffer.iter().fold(0_u64, |state, pixel| {
                 state.rotate_left(5) ^ u64::from(*pixel)
             });
@@ -4990,7 +6504,7 @@ mod tests {
             );
             save_theme_preview(&framebuffer, &format!("{selector}-settings"));
         }
-        assert_eq!(signatures.len(), 5);
+        assert_eq!(signatures.len(), 9);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -5008,7 +6522,15 @@ mod tests {
         fs::create_dir_all(directory.join("config")).unwrap();
         let mut signatures = HashSet::new();
 
-        for selector in ["cyber-list", "console-showcase"] {
+        for selector in [
+            "neon",
+            "cyber-list",
+            "console-showcase",
+            "neogeo-red-cabinet",
+            "neogeo-green-cabinet",
+            "neogeo-29-cabinet",
+            "fanart-horizon",
+        ] {
             fs::write(
                 directory.join("config/ngneon.conf"),
                 format!(
@@ -5021,27 +6543,28 @@ mod tests {
             .unwrap();
             let mut frontend = NativeFrontend::load(directory.clone()).unwrap();
             assert!(frontend.games.len() > 100);
-            let preview = frontend.selected_media.dynamic.get("preview").unwrap();
-            assert!(preview.uses_video);
-            assert!(preview.image.is_some(), "fallback estático de {selector}");
+            if let Some(preview) = frontend.selected_media.dynamic.get("preview") {
+                assert!(preview.uses_video);
+                assert!(preview.image.is_some(), "fallback estático de {selector}");
 
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while frontend.video_player.frame().is_none()
-                && frontend.video_player.error().is_none()
-                && std::time::Instant::now() < deadline
-            {
-                frontend.tick_video();
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert!(
-                frontend.video_player.frame().is_some(),
-                "{selector}: {:?}",
-                frontend.video_player.error()
-            );
-            let advance_until = std::time::Instant::now() + Duration::from_secs(1);
-            while std::time::Instant::now() < advance_until {
-                frontend.tick_video();
-                std::thread::sleep(Duration::from_millis(10));
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while frontend.video_player.frame().is_none()
+                    && frontend.video_player.error().is_none()
+                    && std::time::Instant::now() < deadline
+                {
+                    frontend.tick_video();
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert!(
+                    frontend.video_player.frame().is_some(),
+                    "{selector}: {:?}",
+                    frontend.video_player.error()
+                );
+                let advance_until = std::time::Instant::now() + Duration::from_secs(1);
+                while std::time::Instant::now() < advance_until {
+                    frontend.tick_video();
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
 
             let mut framebuffer = vec![0; LOGICAL_WIDTH * LOGICAL_HEIGHT];

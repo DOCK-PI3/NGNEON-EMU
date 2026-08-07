@@ -22,6 +22,13 @@ pub const YM2610_SAMPLES_PER_FRAME: usize = (crate::ym2610::YM2610_SAMPLE_RATE a
 /// Geolith clocks the YM2610 once per 72 Z80 tstates in medium-fidelity mode.
 pub const YM2610_TSTATES_PER_SAMPLE: u32 = 72;
 
+/// Largest scheduler slice accepted by the mixer in one call.
+///
+/// Normal calls contain either one Z80 instruction or one video frame. Four
+/// frames leave generous headroom while preventing a corrupt cycle delta from
+/// turning into an unbounded allocation and a multi-second frontend stall.
+const MAX_Z80_TSTATES_PER_AUDIO_APPEND: u32 = crate::DEFAULT_Z80_TSTATES_PER_FRAME * 4;
+
 /// Stereo interleaved buffer size per frame: samples_per_frame * 2 channels.
 pub const STEREO_BUFFER_SIZE: usize = YM2610_SAMPLES_PER_FRAME * 2;
 
@@ -88,6 +95,14 @@ impl AudioMixer {
     /// Advance the YM2610 for an additional Z80 execution slice and append
     /// the generated samples to the current frame buffer.
     pub fn append_for_tstates(&mut self, ym2610: &mut Ym2610, z80_tstates: u32) -> &[i16] {
+        let z80_tstates = if z80_tstates > MAX_Z80_TSTATES_PER_AUDIO_APPEND {
+            eprintln!(
+                "[WARN] Ignoring impossible Z80 audio slice: {z80_tstates} tstates; capped at {MAX_Z80_TSTATES_PER_AUDIO_APPEND}"
+            );
+            MAX_Z80_TSTATES_PER_AUDIO_APPEND
+        } else {
+            z80_tstates
+        };
         let total = self.ym_tstate_remainder.saturating_add(z80_tstates);
         let sample_pairs = (total / YM2610_TSTATES_PER_SAMPLE) as usize;
         self.ym_tstate_remainder = total % YM2610_TSTATES_PER_SAMPLE;
@@ -112,6 +127,18 @@ impl AudioMixer {
     /// Number of stereo sample pairs generated in the last frame.
     pub fn samples_generated(&self) -> usize {
         self.samples_generated
+    }
+
+    /// Fractional YM2610 cadence carried between Z80 execution slices.
+    ///
+    /// This is hardware scheduler state, not a frontend buffering detail, so
+    /// save states must preserve it to keep PCM output deterministic.
+    pub(crate) fn ym_tstate_remainder(&self) -> u32 {
+        self.ym_tstate_remainder
+    }
+
+    pub(crate) fn set_ym_tstate_remainder(&mut self, remainder: u32) {
+        self.ym_tstate_remainder = remainder % YM2610_TSTATES_PER_SAMPLE;
     }
 
     /// Reset the mixer. Call when loading a new ROM to clear stale audio.
@@ -188,6 +215,18 @@ mod tests {
 
         assert_eq!(mixer.samples_generated(), 938);
         assert_eq!(mixer.samples().len(), 938 * 2);
+    }
+
+    #[test]
+    fn mixer_caps_impossible_tstate_slice_before_allocating() {
+        let (mut mixer, mut ym2610) = new_test_mixer();
+
+        mixer.begin_frame();
+        mixer.append_for_tstates(&mut ym2610, u32::MAX);
+
+        let maximum_pairs = (MAX_Z80_TSTATES_PER_AUDIO_APPEND / YM2610_TSTATES_PER_SAMPLE) as usize;
+        assert_eq!(mixer.samples_generated(), maximum_pairs);
+        assert_eq!(mixer.samples().len(), maximum_pairs * 2);
     }
 
     #[test]

@@ -278,7 +278,7 @@ impl Video {
         for col in 0..FIX_MAP_COLUMNS {
             let map_address = fix_map_address(col, map_row);
             let entry = read_vram_word(memory, map_address);
-            if entry == 0 || skip_fix_entry(memory, entry) {
+            if entry == 0 {
                 continue;
             }
             let tile_index = fix_tile_index(memory, entry, map_row, col);
@@ -698,14 +698,6 @@ fn fix_tile_index(
             base + fix_tile_bank(memory, visible_row, col) * 0x1000
         }
     }
-}
-
-fn skip_fix_entry(memory: &crate::memory::Memory, entry: u16) -> bool {
-    // Zed Blade (NGH 0x076) leaves a couple of palette-F FIX entries as screen
-    // fillers. On real hardware and reference emulators these do not appear
-    // over the game scene, but if rendered literally they produce the repeated
-    // white/dark pattern reported in Zed Blade backgrounds.
-    memory.rom_ngh == Some(0x0076) && matches!(entry, 0x00FF | 0xF020 | 0xF0FF)
 }
 
 /// Tile-based fix bankswitching: bank offset is computed from
@@ -1489,7 +1481,7 @@ fn fix_debug_stats(memory: &crate::memory::Memory, fix_rom: &[u8]) -> FixDebugSt
         for col in 0..FIX_MAP_COLUMNS {
             let map_address = fix_map_address(col, map_row);
             let entry = read_vram_word(memory, map_address);
-            if entry == 0 || skip_fix_entry(memory, entry) {
+            if entry == 0 {
                 continue;
             }
             let tile_index = fix_tile_index(memory, entry, map_row, col);
@@ -2018,25 +2010,18 @@ mod tests {
     }
 
     #[test]
-    fn zedblade_fix_filler_entry_is_not_drawn() {
+    fn fix_entries_are_never_filtered_by_cartridge_id() {
         let mut video = Video::new();
         let mut memory = crate::memory::Memory::new();
         memory.rom_ngh = Some(0x0076);
         memory.srom = vec![0; BYTES_PER_FIX_TILE * 0x21];
-        let filler_tile = solid_fix_tile(2);
         memory.srom[0x20 * BYTES_PER_FIX_TILE..0x21 * BYTES_PER_FIX_TILE]
-            .copy_from_slice(&filler_tile);
-
+            .copy_from_slice(&solid_fix_tile(2));
         let palette_f_color_2 = 15 * 32 + 2 * 2;
         memory.palette_ram[palette_f_color_2..palette_f_color_2 + 2]
             .copy_from_slice(&0x7FFF_u16.to_be_bytes());
         write_vram_word_raw(&mut memory, fix_map_address(0, FIX_HIDDEN_TOP_ROWS), 0xF020);
 
-        video.clear_framebuffer();
-        video.render_fix_scanline(&memory, 0);
-        assert_eq!(video.framebuffer[0], 0xFF000000);
-
-        memory.rom_ngh = None;
         video.clear_framebuffer();
         video.render_fix_scanline(&memory, 0);
         assert_ne!(video.framebuffer[0], 0xFF000000);

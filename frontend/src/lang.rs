@@ -147,7 +147,7 @@ pub struct Lang {
     pub profile_label_bloom: &'static str,
     pub profile_actions: &'static str,
 
-    // ---- Settings Menu (5 tabs) ----
+    // ---- Settings Menu (6 tabs) ----
     pub settings_title: &'static str,
     pub settings_tab_video: &'static str,
     pub settings_tab_audio: &'static str,
@@ -161,7 +161,8 @@ pub struct Lang {
     pub settings_label_fullscreen: &'static str,
     pub settings_label_aspect_ratio: &'static str,
     pub settings_label_palette: &'static str,
-    pub settings_label_window_scale: &'static str,
+    pub settings_label_output_resolution: &'static str,
+    pub settings_label_scaling_filter: &'static str,
     pub settings_label_language: &'static str,
     pub settings_label_dumps: &'static str,
     pub settings_label_volume: &'static str,
@@ -182,6 +183,7 @@ pub struct Lang {
     pub settings_label_rom_dir: &'static str,
     pub settings_label_bios_dir: &'static str,
     pub settings_label_media_dir: &'static str,
+    pub settings_label_rom_browser_image: &'static str,
     pub settings_label_screenshot_dir: &'static str,
     pub settings_label_saves_dir: &'static str,
 
@@ -341,7 +343,7 @@ impl Lang {
             profile_label_bloom: "Phosphor Bloom",
             profile_actions: "Enter:Toggle  Shift+Enter:Reset a global  Esc:Salir",
 
-            // Settings Menu (5 tabs)
+            // Settings Menu (6 tabs)
             settings_title: "CONFIGURACIÓN",
             settings_tab_video: "VIDEO",
             settings_tab_audio: "AUDIO",
@@ -355,7 +357,8 @@ impl Lang {
             settings_label_fullscreen: "Pantalla completa",
             settings_label_aspect_ratio: "Aspecto",
             settings_label_palette: "Paleta",
-            settings_label_window_scale: "Escala ventana",
+            settings_label_output_resolution: "Resolución salida",
+            settings_label_scaling_filter: "Filtro escalado",
             settings_label_language: "Idioma",
             settings_label_dumps: "Volcados ROM",
             settings_label_volume: "Volumen",
@@ -376,6 +379,7 @@ impl Lang {
             settings_label_rom_dir: "Dir. ROMs",
             settings_label_bios_dir: "Dir. BIOS",
             settings_label_media_dir: "Dir. Media",
+            settings_label_rom_browser_image: "Imagen explorador",
             settings_label_screenshot_dir: "Dir. Screenshots",
             settings_label_saves_dir: "Dir. Saves",
 
@@ -390,7 +394,7 @@ impl Lang {
             rb_title: "NAVEGADOR DE ROMS",
             rb_no_roms: "No se encontraron ROMs en: {}",
             rb_bios: "BIOS:",
-            rb_actions: "Enter:Cargar  ↑↓←→:Navegar  Esc:Salir",
+            rb_actions: "Enter:Cargar Tab/C:Imagen ↑↓←→:Mover Esc:Salir",
 
             // Window title
             title_paused: "PAUSADO",
@@ -569,7 +573,7 @@ impl Lang {
             profile_label_bloom: "Phosphor Bloom",
             profile_actions: "Enter:Toggle  Shift+Enter:Reset to global  Esc:Exit",
 
-            // Settings Menu (5 tabs)
+            // Settings Menu (6 tabs)
             settings_title: "SETTINGS",
             settings_tab_video: "VIDEO",
             settings_tab_audio: "AUDIO",
@@ -583,7 +587,8 @@ impl Lang {
             settings_label_fullscreen: "Fullscreen",
             settings_label_aspect_ratio: "Aspect Ratio",
             settings_label_palette: "Palette",
-            settings_label_window_scale: "Window Scale",
+            settings_label_output_resolution: "Output Resolution",
+            settings_label_scaling_filter: "Scaling Filter",
             settings_label_language: "Language",
             settings_label_dumps: "ROM Dumps",
             settings_label_volume: "Volume",
@@ -604,6 +609,7 @@ impl Lang {
             settings_label_rom_dir: "ROMs Dir",
             settings_label_bios_dir: "BIOS Dir",
             settings_label_media_dir: "Media Dir",
+            settings_label_rom_browser_image: "Browser image",
             settings_label_screenshot_dir: "Screenshots Dir",
             settings_label_saves_dir: "Saves Dir",
 
@@ -618,7 +624,7 @@ impl Lang {
             rb_title: "ROM BROWSER",
             rb_no_roms: "No ROMs found in: {}",
             rb_bios: "BIOS:",
-            rb_actions: "Enter:Load  ↑↓←→:Navigate  Esc:Exit",
+            rb_actions: "Enter:Load Tab/C:Image ↑↓←→:Move Esc:Exit",
 
             // Window title
             title_paused: "PAUSED",

@@ -5,11 +5,13 @@
 //!   1. Crop the 8-pixel horizontal overscan and upload 304×224 → `fb_tex`
 //!   2. Bright pass (bloom extraction) → `bloom_bright_tex` (304×224, FBO)
 //!   3. Gaussian blur (9-tap at half-res)  → `bloom_blur_tex` (152×112, FBO)
-//!   4. Main CRT shader (barrel + scanlines + vignette + bloom composite)
+//!   4. Main presentation shader (scaling + barrel + scanlines + vignette + bloom)
 
+use frontend::video_options::ScalingFilter;
 use sdl2::video::Window;
+use std::borrow::Cow;
 use std::cell::RefCell;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
 const SOURCE_FB_WIDTH: u32 = 320;
 const HORIZONTAL_OVERSCAN: usize = 8;
@@ -17,6 +19,21 @@ const FB_WIDTH: u32 = 304;
 const FB_HEIGHT: u32 = 224;
 const BLOOM_HALF_W: u32 = 152;
 const BLOOM_HALF_H: u32 = 112;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlApi {
+    Desktop,
+    Gles,
+}
+
+impl GlApi {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Desktop => "OpenGL 3.3 Core",
+            Self::Gles => "OpenGL ES 3.0",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayAspect {
@@ -79,6 +96,7 @@ pub struct CrtGlConfig {
     pub scanlines: bool,
     pub scanline_intensity: f32, // 0.0 – 1.0
     pub display_aspect: DisplayAspect,
+    pub scaling_filter: ScalingFilter,
     pub bloom: bool,
     pub bloom_intensity: f32, // 0.0 – 1.0
     pub bloom_threshold: f32, // 0.0 – 1.0 luminance cutoff
@@ -92,6 +110,7 @@ impl Default for CrtGlConfig {
             scanlines: false,
             scanline_intensity: 0.45,
             display_aspect: DisplayAspect::Original4_3,
+            scaling_filter: ScalingFilter::Nearest,
             bloom: false,
             bloom_intensity: 0.40,
             bloom_threshold: 0.60,
@@ -149,12 +168,12 @@ uniform vec2 uTexelSize; // 1.0 / texture_dimensions
 
 void main() {
     // 9-tap Gaussian kernel (σ ≈ 1.5, normalized)
-    vec2 offsets[9] = vec2[](
+    vec2 offsets[9] = vec2[9](
         vec2(-1.5, -1.5), vec2( 0.0, -1.5), vec2( 1.5, -1.5),
         vec2(-1.5,  0.0), vec2( 0.0,  0.0), vec2( 1.5,  0.0),
         vec2(-1.5,  1.5), vec2( 0.0,  1.5), vec2( 1.5,  1.5)
     );
-    float weights[9] = float[](
+    float weights[9] = float[9](
         0.0625, 0.125, 0.0625,
         0.125,  0.25,  0.125,
         0.0625, 0.125, 0.0625
@@ -177,6 +196,8 @@ void main() {
 ///   uScanlineAmt     : float     — 0.0 = off
 ///   uBloomIntensity  : float     — 0.0 = off
 ///   uOutputSize      : vec2      — output resolution in pixels
+///   uSourceSize      : vec2      — visible Neo Geo framebuffer size
+///   uScalingFilter   : int       — 0 = texture sampler, 1 = sharp bilinear
 const CRT_FRAGMENT_SHADER: &str = r#"#version 330 core
 
 in vec2 TexCoord;
@@ -188,6 +209,29 @@ uniform float uCurvatureAmt;
 uniform float uScanlineAmt;
 uniform float uBloomIntensity;
 uniform vec2 uOutputSize;
+uniform vec2 uSourceSize;
+uniform int uScalingFilter;
+
+vec4 sampleSource(vec2 uv) {
+    if (uScalingFilter != 1) {
+        return texture(uTex, uv);
+    }
+
+    // Sharp bilinear keeps most of each source pixel flat and confines
+    // interpolation to a narrow band at pixel boundaries. It remains stable
+    // at non-integer 4:3 output sizes without blurring the whole image.
+    vec2 scale = max(uOutputSize / uSourceSize, vec2(1.0));
+    vec2 texel = clamp(uv, vec2(0.0), vec2(1.0)) * uSourceSize;
+    vec2 texelBase = floor(texel);
+    vec2 centerDistance = fract(texel) - 0.5;
+    vec2 regionRange = 0.5 - 0.5 / scale;
+    vec2 filtered = (
+        centerDistance - clamp(centerDistance, -regionRange, regionRange)
+    ) * scale + 0.5;
+    vec2 sampleUv = (texelBase + filtered) / uSourceSize;
+    vec2 halfTexel = 0.5 / uSourceSize;
+    return texture(uTex, clamp(sampleUv, halfTexel, vec2(1.0) - halfTexel));
+}
 
 void main() {
     // --- barrel distortion ---
@@ -206,7 +250,7 @@ void main() {
         }
     }
 
-    vec4 color = texture(uTex, uv);
+    vec4 color = sampleSource(uv);
 
     // --- bloom composite ---
     if (uBloomIntensity > 0.001) {
@@ -246,6 +290,8 @@ struct CrtUniforms {
     curvature_amt: i32,
     scanline_amt: i32,
     output_size: i32,
+    source_size: i32,
+    scaling_filter: i32,
     bloom_intensity: i32,
 }
 
@@ -282,12 +328,22 @@ impl CrtGlRenderer {
     ///
     /// `video` is the SDL2 video subsystem (used for gl_get_proc_address).
     /// `window` must be an OpenGL-capable window (created with `.opengl()`).
-    pub fn new(video: &sdl2::VideoSubsystem, window: &Window) -> Result<Self, String> {
+    pub fn new(
+        video: &sdl2::VideoSubsystem,
+        window: &Window,
+        gl_api: GlApi,
+    ) -> Result<Self, String> {
         let gl_context = window
             .gl_create_context()
             .map_err(|e| format!("GL context creation failed: {e}"))?;
 
         gl::load_with(|name| video.gl_get_proc_address(name) as *const _);
+        println!(
+            "[INFO] Contexto grafico: {} | GL {} | GLSL {}",
+            gl_api.label(),
+            gl_string(gl::VERSION),
+            gl_string(gl::SHADING_LANGUAGE_VERSION)
+        );
         // The frontend owns pacing at the exact Neo Geo refresh rate. Leaving
         // driver VSync enabled can add a second wait at the monitor refresh
         // rate and make video and audio run slightly slow on 60 Hz displays.
@@ -299,15 +355,20 @@ impl CrtGlRenderer {
 
         // -- shader programs --------------------------------------------------
 
-        let vert = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER)?;
+        let vertex_source = shader_source(VERTEX_SHADER, gl_api);
+        let bright_source = shader_source(BRIGHT_PASS_SHADER, gl_api);
+        let blur_source = shader_source(BLUR_SHADER, gl_api);
+        let crt_source = shader_source(CRT_FRAGMENT_SHADER, gl_api);
 
-        let crt_frag = compile_shader(gl::FRAGMENT_SHADER, CRT_FRAGMENT_SHADER)?;
+        let vert = compile_shader(gl::VERTEX_SHADER, vertex_source.as_ref())?;
+
+        let crt_frag = compile_shader(gl::FRAGMENT_SHADER, crt_source.as_ref())?;
         let crt_program = link_program(vert, crt_frag)?;
 
-        let bright_frag = compile_shader(gl::FRAGMENT_SHADER, BRIGHT_PASS_SHADER)?;
+        let bright_frag = compile_shader(gl::FRAGMENT_SHADER, bright_source.as_ref())?;
         let bright_program = link_program_keep_vert(vert, bright_frag)?;
 
-        let blur_frag = compile_shader(gl::FRAGMENT_SHADER, BLUR_SHADER)?;
+        let blur_frag = compile_shader(gl::FRAGMENT_SHADER, blur_source.as_ref())?;
         let blur_program = link_program_keep_vert(vert, blur_frag)?;
 
         // -- uniforms --------------------------------------------------------
@@ -316,6 +377,8 @@ impl CrtGlRenderer {
             curvature_amt: get_uniform(crt_program, "uCurvatureAmt")?,
             scanline_amt: get_uniform(crt_program, "uScanlineAmt")?,
             output_size: get_uniform(crt_program, "uOutputSize")?,
+            source_size: get_uniform(crt_program, "uSourceSize")?,
+            scaling_filter: get_uniform(crt_program, "uScalingFilter")?,
             bloom_intensity: get_uniform(crt_program, "uBloomIntensity")?,
         };
         let bright_uni_threshold = get_uniform(bright_program, "uThreshold")?;
@@ -438,6 +501,21 @@ impl CrtGlRenderer {
                 debug_assert_eq!(buf.len(), (FB_WIDTH * FB_HEIGHT) as usize);
                 gl::ActiveTexture(gl::TEXTURE0);
                 gl::BindTexture(gl::TEXTURE_2D, self.fb_tex);
+                let texture_filter = if config.scaling_filter == ScalingFilter::SharpBilinear {
+                    gl::LINEAR
+                } else {
+                    gl::NEAREST
+                };
+                gl::TexParameteri(
+                    gl::TEXTURE_2D,
+                    gl::TEXTURE_MIN_FILTER,
+                    texture_filter as i32,
+                );
+                gl::TexParameteri(
+                    gl::TEXTURE_2D,
+                    gl::TEXTURE_MAG_FILTER,
+                    texture_filter as i32,
+                );
                 gl::TexSubImage2D(
                     gl::TEXTURE_2D,
                     0,
@@ -497,7 +575,12 @@ impl CrtGlRenderer {
             gl::Viewport(0, 0, output_width as i32, output_height as i32);
             gl::ClearColor(0.0, 0.0, 0.0, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
-            let viewport = aspect_viewport(output_width, output_height, config.display_aspect);
+            let viewport = presentation_viewport(
+                output_width,
+                output_height,
+                config.display_aspect,
+                config.scaling_filter,
+            );
             gl::Viewport(viewport.x, viewport.y, viewport.width, viewport.height);
 
             gl::UseProgram(self.crt_program);
@@ -526,6 +609,15 @@ impl CrtGlRenderer {
                 viewport.width as f32,
                 viewport.height as f32,
             );
+            gl::Uniform2f(
+                self.crt_uniforms.source_size,
+                FB_WIDTH as f32,
+                FB_HEIGHT as f32,
+            );
+            gl::Uniform1i(
+                self.crt_uniforms.scaling_filter,
+                i32::from(config.scaling_filter == ScalingFilter::SharpBilinear),
+            );
 
             gl::BindVertexArray(self.vao);
             gl::DrawArrays(gl::TRIANGLES, 0, 6);
@@ -547,6 +639,44 @@ pub struct AspectViewport {
     pub y: i32,
     pub width: i32,
     pub height: i32,
+}
+
+pub fn presentation_viewport(
+    output_width: u32,
+    output_height: u32,
+    aspect: DisplayAspect,
+    scaling_filter: ScalingFilter,
+) -> AspectViewport {
+    if scaling_filter == ScalingFilter::PixelPerfect {
+        integer_scale_viewport(output_width, output_height)
+    } else {
+        aspect_viewport(output_width, output_height, aspect)
+    }
+}
+
+pub fn integer_scale_viewport(output_width: u32, output_height: u32) -> AspectViewport {
+    if output_width == 0 || output_height == 0 {
+        return AspectViewport {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+    }
+
+    let scale = (output_width / FB_WIDTH).min(output_height / FB_HEIGHT);
+    if scale == 0 {
+        return aspect_viewport(output_width, output_height, DisplayAspect::SquarePixels);
+    }
+
+    let width = FB_WIDTH * scale;
+    let height = FB_HEIGHT * scale;
+    AspectViewport {
+        x: ((output_width - width) / 2) as i32,
+        y: ((output_height - height) / 2) as i32,
+        width: width as i32,
+        height: height as i32,
+    }
 }
 
 pub fn aspect_viewport(
@@ -603,6 +733,27 @@ impl Drop for CrtGlRenderer {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn shader_source(source: &'static str, gl_api: GlApi) -> Cow<'static, str> {
+    match gl_api {
+        GlApi::Desktop => Cow::Borrowed(source),
+        GlApi::Gles => Cow::Owned(source.replacen(
+            "#version 330 core",
+            "#version 300 es\nprecision highp float;\nprecision highp int;",
+            1,
+        )),
+    }
+}
+
+fn gl_string(name: u32) -> String {
+    unsafe {
+        let value = gl::GetString(name);
+        if value.is_null() {
+            return "desconocido".to_string();
+        }
+        CStr::from_ptr(value.cast()).to_string_lossy().into_owned()
+    }
+}
 
 fn compile_shader(shader_type: u32, source: &str) -> Result<u32, String> {
     unsafe {
@@ -808,6 +959,7 @@ mod tests {
         assert!(!cfg.curvature);
         assert!(!cfg.scanlines);
         assert_eq!(cfg.display_aspect, DisplayAspect::Original4_3);
+        assert_eq!(cfg.scaling_filter, ScalingFilter::Nearest);
         assert!(!cfg.bloom);
         assert!((cfg.curvature_amount - 0.25).abs() < 0.001);
         assert!((cfg.scanline_intensity - 0.45).abs() < 0.001);
@@ -823,6 +975,7 @@ mod tests {
             scanlines: true,
             scanline_intensity: 0.8,
             display_aspect: DisplayAspect::Wide16_9,
+            scaling_filter: ScalingFilter::SharpBilinear,
             bloom: true,
             bloom_intensity: 0.6,
             bloom_threshold: 0.4,
@@ -836,6 +989,29 @@ mod tests {
     fn bloom_half_res_dimensions() {
         assert_eq!(FB_WIDTH / 2, BLOOM_HALF_W);
         assert_eq!(FB_HEIGHT / 2, BLOOM_HALF_H);
+    }
+
+    #[test]
+    fn gles_shader_sources_use_glsl_es_300() {
+        for source in [
+            VERTEX_SHADER,
+            BRIGHT_PASS_SHADER,
+            BLUR_SHADER,
+            CRT_FRAGMENT_SHADER,
+        ] {
+            let converted = shader_source(source, GlApi::Gles);
+            assert!(converted.starts_with("#version 300 es\n"));
+            assert!(converted.contains("precision highp float;"));
+            assert!(!converted.contains("#version 330 core"));
+        }
+    }
+
+    #[test]
+    fn desktop_shader_sources_remain_glsl_330() {
+        assert_eq!(
+            shader_source(VERTEX_SHADER, GlApi::Desktop).as_ref(),
+            VERTEX_SHADER
+        );
     }
 
     #[test]
@@ -872,6 +1048,59 @@ mod tests {
                 width: 1920,
                 height: 1080,
             }
+        );
+    }
+
+    #[test]
+    fn pixel_perfect_viewport_uses_largest_integer_scale() {
+        assert_eq!(
+            integer_scale_viewport(1280, 720),
+            AspectViewport {
+                x: 184,
+                y: 24,
+                width: 912,
+                height: 672,
+            }
+        );
+        assert_eq!(
+            integer_scale_viewport(1920, 1080),
+            AspectViewport {
+                x: 352,
+                y: 92,
+                width: 1216,
+                height: 896,
+            }
+        );
+        assert_eq!(
+            integer_scale_viewport(2560, 1440),
+            AspectViewport {
+                x: 368,
+                y: 48,
+                width: 1824,
+                height: 1344,
+            }
+        );
+    }
+
+    #[test]
+    fn pixel_perfect_filter_uses_integer_viewport_instead_of_aspect_stretch() {
+        let pixel_perfect = presentation_viewport(
+            1920,
+            1080,
+            DisplayAspect::Original4_3,
+            ScalingFilter::PixelPerfect,
+        );
+        assert_eq!(pixel_perfect, integer_scale_viewport(1920, 1080));
+
+        let nearest = presentation_viewport(
+            1920,
+            1080,
+            DisplayAspect::Original4_3,
+            ScalingFilter::Nearest,
+        );
+        assert_eq!(
+            nearest,
+            aspect_viewport(1920, 1080, DisplayAspect::Original4_3)
         );
     }
 

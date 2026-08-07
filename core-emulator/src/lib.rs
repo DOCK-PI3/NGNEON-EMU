@@ -81,7 +81,7 @@ pub struct MachineStatus {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EmuAction {
     Up,
     Down,
@@ -95,14 +95,72 @@ pub enum EmuAction {
     Coin,
 }
 
+impl EmuAction {
+    const fn index(self) -> usize {
+        match self {
+            Self::Up => 0,
+            Self::Down => 1,
+            Self::Left => 2,
+            Self::Right => 3,
+            Self::A => 4,
+            Self::B => 5,
+            Self::C => 6,
+            Self::D => 7,
+            Self::Start => 8,
+            Self::Coin => 9,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerId {
+    P1,
+    P2,
+    P3,
+    P4,
+}
+
+impl PlayerId {
+    pub const ALL: [Self; 4] = [Self::P1, Self::P2, Self::P3, Self::P4];
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::P1 => 0,
+            Self::P2 => 1,
+            Self::P3 => 2,
+            Self::P4 => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AuxiliaryInput {
+    VlinerOperator,
+    VlinerClearCredit,
+    VlinerHopperOut,
+}
+
+impl AuxiliaryInput {
+    const fn index(self) -> usize {
+        match self {
+            Self::VlinerOperator => 0,
+            Self::VlinerClearCredit => 1,
+            Self::VlinerHopperOut => 2,
+        }
+    }
+}
+
 pub struct NeoGeo {
+    #[cfg(test)]
+    _machine_test_guard: std::sync::MutexGuard<'static, ()>,
     pub cpu: cpu::Cpu,
     pub z80_cpu: z80::Z80,
     pub ym2610: Rc<RefCell<ym2610::Ym2610>>,
     pub memory: Rc<RefCell<memory::Memory>>,
     pub video: video::Video,
     pub audio_mixer: audio::AudioMixer,
-    pub input_state: [bool; 10], // Up, Down, Left, Right, A, B, C, D, Start, Coin
+    pub input_state: [[bool; 10]; 4],
+    auxiliary_input_state: [bool; 3],
     pub demo_px: usize,
     pub demo_py: usize,
     pub emulation_paused: bool,
@@ -124,19 +182,24 @@ pub struct NeoGeo {
 impl NeoGeo {
     /// Inicializa una nueva instancia de la máquina NeoGeo
     pub fn new() -> Self {
+        #[cfg(test)]
+        let machine_test_guard = cpu::MUSASHI_MACHINE_TEST_LOCK.lock().unwrap();
         let memory = Rc::new(RefCell::new(memory::Memory::new()));
         let ym2610 = Rc::new(RefCell::new(ym2610::Ym2610::new(memory.clone())));
         ym2610.borrow_mut().enable_geolith_backend();
         let cpu = cpu::Cpu::new(memory.clone());
         let z80_cpu = z80::Z80::new(memory.clone(), ym2610.clone());
         Self {
+            #[cfg(test)]
+            _machine_test_guard: machine_test_guard,
             cpu,
             z80_cpu,
             ym2610,
             memory,
             video: video::Video::new(),
             audio_mixer: audio::AudioMixer::new(),
-            input_state: [false; 10],
+            input_state: [[false; 10]; 4],
+            auxiliary_input_state: [false; 3],
             demo_px: 160,
             demo_py: 112,
             emulation_paused: false,
@@ -155,20 +218,29 @@ impl NeoGeo {
 
     /// Recibe una acción de entrada (teclado/gamepad)
     pub fn set_input(&mut self, action: EmuAction, pressed: bool) {
-        let idx = match action {
-            EmuAction::Up => 0,
-            EmuAction::Down => 1,
-            EmuAction::Left => 2,
-            EmuAction::Right => 3,
-            EmuAction::A => 4,
-            EmuAction::B => 5,
-            EmuAction::C => 6,
-            EmuAction::D => 7,
-            EmuAction::Start => 8,
-            EmuAction::Coin => 9,
-        };
-        self.input_state[idx] = pressed;
+        self.set_player_input(PlayerId::P1, action, pressed);
+    }
+
+    pub fn set_player_input(&mut self, player: PlayerId, action: EmuAction, pressed: bool) {
+        self.input_state[player.index()][action.index()] = pressed;
         self.sync_input_ports();
+    }
+
+    pub fn set_auxiliary_input(&mut self, action: AuxiliaryInput, pressed: bool) {
+        self.auxiliary_input_state[action.index()] = pressed;
+        self.sync_input_ports();
+    }
+
+    pub fn set_trackball_axes(&mut self, x: i16, y: i16) {
+        self.memory.borrow().set_trackball_axes(x, y);
+    }
+
+    pub fn add_trackball_delta(&mut self, x: i32, y: i32) {
+        self.memory.borrow().add_trackball_delta(x, y);
+    }
+
+    pub fn input_device_mode(&self) -> memory::InputDeviceMode {
+        self.memory.borrow().input_device
     }
 
     /// Carga una ROM y conecta la memoria al core m68k
@@ -186,7 +258,7 @@ impl NeoGeo {
             .request_interrupt(RESET_IRQ_LEVEL)
             .expect("RESET IRQ level is valid");
         self.ym2610.borrow_mut().reset();
-        self.z80_cpu.reset();
+        self.z80_cpu.reset_cold();
         self.audio_mixer.reset();
         self.emulation_paused = false;
         self.last_error = None;
@@ -678,7 +750,12 @@ impl NeoGeo {
         if total_budget == native_budget {
             rendered_interleaved = true;
             self.video.clear_framebuffer();
-            self.video.reset_sprite_line_buffers();
+            // The LSPC's two sprite line buffers cross frontend frame
+            // boundaries. A watchdog reset can restart the LSPC part-way
+            // through the host scheduler frame, so clearing these buffers
+            // here erases the two lines already calculated for the next
+            // scanlines and produces a persistent horizontal gap. Geolith
+            // likewise preserves `linebuf`/`lbactive` across `geo_exec()`.
             while self.master_cycles < MASTER_CYCLES_PER_FRAME && cpu_error.is_none() {
                 match self.cpu.run_cycles(1) {
                     Ok(actual) => {
@@ -803,61 +880,82 @@ impl NeoGeo {
     }
 
     fn sync_input_ports(&mut self) {
-        let ports = input_state_to_ports(self.input_state);
+        let ports = input_state_to_ports(self.input_state, self.auxiliary_input_state);
         self.memory.borrow_mut().set_input_ports(ports);
     }
 
     fn update_demo(&mut self) {
         const SPEED: usize = 2;
-        if self.input_state[0] {
+        if self.input_state[0][0] {
             self.demo_py = self.demo_py.saturating_sub(SPEED);
         }
-        if self.input_state[1] {
+        if self.input_state[0][1] {
             self.demo_py = (self.demo_py + SPEED).min(self.video.height.saturating_sub(1));
         }
-        if self.input_state[2] {
+        if self.input_state[0][2] {
             self.demo_px = self.demo_px.saturating_sub(SPEED);
         }
-        if self.input_state[3] {
+        if self.input_state[0][3] {
             self.demo_px = (self.demo_px + SPEED).min(self.video.width.saturating_sub(1));
         }
     }
 }
 
-fn input_state_to_ports(input_state: [bool; 10]) -> memory::InputPorts {
-    let mut p1 = 0xFF;
-    let mut system = 0x3F;
+fn input_state_to_ports(
+    input_state: [[bool; 10]; 4],
+    auxiliary_input_state: [bool; 3],
+) -> memory::InputPorts {
+    let mut players = [0xFF; 4];
+    let mut system = 0xFF;
     let mut status_a = 0x07;
-    // The original Neo Geo joystick cannot close both contacts on one axis.
-    // Keyboard and gamepad events can, so expose a neutral axis while both
-    // directions are held instead of sending an impossible state to the game.
-    let vertical_socd = input_state[0] && input_state[1];
-    let horizontal_socd = input_state[2] && input_state[3];
+    let mut vliner_system = 0xFF;
 
-    for (index, pressed) in input_state.into_iter().enumerate() {
-        if !pressed {
-            continue;
-        }
+    for (player, state) in input_state.into_iter().enumerate() {
+        let vertical_socd = state[0] && state[1];
+        let horizontal_socd = state[2] && state[3];
+        for (index, pressed) in state.into_iter().enumerate() {
+            if !pressed {
+                continue;
+            }
 
-        match index {
-            0 if !vertical_socd => p1 &= !0x01,   // Up
-            1 if !vertical_socd => p1 &= !0x02,   // Down
-            2 if !horizontal_socd => p1 &= !0x04, // Left
-            3 if !horizontal_socd => p1 &= !0x08, // Right
-            4 => p1 &= !0x10,                     // A
-            5 => p1 &= !0x20,                     // B
-            6 => p1 &= !0x40,                     // C
-            7 => p1 &= !0x80,                     // D
-            8 => system &= !0x01,                 // Start
-            9 => status_a &= !0x01,               // Coin 1
-            _ => {}
+            match index {
+                0 if !vertical_socd => players[player] &= !0x01,
+                1 if !vertical_socd => players[player] &= !0x02,
+                2 if !horizontal_socd => players[player] &= !0x04,
+                3 if !horizontal_socd => players[player] &= !0x08,
+                4 => players[player] &= !0x10,
+                5 => players[player] &= !0x20,
+                6 => players[player] &= !0x40,
+                7 => players[player] &= !0x80,
+                8 => system &= !(1 << (player * 2)),
+                9 if player < 2 => {
+                    system &= !(1 << (player * 2 + 1));
+                    status_a &= !(1 << player);
+                    vliner_system &= !(1 << player);
+                }
+                _ => {}
+            }
         }
     }
 
+    if auxiliary_input_state[0] {
+        vliner_system &= !0x10;
+    }
+    if auxiliary_input_state[1] {
+        vliner_system &= !0x20;
+    }
+    if auxiliary_input_state[2] {
+        vliner_system &= !0x80;
+    }
+
     memory::InputPorts {
-        p1,
+        p1: players[0],
+        p2: players[1],
+        p3: players[2],
+        p4: players[3],
         system,
         status_a,
+        vliner_system,
     }
 }
 
@@ -882,6 +980,68 @@ mod tests {
         assert_eq!(memory.input_ports.p1 & 0x01, 0);
         assert_eq!(memory.input_ports.p1 & 0x10, 0);
         assert_eq!(memory.input_ports.system & 0x01, 0);
+    }
+
+    #[test]
+    fn player_two_uses_real_joystick_start_and_coin_lines() {
+        let mut neogeo = NeoGeo::new();
+        neogeo.set_player_input(PlayerId::P2, EmuAction::A, true);
+        neogeo.set_player_input(PlayerId::P2, EmuAction::Start, true);
+        neogeo.set_player_input(PlayerId::P2, EmuAction::Coin, true);
+
+        let memory = neogeo.memory.borrow();
+        assert_eq!(memory.read8(0x340000) & 0x10, 0);
+        assert_eq!(memory.read8(0x380000) & 0x04, 0);
+        assert_eq!(memory.read8(0x320001) & 0x02, 0);
+    }
+
+    #[test]
+    fn aes_coin_buttons_are_exposed_as_select_lines() {
+        let mut neogeo = NeoGeo::new();
+        neogeo.set_system_is_mvs(false);
+        neogeo.set_player_input(PlayerId::P1, EmuAction::Coin, true);
+
+        let memory = neogeo.memory.borrow();
+        assert_eq!(memory.read8(0x380000) & 0x02, 0);
+        assert_eq!(memory.read8(0x320001) & 0x01, 1);
+    }
+
+    #[test]
+    fn ftc1b_multiplexes_players_three_and_four_with_poutput() {
+        let mut neogeo = NeoGeo::new();
+        neogeo.set_dip_options(false, true, false);
+        neogeo.set_player_input(PlayerId::P3, EmuAction::A, true);
+        neogeo.set_player_input(PlayerId::P3, EmuAction::Start, true);
+        neogeo.set_player_input(PlayerId::P4, EmuAction::B, true);
+        neogeo.set_player_input(PlayerId::P4, EmuAction::Start, true);
+
+        {
+            let mut memory = neogeo.memory.borrow_mut();
+            memory.write8(0x380001, 0x00);
+            assert_eq!(memory.read8(0x340000) & 0x10, 0);
+            assert_eq!(memory.read8(0x380000) & 0x04, 0);
+
+            memory.write8(0x380001, 0x01);
+            assert_eq!(memory.read8(0x340000) & 0x20, 0);
+            assert_eq!(memory.read8(0x380000) & 0x04, 0);
+
+            memory.write8(0x380001, 0x05);
+            assert_eq!(memory.read8(0x300000) & 0x20, 0);
+        }
+    }
+
+    #[test]
+    fn irritating_maze_maps_trackball_and_buttons_like_geolith() {
+        let mut neogeo = NeoGeo::new();
+        neogeo.memory.borrow_mut().input_device = memory::InputDeviceMode::IrritatingMaze;
+        neogeo.set_player_input(PlayerId::P1, EmuAction::A, true);
+        neogeo.set_player_input(PlayerId::P1, EmuAction::D, true);
+        neogeo.set_trackball_axes(4096, 0);
+
+        let memory = neogeo.memory.borrow();
+        assert_eq!(memory.read8(0x300000), 0);
+        assert_eq!(memory.read8(0x300000), 0xFF);
+        assert_eq!(memory.read8(0x340000) & 0x90, 0);
     }
 
     #[test]
@@ -921,6 +1081,53 @@ mod tests {
         assert!(!neogeo.emulation_paused);
         assert!(neogeo.last_error.is_none());
         assert_eq!(neogeo.last_cpu_cycles, 0);
+    }
+
+    #[test]
+    fn host_frame_boundary_preserves_precalculated_lspc_sprite_lines() {
+        fn write_vram_word(memory: &mut memory::Memory, address: u16, value: u16) {
+            let offset = address as usize * 2;
+            let [hi, lo] = value.to_be_bytes();
+            memory.vram[offset] = hi;
+            memory.vram[offset + 1] = lo;
+        }
+
+        let mut neogeo = NeoGeo::new();
+        {
+            let mut memory = neogeo.memory.borrow_mut();
+            memory.crom = vec![0xFF; video::BYTES_PER_TILE];
+            memory.palette_ram[30..32].copy_from_slice(&0x7FFFu16.to_be_bytes());
+            write_vram_word(&mut memory, 64, 0); // SCB1 tile for sprite 1.
+            write_vram_word(&mut memory, 65, 0); // SCB1 attributes.
+            write_vram_word(&mut memory, 0x8001, 0x0FFF); // Full-size shrink.
+            write_vram_word(&mut memory, 0x8201, (496 << 7) | 1); // Visible y=0.
+            write_vram_word(&mut memory, 0x8401, 40 << 7);
+        }
+
+        neogeo.video.reset_sprite_line_buffers();
+        {
+            let memory = neogeo.memory.borrow();
+            neogeo
+                .video
+                .calculate_buffered_sprites_scanline_all(&memory, 0);
+            neogeo
+                .video
+                .calculate_buffered_sprites_scanline_all(&memory, 1);
+        }
+
+        // Simulate a host-frame boundary that lands after the LSPC already
+        // calculated its next two lines (as happens after a watchdog reset).
+        neogeo.master_cycles = MASTER_CYCLES_PER_FRAME;
+        neogeo.step().unwrap();
+        {
+            let memory = neogeo.memory.borrow();
+            neogeo.video.present_buffered_sprites_scanline(&memory, 0);
+        }
+
+        assert_ne!(
+            neogeo.video.framebuffer[40], neogeo.video.framebuffer[0],
+            "the host frame must not erase the LSPC's pending sprite line"
+        );
     }
 
     #[test]

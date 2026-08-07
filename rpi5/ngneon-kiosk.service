@@ -1,0 +1,38 @@
+[Unit]
+Description=NGNEON-EMU frontend kiosk
+Documentation=file:/home/neo/NGNEON-EMU-linux-aarch64/rpi5/README.md
+After=local-fs.target systemd-tmpfiles-setup.service systemd-user-sessions.service sound.target getty@tty1.service
+Wants=sound.target
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+User=neo
+Group=neo
+SupplementaryGroups=audio video render input
+WorkingDirectory=/home/neo/NGNEON-EMU-linux-aarch64
+Environment=HOME=/home/neo
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=SDL_AUDIODRIVER=alsa
+Environment=XDG_RUNTIME_DIR=/run/ngneon-kiosk
+Environment=NGNEON_RUNTIME_DIR=/run/ngneon-session
+RuntimeDirectory=ngneon-kiosk
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty-force
+StandardOutput=journal
+StandardError=journal
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+UtmpIdentifier=tty1
+ExecStart=/home/neo/NGNEON-EMU-linux-aarch64/rpi5/ngneon-kiosk.sh
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

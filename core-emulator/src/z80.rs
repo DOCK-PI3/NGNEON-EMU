@@ -33,6 +33,13 @@ const PORT_NMI_DISABLE: u16 = 0x18;
 const PORT_SOUND_LATCH_CLEAR: u16 = 0xC0;
 const HALT_IDLE_TSTATES: u32 = 4;
 
+fn elapsed_tstates(ts_before: i32, ts_after: i32) -> u32 {
+    // z80emu's TsCounter intentionally wraps at the width of its timestamp.
+    // A modular subtraction therefore gives the real instruction duration
+    // even when the signed i32 counter crosses from MAX to MIN.
+    ts_after.wrapping_sub(ts_before) as u32
+}
+
 /// Bus adapter implementing both `Memory` and `Io` traits for `z80emu`.
 pub struct Z80Bus {
     pub mem: Rc<RefCell<Memory>>,
@@ -265,14 +272,23 @@ impl Z80 {
         }
     }
 
-    /// Reset the Z80 — reads reset vector from address 0x0000 (M-ROM).
+    /// Reset the Z80 while preserving the NEO-ZMC bank registers.
+    ///
+    /// Geolith only initializes the bank offsets during cold machine/ROM
+    /// setup. Soft resets and watchdog resets leave the external bank latches
+    /// untouched.
     pub fn reset(&mut self) {
         self.cpu.reset();
         self.tsc = TsCounter::default();
-        let mut mem = self.bus.mem.borrow_mut();
-        mem.z80_bank = Z80_DEFAULT_BANK_OFFSETS;
+        let mem = self.bus.mem.borrow_mut();
         mem.z80_nmi_enabled.set(false);
         mem.z80_nmi_pending.set(false);
+    }
+
+    /// Cold reset used when a new cartridge is connected.
+    pub fn reset_cold(&mut self) {
+        self.reset();
+        self.bus.mem.borrow_mut().z80_bank = Z80_DEFAULT_BANK_OFFSETS;
     }
 
     /// Execute a single Z80 instruction.
@@ -281,8 +297,15 @@ impl Z80 {
         // Service NMI if pending (NMI wakes the CPU from HALT)
         let nmi = self.bus.mem.borrow().z80_nmi_pending.get();
         if nmi {
-            self.bus.mem.borrow().z80_nmi_pending.set(false);
-            self.cpu.nmi(&mut self.bus, &mut self.tsc);
+            // z80emu rejects an NMI for the instruction boundary immediately
+            // following EI and while a DD/FD prefix is pending. The physical
+            // Z80 keeps the edge latched until it can be accepted, so only
+            // acknowledge our pending pulse after the core actually enters
+            // the NMI handler. Dropping it here can lose a one-shot music
+            // command while later sound-effect commands continue to work.
+            if self.cpu.nmi(&mut self.bus, &mut self.tsc) {
+                self.bus.mem.borrow().z80_nmi_pending.set(false);
+            }
         }
 
         // Always call execute_next(), even when halted.  The z80emu crate
@@ -294,7 +317,7 @@ impl Z80 {
         let _ = self
             .cpu
             .execute_next(&mut self.bus, &mut self.tsc, None::<fn(z80emu::CpuDebug)>);
-        let elapsed = self.tsc.as_timestamp().saturating_sub(ts_before) as u32;
+        let elapsed = elapsed_tstates(ts_before, self.tsc.as_timestamp());
         if elapsed == 0 && self.cpu.is_halt() {
             // HALT does not stop the NeoGeo sound subsystem clock. Geolith
             // keeps advancing the Z80/YM2610 timebase while the sound driver
@@ -560,6 +583,23 @@ mod tests {
     }
 
     #[test]
+    fn z80_step_tstate_delta_survives_signed_counter_wrap() {
+        let (mut z80, mem) = new_test_z80();
+        mem.borrow_mut().mrom = vec![0x00]; // NOP = 4 T-states
+        z80.tsc = TsCounter::from(i32::MAX - 1);
+
+        let elapsed = z80.step();
+
+        assert_eq!(elapsed, 4);
+        assert!(z80.tsc.as_timestamp() < 0, "the test must cross i32::MAX");
+    }
+
+    #[test]
+    fn elapsed_tstates_is_modular_across_i32_wrap() {
+        assert_eq!(elapsed_tstates(i32::MAX - 1, i32::MIN + 2), 4);
+    }
+
+    #[test]
     fn z80_nmi_is_serviced_when_pending() {
         let (mut z80, mem) = new_test_z80();
         // RST 38H at NMI vector (0x0066): we need some code there.
@@ -585,6 +625,33 @@ mod tests {
         // Step again — NMI handler jumps to itself
         z80.step();
         assert_eq!(z80.pc(), 0x0066);
+    }
+
+    #[test]
+    fn z80_nmi_remains_pending_until_prefix_boundary_accepts_it() {
+        let (mut z80, mem) = new_test_z80();
+        let mut mrom = vec![0x00; 0x100];
+        mrom[0x0000] = 0xDD; // IX prefix: interrupts are deferred one boundary.
+        mrom[0x0001] = 0x00; // Prefixed NOP.
+        mrom[0x0066] = 0xC3; // JP $0066.
+        mrom[0x0067] = 0x66;
+        mrom[0x0068] = 0x00;
+        mem.borrow_mut().mrom = mrom;
+
+        z80.step();
+        assert!(z80.cpu.is_after_prefix());
+        mem.borrow().z80_nmi_pending.set(true);
+
+        z80.step();
+        assert!(
+            mem.borrow().z80_nmi_pending.get(),
+            "a deferred NMI pulse must remain latched"
+        );
+        assert_ne!(z80.pc(), 0x0066);
+
+        z80.step();
+        assert_eq!(z80.pc(), 0x0066);
+        assert!(!mem.borrow().z80_nmi_pending.get());
     }
 
     #[test]
@@ -625,6 +692,7 @@ mod tests {
     fn z80_reset_restarts_cpu() {
         let (mut z80, mem) = new_test_z80();
         mem.borrow_mut().mrom = vec![0xC3, 0x00, 0x00];
+        mem.borrow_mut().z80_bank = [0x1200, 0x3400, 0x5600, 0x7800];
 
         // Execute a few steps
         z80.step();
@@ -634,6 +702,10 @@ mod tests {
         z80.reset();
         // PC should be 0 after reset (Z80 starts executing from 0x0000)
         assert_eq!(z80.pc(), 0x0000);
+        assert_eq!(mem.borrow().z80_bank, [0x1200, 0x3400, 0x5600, 0x7800]);
+
+        z80.reset_cold();
+        assert_eq!(mem.borrow().z80_bank, Z80_DEFAULT_BANK_OFFSETS);
     }
 
     #[test]

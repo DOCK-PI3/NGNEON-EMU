@@ -4,12 +4,13 @@
 //! the SDL frontend, while consuming audio in callback-sized blocks.
 
 use core_emulator::{bios, rom::RomData, NeoGeo};
-use frontend::audio::{AudioRingBuffer, Resampler, AUDIO_OUTPUT_RATE};
+use frontend::audio::{AudioRingBuffer, Resampler, SystemTiming, AUDIO_OUTPUT_RATE};
 use std::path::{Path, PathBuf};
 
 const SDL_CALLBACK_PAIRS: usize = 1024;
 const RING_CAPACITY_SAMPLES: usize = 32_768;
 const MVS_MASTER_CLOCK_HZ: u64 = 24_000_000;
+const AES_MASTER_CLOCK_HZ: u64 = 24_167_829;
 const MVS_MASTER_CYCLES_PER_FRAME: u64 = 405_504;
 
 fn main() {
@@ -21,10 +22,9 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let rom_path = args
-        .next()
-        .map(PathBuf::from)
-        .ok_or_else(|| "Uso: audit_frontend_audio <rom.neo> [bios_dir] [frames]".to_string())?;
+    let rom_path = args.next().map(PathBuf::from).ok_or_else(|| {
+        "Uso: audit_frontend_audio <rom.neo> [bios_dir] [frames] [mvs|aes]".to_string()
+    })?;
     if !rom_path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -42,16 +42,28 @@ fn run() -> Result<(), String> {
         .transpose()
         .map_err(|error| format!("Frames inválidos: {error}"))?
         .unwrap_or(3_600);
+    let timing = match args.next().as_deref().and_then(|value| value.to_str()) {
+        None | Some("mvs") => SystemTiming::Mvs,
+        Some("aes") => SystemTiming::Aes,
+        Some(other) => return Err(format!("Sistema inválido '{other}': usa mvs o aes")),
+    };
 
     let mut rom = RomData::from_neo(&rom_path)?;
     let dirs = [bios_dir.as_path()];
-    let selected_bios = bios::load_bios_from_multi(&dirs)?
-        .ok_or_else(|| format!("No se encontró BIOS en {:?}", bios_dir))?;
+    let selected_bios = match timing {
+        SystemTiming::Mvs => bios::load_bios_from_multi(&dirs)?,
+        SystemTiming::Aes => bios::list_available_bios_multi(&dirs)?
+            .into_iter()
+            .find(|candidate| bios::bios_kind(&candidate.label) == bios::BiosKind::Aes),
+    }
+    .ok_or_else(|| format!("No se encontró BIOS {:?} en {:?}", timing, bios_dir))?;
     let zoom = bios::load_zoom_rom_for_bios_from_multi(&dirs, &selected_bios.label)?;
     let sfix = bios::load_sfix_rom_for_bios_from_multi(&dirs, &selected_bios.label)?;
     let sm1 = bios::load_sm1_rom_for_bios_from_multi(&dirs, &selected_bios.label)?;
 
     let mut machine = NeoGeo::new();
+    machine.set_system_is_mvs(timing == SystemTiming::Mvs);
+    machine.set_coin_slots_34_high(timing == SystemTiming::Mvs);
     machine.set_bios(selected_bios.data);
     if let Some(zoom) = zoom {
         machine.set_zoom_rom(zoom.data);
@@ -65,6 +77,7 @@ fn run() -> Result<(), String> {
     machine.load_rom_and_connect(&mut rom);
 
     let mut resampler = Resampler::new_mvs(AUDIO_OUTPUT_RATE);
+    resampler.set_system_timing(timing);
     let mut ring = AudioRingBuffer::new(RING_CAPACITY_SAMPLES);
     let preroll_samples = SDL_CALLBACK_PAIRS * 2;
     ring.write_silence(preroll_samples);
@@ -83,7 +96,7 @@ fn run() -> Result<(), String> {
         native_pairs += native.len() / 2;
         resampler.push(native);
 
-        let due_pairs = resampler.next_mvs_output_pairs();
+        let due_pairs = resampler.next_output_pairs();
         output_pairs += due_pairs;
         let mut resampled = vec![0i16; due_pairs * 2];
         resampler.pull(&mut resampled);
@@ -105,9 +118,13 @@ fn run() -> Result<(), String> {
         }
     }
 
+    let master_clock = match timing {
+        SystemTiming::Mvs => MVS_MASTER_CLOCK_HZ,
+        SystemTiming::Aes => AES_MASTER_CLOCK_HZ,
+    };
     let expected_output_pairs =
-        (frames as u64 * AUDIO_OUTPUT_RATE as u64 * MVS_MASTER_CYCLES_PER_FRAME
-            / MVS_MASTER_CLOCK_HZ) as usize;
+        (frames as u64 * AUDIO_OUTPUT_RATE as u64 * MVS_MASTER_CYCLES_PER_FRAME / master_clock)
+            as usize;
     let expected_ring_samples =
         preroll_samples + output_pairs * 2 - callbacks * SDL_CALLBACK_PAIRS * 2;
     let passed = output_pairs == expected_output_pairs
@@ -117,8 +134,9 @@ fn run() -> Result<(), String> {
         && ring.underrun_samples() == 0;
 
     println!(
-        "[FRONTEND_AUDIO] verdict={} rom={} frames={} native_pairs={} output_pairs={} expected_pairs={} callbacks={} ring_samples={} expected_ring={} source_buffer_pairs={} starved_pairs={} overruns={} underruns={} nonzero={} peak={}",
+        "[FRONTEND_AUDIO] verdict={} system={:?} rom={} frames={} native_pairs={} output_pairs={} expected_pairs={} callbacks={} ring_samples={} expected_ring={} source_buffer_pairs={} starved_pairs={} overruns={} underruns={} nonzero={} peak={}",
         if passed { "PASS" } else { "FAIL" },
+        timing,
         display_name(&rom_path),
         frames,
         native_pairs,

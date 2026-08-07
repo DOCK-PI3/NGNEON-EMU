@@ -27,8 +27,9 @@ use z80emu::{Cpu as _, InterruptMode, Prefix, StkReg16};
 // ─── Magic & version ──────────────────────────────────────────────────────
 
 const SAVE_MAGIC: [u8; 8] = *b"NGNEONST";
-const SAVE_VERSION: u32 = 13;
-const RUNTIME_STATE_SIZE: usize = 91;
+const SAVE_VERSION: u32 = 14;
+const LEGACY_RUNTIME_STATE_SIZE: usize = 91;
+const RUNTIME_STATE_SIZE: usize = LEGACY_RUNTIME_STATE_SIZE + 5;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SchedulerState {
@@ -99,7 +100,7 @@ pub fn serialize_all_with_scheduler(
     ym2610: &Ym2610,
     _video: &Video,
     mem: &Memory,
-    _mixer: &AudioMixer,
+    mixer: &AudioMixer,
     scheduler: SchedulerState,
 ) -> Vec<u8> {
     let ctx = cpu.save_context().to_vec();
@@ -253,6 +254,16 @@ pub fn serialize_all_with_scheduler(
     write_u8(&mut buf, pos + 55, mem.watchdog_enabled as u8);
     write_u8(&mut buf, pos + 56, mem.status_a_pulse.get() as u8);
     buf[pos + 57..pos + 57 + RTC_SAVE_STATE_SIZE].copy_from_slice(&mem.save_rtc_state());
+    write_u32(
+        &mut buf,
+        pos + LEGACY_RUNTIME_STATE_SIZE,
+        mixer.ym_tstate_remainder(),
+    );
+    write_u8(
+        &mut buf,
+        pos + LEGACY_RUNTIME_STATE_SIZE + 4,
+        mem.reg_poutput,
+    );
     pos += RUNTIME_STATE_SIZE;
     debug_assert_eq!(pos - start, RUNTIME_STATE_SIZE);
 
@@ -285,7 +296,7 @@ pub fn deserialize_all_with_scheduler(
     ym2610: &mut Ym2610,
     _video: &mut Video,
     mem: &mut Memory,
-    _mixer: &mut AudioMixer,
+    mixer: &mut AudioMixer,
     scheduler: &mut SchedulerState,
 ) -> Result<usize, &'static str> {
     if data.len() < 12 + 4 {
@@ -528,7 +539,12 @@ pub fn deserialize_all_with_scheduler(
         }
         let runtime_size = read_u32(data, pos) as usize;
         pos += 4;
-        if runtime_size != RUNTIME_STATE_SIZE || data.len() < pos + runtime_size {
+        let expected_runtime_size = if version >= 14 {
+            RUNTIME_STATE_SIZE
+        } else {
+            LEGACY_RUNTIME_STATE_SIZE
+        };
+        if runtime_size != expected_runtime_size || data.len() < pos + runtime_size {
             return Err("SaveState: estado runtime incompatible");
         }
         scheduler.master_cycles = read_u32(data, pos);
@@ -561,10 +577,19 @@ pub fn deserialize_all_with_scheduler(
         mem.watchdog_enabled = read_u8(data, pos + 55) != 0;
         mem.status_a_pulse.set(read_u8(data, pos + 56) != 0);
         mem.load_rtc_state(&data[pos + 57..pos + 57 + RTC_SAVE_STATE_SIZE])?;
+        if version >= 14 {
+            mixer.set_ym_tstate_remainder(read_u32(data, pos + LEGACY_RUNTIME_STATE_SIZE));
+            mem.reg_poutput = read_u8(data, pos + LEGACY_RUNTIME_STATE_SIZE + 4);
+        } else {
+            mixer.set_ym_tstate_remainder(0);
+            mem.reg_poutput = 0;
+        }
         pos += runtime_size;
     } else {
         cpu.restore_runtime_state(CpuRuntimeState::default());
         *scheduler = SchedulerState::default();
+        mixer.set_ym_tstate_remainder(0);
+        mem.reg_poutput = 0;
     }
 
     Ok(pos)
@@ -585,6 +610,7 @@ mod tests {
     use std::rc::Rc;
 
     type TestComponents = (
+        std::sync::MutexGuard<'static, ()>,
         Cpu,
         Z80,
         Rc<RefCell<Ym2610>>,
@@ -594,13 +620,14 @@ mod tests {
     );
 
     fn setup_test_components() -> TestComponents {
+        let guard = crate::cpu::MUSASHI_MACHINE_TEST_LOCK.lock().unwrap();
         let mem = Rc::new(RefCell::new(Memory::new()));
         let ym2610 = Rc::new(RefCell::new(Ym2610::new(mem.clone())));
         let cpu = Cpu::new(mem.clone());
         let zbus = Z80::new(mem.clone(), ym2610.clone());
         let video = Video::new();
         let mixer = AudioMixer::new();
-        (cpu, zbus, ym2610, video, mem, mixer)
+        (guard, cpu, zbus, ym2610, video, mem, mixer)
     }
 
     fn kof98_test_rom() -> crate::rom::RomData {
@@ -625,7 +652,7 @@ mod tests {
 
     #[test]
     fn test_save_roundtrip() {
-        let (mut cpu, zbus, ym2610_rc, video, mem_rc, mixer) = setup_test_components();
+        let (_guard, mut cpu, zbus, ym2610_rc, video, mem_rc, mixer) = setup_test_components();
 
         // Set recognizable values via Musashi registers
         cpu.set_reg(crate::musashi_ffi::M68K_REG_PC, 0x12345678);
@@ -682,7 +709,8 @@ mod tests {
 
     #[test]
     fn test_save_invalid_magic() {
-        let (mut cpu, mut zbus, ym2610_rc, mut video, mem_rc, mut mixer) = setup_test_components();
+        let (_guard, mut cpu, mut zbus, ym2610_rc, mut video, mem_rc, mut mixer) =
+            setup_test_components();
         let data = vec![0; 100];
         let result = deserialize_all(
             &data,
@@ -698,7 +726,7 @@ mod tests {
 
     #[test]
     fn test_save_roundtrip_memory_values() {
-        let (mut cpu, zbus, ym2610_rc, video, mem_rc, mixer) = setup_test_components();
+        let (_guard, mut cpu, zbus, ym2610_rc, video, mem_rc, mixer) = setup_test_components();
 
         // Write values to memory
         mem_rc.borrow_mut().ram[0] = 0x42;
@@ -761,7 +789,7 @@ mod tests {
 
     #[test]
     fn test_save_roundtrip_special_board_state_and_kof98_overlay() {
-        let (mut cpu, zbus, ym2610_rc, video, mem_rc, mixer) = setup_test_components();
+        let (_guard, mut cpu, zbus, ym2610_rc, video, mem_rc, mixer) = setup_test_components();
         mem_rc.borrow_mut().load_rom(&mut kof98_test_rom());
 
         let expected = SpecialBoardState {
@@ -813,7 +841,7 @@ mod tests {
 
     #[test]
     fn test_save_roundtrip_geolith_ymfm_state_block() {
-        let (mut cpu, zbus, ym2610_rc, video, mem_rc, mixer) = setup_test_components();
+        let (_guard, mut cpu, zbus, ym2610_rc, video, mem_rc, mixer) = setup_test_components();
         {
             let mut ym = ym2610_rc.borrow_mut();
             ym.enable_geolith_backend();
@@ -854,7 +882,8 @@ mod tests {
 
     #[test]
     fn test_save_roundtrip_runtime_hardware_state() {
-        let (mut cpu, mut z80, ym2610_rc, video, mem_rc, mixer) = setup_test_components();
+        let (_guard, mut cpu, mut z80, ym2610_rc, video, mem_rc, mut mixer) =
+            setup_test_components();
         cpu.request_interrupt(1).unwrap();
         cpu.request_interrupt(3).unwrap();
         let expected_cpu_runtime = cpu.runtime_state();
@@ -890,6 +919,7 @@ mod tests {
             mem.z80_nmi_enabled.set(true);
             mem.z80_nmi_pending.set(true);
             mem.ym2610_addr = [0x28, 0x2a];
+            mem.reg_poutput = 0x05;
             mem.memcard_register_select = true;
             mem.memcard_lock1 = true;
             mem.memcard_lock2 = false;
@@ -899,6 +929,7 @@ mod tests {
             mem.status_a_pulse.set(false);
             mem.load_rtc_state(&expected_rtc).unwrap();
         }
+        mixer.set_ym_tstate_remainder(37);
 
         let expected_scheduler = SchedulerState {
             master_cycles: 0x12345,
@@ -953,11 +984,13 @@ mod tests {
         assert!(mem2.z80_nmi_enabled.get());
         assert!(mem2.z80_nmi_pending.get());
         assert_eq!(mem2.ym2610_addr, [0x28, 0x2a]);
+        assert_eq!(mem2.reg_poutput, 0x05);
         assert!(mem2.memcard_register_select);
         assert!(mem2.memcard_lock1);
         assert!(!mem2.memcard_lock2);
         assert!(!mem2.memcard_unlocked);
         assert_eq!(mem2.watchdog_cycles, 0x00ab_cdef);
         assert_eq!(mem2.save_rtc_state(), expected_rtc);
+        assert_eq!(mixer2.ym_tstate_remainder(), 37);
     }
 }

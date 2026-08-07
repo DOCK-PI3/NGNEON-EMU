@@ -21,6 +21,13 @@ use crate::musashi_ffi;
 #[cfg(test)]
 pub(crate) static MUSASHI_LOCK: Mutex<()> = Mutex::new(());
 
+/// Musashi instances cannot coexist inside the same test process because the
+/// C core owns one global CPU context. `NeoGeo` and direct savestate fixtures
+/// hold this guard for their complete lifetime, preventing cross-test context
+/// switches between otherwise individually locked FFI calls.
+#[cfg(test)]
+pub(crate) static MUSASHI_MACHINE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 // ─── CPU state snapshot ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

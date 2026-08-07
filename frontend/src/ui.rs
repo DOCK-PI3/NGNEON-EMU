@@ -1352,6 +1352,7 @@ pub fn draw_gamepad_config(
     has_gamepad: bool,
     selected_controller: usize,
     total_controllers: usize,
+    assigned_player: Option<core_emulator::PlayerId>,
     frame_counter: u64,
 ) {
     let height = framebuffer.len() / width;
@@ -1425,11 +1426,19 @@ pub fn draw_gamepad_config(
     }
 
     // --- Controller indicator ---
+    let player_label = match assigned_player {
+        Some(core_emulator::PlayerId::P1) => "P1",
+        Some(core_emulator::PlayerId::P2) => "P2",
+        Some(core_emulator::PlayerId::P3) => "P3",
+        Some(core_emulator::PlayerId::P4) => "P4",
+        None => "--",
+    };
     let ctrl_str = format!(
-        "{} {}/{}",
+        "{} {}/{} [{}]",
         "Ctrl",
         selected_controller + 1,
-        total_controllers
+        total_controllers,
+        player_label,
     );
     let ctrl_x = width.saturating_sub(ctrl_str.len() * 6 + 4);
     draw_text(framebuffer, width, ctrl_x, 2, TEXT_BODY, &ctrl_str);
@@ -1572,6 +1581,7 @@ pub fn draw_keyboard_config(
     width: usize,
     actions: &[core_emulator::EmuAction; 10],
     mapping: &super::input::KeyboardMapping,
+    player: core_emulator::PlayerId,
     selected: usize,
     listening: bool,
     lang: &super::lang::Lang,
@@ -1600,7 +1610,14 @@ pub fn draw_keyboard_config(
     }
 
     // --- Title ---
-    draw_text(framebuffer, width, 4, 2, ACCENT, lang.kb_title);
+    let player_label = match player {
+        core_emulator::PlayerId::P1 => "P1",
+        core_emulator::PlayerId::P2 => "P2",
+        core_emulator::PlayerId::P3 => "P3",
+        core_emulator::PlayerId::P4 => "P4",
+    };
+    let title = format!("{} [{}]", lang.kb_title, player_label);
+    draw_text(framebuffer, width, 4, 2, ACCENT, &title);
 
     let sep_y = 2 + CHAR_H + 2;
     for x in 0..width {
@@ -1627,7 +1644,7 @@ pub fn draw_keyboard_config(
         let is_selected = i == selected;
 
         // Find which key maps to this action
-        let bound_key = mapping.key_for_action(action);
+        let bound_key = mapping.key_for_player_action(player, action);
         let bound_name = match bound_key {
             Some(k) => super::input::keycode_name(k),
             None => "---",
@@ -1697,7 +1714,7 @@ pub fn draw_keyboard_config(
     let actions_text = if listening {
         format!("\u{2190} {} | Esc:Cancel", lang.kb_listening)
     } else {
-        lang.kb_actions_with_data.to_string()
+        format!("{}  ←→:P1/P2", lang.kb_actions_with_data)
     };
     draw_text(framebuffer, width, 4, bottom_y, TEXT_BODY, &actions_text);
 
@@ -1908,11 +1925,11 @@ pub fn draw_profile_config(
 /// Draw the full-screen settings menu with tabbed navigation.
 ///
 /// Tabs:
-///   0: Video (Scanlines, Curvature, Bloom, Fullscreen, Aspect Ratio, Window Scale)
+///   0: Video (CRT effects, fullscreen, aspect, palette, resolution, scaling filter)
 ///   1: Audio (Volume, Mute)
 ///   2: System (Language, ROM Dumps, Auto-save, BIOS Selector)
 ///   3: Controls (Gamepad SDL2, Gamepad Config, Keyboard Config)
-///   4: Paths (ROMs Dir, BIOS Dir, Media Dir, Screenshots Dir, Saves Dir)
+///   4: Paths (ROMs Dir, BIOS Dir, Media Dir, ROM Browser image, Screenshots Dir, Saves Dir)
 ///   5: RetroAchievements status
 ///
 /// Navigation: ← → switch tabs, ↑ ↓ select item, Enter toggle/open.
@@ -1929,9 +1946,10 @@ pub fn draw_settings_menu(
     fullscreen: bool,
     volume: u8,
     muted: bool,
-    window_scale: u32,
     aspect_ratio: &str,
     palette_mode: &str,
+    output_resolution: &str,
+    scaling_filter: &str,
     auto_save: bool,
     gamepad_enabled: bool,
     cpu_overclock: bool,
@@ -1941,6 +1959,7 @@ pub fn draw_settings_menu(
     memcard_write_protected: bool,
     setting_mode: bool,
     freeplay: bool,
+    four_player: bool,
     vol_adjusting: bool,
     ra_logged_in: bool,
     ra_username: &str,
@@ -1960,6 +1979,7 @@ pub fn draw_settings_menu(
     rom_dir: &str,
     bios_dir: &str,
     media_dir: &str,
+    rom_browser_media: &str,
     screenshots_dir: &str,
     saves_dir: &str,
     lang: &super::lang::Lang,
@@ -2055,9 +2075,9 @@ pub fn draw_settings_menu(
     // --- Tab items ---
     match selected_tab {
         0 => {
-            // VIDEO tab: Scanlines, Curvature, Bloom, Fullscreen, Aspect Ratio, Palette, Window Scale
-            let scale_str = format!("{}x", window_scale);
-            let items: [(&str, String, u32); 7] = [
+            // VIDEO tab: Scanlines, Curvature, Bloom, Fullscreen, Aspect Ratio,
+            // Palette, Output Resolution, Scaling Filter.
+            let items: [(&str, String, u32); 8] = [
                 (
                     lang.settings_label_scanlines,
                     if scanlines {
@@ -2104,7 +2124,16 @@ pub fn draw_settings_menu(
                     palette_mode.to_string(),
                     ACCENT,
                 ),
-                (lang.settings_label_window_scale, scale_str, ACCENT),
+                (
+                    lang.settings_label_output_resolution,
+                    output_resolution.to_string(),
+                    ACCENT,
+                ),
+                (
+                    lang.settings_label_scaling_filter,
+                    scaling_filter.to_string(),
+                    ACCENT,
+                ),
             ];
             for (i, (label, state_text, state_color)) in items.iter().enumerate() {
                 draw_settings_row(
@@ -2171,7 +2200,7 @@ pub fn draw_settings_menu(
         }
         2 => {
             // SYSTEM tab: base settings followed by Geolith-compatible hacks.
-            let items: [(&str, String, u32); 11] = [
+            let items: [(&str, String, u32); 12] = [
                 (
                     lang.settings_label_language,
                     if language_is_es {
@@ -2269,6 +2298,11 @@ pub fn draw_settings_menu(
                         TEXT_BODY
                     },
                 ),
+                (
+                    "FTC1B 4 Players",
+                    if four_player { "ON" } else { "OFF" }.to_string(),
+                    if four_player { TEXT_ON } else { TEXT_OFF },
+                ),
             ];
             for (i, (label, state_text, state_color)) in items.iter().enumerate() {
                 draw_settings_row(
@@ -2314,7 +2348,7 @@ pub fn draw_settings_menu(
             }
         }
         4 => {
-            // PATHS tab: ROMs, BIOS, Media, Screenshots, Saves
+            // PATHS tab: ROMs, BIOS, Media, ROM Browser image, Screenshots, Saves
             let truncate = |s: &str, max: usize| -> String {
                 if s.len() > max {
                     format!("{}..", &s[..max.saturating_sub(2)])
@@ -2322,7 +2356,7 @@ pub fn draw_settings_menu(
                     s.to_string()
                 }
             };
-            let items: [(&str, String, u32); 5] = [
+            let items: [(&str, String, u32); 6] = [
                 (
                     lang.settings_label_rom_dir,
                     truncate(rom_dir, 30),
@@ -2336,6 +2370,11 @@ pub fn draw_settings_menu(
                 (
                     lang.settings_label_media_dir,
                     truncate(media_dir, 30),
+                    ACCENT,
+                ),
+                (
+                    lang.settings_label_rom_browser_image,
+                    truncate(rom_browser_media, 30),
                     ACCENT,
                 ),
                 (
@@ -2589,6 +2628,7 @@ pub fn draw_rom_browser(
     entries: &[crate::RomEntry],
     selected: usize,
     scroll_offset: usize,
+    artwork_source: &str,
     lang: &super::lang::Lang,
 ) {
     let height = framebuffer.len() / width;
@@ -2653,6 +2693,24 @@ pub fn draw_rom_browser(
     let page_x = width.saturating_sub(page_str.len() * CHAR_W + 4);
     draw_text(framebuffer, width, page_x, 2, TEXT_DIM, &page_str);
 
+    let artwork_prefix = if lang.language == super::lang::Language::Es {
+        "IMG:"
+    } else {
+        "ART:"
+    };
+    let artwork_x = 4 + (lang.rb_title.chars().count() + 2) * CHAR_W;
+    let artwork_chars = page_x
+        .saturating_sub(artwork_x + 4)
+        .checked_div(CHAR_W)
+        .unwrap_or(0);
+    if artwork_chars > artwork_prefix.len() {
+        let artwork_text: String = format!("{artwork_prefix}{artwork_source}")
+            .chars()
+            .take(artwork_chars)
+            .collect();
+        draw_text(framebuffer, width, artwork_x, 2, TEXT_BODY, &artwork_text);
+    }
+
     if entries.is_empty() {
         let message = if lang.language == super::lang::Language::Es {
             "NO HAY ROMS .NEO/.ZIP EN LA CARPETA ROMS"
@@ -2697,7 +2755,7 @@ pub fn draw_rom_browser(
         let thumb_x = cell_x + (CELL_W.saturating_sub(THUMB_W)) / 2;
         let thumb_y = cell_y;
 
-        if entry.has_thumbnail {
+        if entry.artwork_path.is_some() {
             if let Some(ref thumb) = entry.thumbnail {
                 // Thumbnails are pre-scaled to exactly 150×84. Draw them
                 // 1:1 so box art stays sharp and easy to distinguish.
@@ -3102,7 +3160,7 @@ mod tests {
         let lang = crate::lang::Lang::spanish();
         let entries: Vec<crate::RomEntry> = Vec::new();
 
-        draw_rom_browser(&mut fb, 320, &entries, 0, 0, &lang);
+        draw_rom_browser(&mut fb, 320, &entries, 0, 0, "AUTO", &lang);
 
         let modified = fb.iter().any(|&pixel| pixel != 0xFF102030);
         assert!(modified, "empty ROM browser should still draw an overlay");

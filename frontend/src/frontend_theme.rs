@@ -20,6 +20,18 @@ const MAX_TOTAL_LAYER_PIXELS: u64 = 16_777_216;
 const MAX_TOTAL_MEDIA_PIXELS: u64 = 16_777_216;
 const MIN_Z: i32 = -10_000;
 const MAX_Z: i32 = 10_000;
+const MIN_SELECTED_SCALE: u16 = 100;
+const MAX_SELECTED_SCALE: u16 = 200;
+const MAX_CAROUSEL_ARC: u32 = 960;
+const MIN_COMPONENT_FONT_SIZE: u16 = 6;
+const MAX_COMPONENT_FONT_SIZE: u16 = 160;
+const MAX_EFFECT_PERCENT: u16 = 300;
+const MAX_EFFECT_RADIUS: u8 = 24;
+const MAX_EFFECT_OFFSET: i16 = 256;
+const MAX_LETTER_SPACING: i16 = 80;
+const MAX_ANIMATION_MS: u32 = 10_000;
+const MAX_SLIDE_DISTANCE: u16 = 1_920;
+const MAX_PULSE_PERCENT: u16 = 25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ThemeComponentId {
@@ -35,14 +47,50 @@ pub(crate) enum ThemeComponentId {
     Status,
     VerticalList,
     HorizontalList,
+    GameCarouselLeft,
+    GameCarouselRight,
+    GameCarouselHorizontal,
     GameTitle,
     GameDescription,
     GameMetadata,
+    GameCredits,
     PageCounter,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ThemeListArtwork {
+    Logo,
+    Box3d,
+}
+
+impl ThemeListArtwork {
+    fn parse(value: &str) -> Option<Self> {
+        match normalize_name(value).as_str() {
+            "logo" | "wheel" | "marquee" => Some(Self::Logo),
+            "box3d" | "box_3d" | "box" => Some(Self::Box3d),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ThemeChrome {
+    Panel,
+    None,
+}
+
+impl ThemeChrome {
+    fn parse(value: &str) -> Option<Self> {
+        match normalize_name(value).as_str() {
+            "panel" | "framed" | "default" => Some(Self::Panel),
+            "none" | "frameless" | "off" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
 impl ThemeComponentId {
-    pub(crate) const ALL: [Self; 16] = [
+    pub(crate) const ALL: [Self; 20] = [
         Self::LibraryBackground,
         Self::SettingsBackground,
         Self::Header,
@@ -55,9 +103,13 @@ impl ThemeComponentId {
         Self::Status,
         Self::VerticalList,
         Self::HorizontalList,
+        Self::GameCarouselLeft,
+        Self::GameCarouselRight,
+        Self::GameCarouselHorizontal,
         Self::GameTitle,
         Self::GameDescription,
         Self::GameMetadata,
+        Self::GameCredits,
         Self::PageCounter,
     ];
 
@@ -75,17 +127,31 @@ impl ThemeComponentId {
             Self::Status => "status",
             Self::VerticalList => "vertical_list",
             Self::HorizontalList => "horizontal_list",
+            Self::GameCarouselLeft => "gamecarousel_left",
+            Self::GameCarouselRight => "gamecarousel_right",
+            Self::GameCarouselHorizontal => "gamecarousel_horizontal",
             Self::GameTitle => "game_title",
             Self::GameDescription => "game_description",
             Self::GameMetadata => "game_metadata",
+            Self::GameCredits => "game_credits",
             Self::PageCounter => "page_counter",
         }
     }
 
     fn parse(value: &str) -> Option<Self> {
+        let normalized = normalize_name(value);
+        if normalized == "gamecarrousel_left" {
+            return Some(Self::GameCarouselLeft);
+        }
+        if normalized == "gamecarrousel_right" {
+            return Some(Self::GameCarouselRight);
+        }
+        if normalized == "gamecarrousel_horizontal" {
+            return Some(Self::GameCarouselHorizontal);
+        }
         Self::ALL
             .into_iter()
-            .find(|component| component.as_str().eq_ignore_ascii_case(value.trim()))
+            .find(|component| component.as_str() == normalized)
     }
 
     pub(crate) const fn source_rect(self) -> ThemeRect {
@@ -101,9 +167,13 @@ impl ThemeComponentId {
             Self::Status => ThemeRect::new(0, 56, 960, 52),
             Self::VerticalList => ThemeRect::new(24, 42, 438, 476),
             Self::HorizontalList => ThemeRect::new(0, 404, 960, 136),
+            Self::GameCarouselLeft => ThemeRect::new(20, 48, 300, 444),
+            Self::GameCarouselRight => ThemeRect::new(640, 48, 300, 444),
+            Self::GameCarouselHorizontal => ThemeRect::new(0, 190, 960, 350),
             Self::GameTitle => ThemeRect::new(514, 18, 420, 92),
             Self::GameDescription => ThemeRect::new(510, 390, 426, 128),
             Self::GameMetadata => ThemeRect::new(510, 474, 426, 44),
+            Self::GameCredits => ThemeRect::new(20, 496, 920, 36),
             Self::PageCounter => ThemeRect::new(24, 12, 260, 24),
         }
     }
@@ -118,9 +188,13 @@ impl ThemeComponentId {
             Self::Status => 300,
             Self::VerticalList
             | Self::HorizontalList
+            | Self::GameCarouselLeft
+            | Self::GameCarouselRight
+            | Self::GameCarouselHorizontal
             | Self::GameTitle
             | Self::GameDescription
             | Self::GameMetadata
+            | Self::GameCredits
             | Self::PageCounter => 130,
         }
     }
@@ -130,9 +204,13 @@ impl ThemeComponentId {
             self,
             Self::VerticalList
                 | Self::HorizontalList
+                | Self::GameCarouselLeft
+                | Self::GameCarouselRight
+                | Self::GameCarouselHorizontal
                 | Self::GameTitle
                 | Self::GameDescription
                 | Self::GameMetadata
+                | Self::GameCredits
                 | Self::PageCounter
         )
     }
@@ -157,11 +235,195 @@ impl ThemeRect {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ThemeGradientDirection {
+    Vertical,
+    Horizontal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ThemeShadow {
+    pub(crate) color: u32,
+    pub(crate) x: i16,
+    pub(crate) y: i16,
+    pub(crate) blur: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ThemeGlow {
+    pub(crate) color: u32,
+    pub(crate) radius: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ThemeGradient {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) direction: ThemeGradientDirection,
+}
+
+/// Post-processing applied to an image, a media slot, or a rendered component.
+///
+/// Percent values use fixed-point integers so they are safe cache keys:
+/// `100` is neutral, `0` removes the property and `300` is the parser limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ThemeImageEffects {
+    pub(crate) brightness: u16,
+    pub(crate) contrast: u16,
+    pub(crate) saturation: u16,
+    pub(crate) grayscale: u8,
+    pub(crate) tint: u32,
+    pub(crate) blur: u8,
+    pub(crate) shadow: Option<ThemeShadow>,
+    pub(crate) glow: Option<ThemeGlow>,
+    pub(crate) rotation: i16,
+    pub(crate) rounded_corners: u16,
+    pub(crate) gradient: Option<ThemeGradient>,
+}
+
+impl Default for ThemeImageEffects {
+    fn default() -> Self {
+        Self {
+            brightness: 100,
+            contrast: 100,
+            saturation: 100,
+            grayscale: 0,
+            tint: 0,
+            blur: 0,
+            shadow: None,
+            glow: None,
+            rotation: 0,
+            rounded_corners: 0,
+            gradient: None,
+        }
+    }
+}
+
+impl ThemeImageEffects {
+    pub(crate) const fn is_neutral(self) -> bool {
+        self.brightness == 100
+            && self.contrast == 100
+            && self.saturation == 100
+            && self.grayscale == 0
+            && self.tint == 0
+            && self.blur == 0
+            && self.shadow.is_none()
+            && self.glow.is_none()
+            && self.rotation == 0
+            && self.rounded_corners == 0
+            && self.gradient.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ThemeTextAlign {
+    Auto,
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ThemeVerticalAlign {
+    Auto,
+    Top,
+    Center,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ThemeTextStyle {
+    pub(crate) color: Option<u32>,
+    pub(crate) align: ThemeTextAlign,
+    pub(crate) vertical_align: ThemeVerticalAlign,
+    pub(crate) shadow: Option<ThemeShadow>,
+    pub(crate) outline_color: u32,
+    pub(crate) outline: u8,
+    pub(crate) letter_spacing: i16,
+    pub(crate) line_height: u16,
+    pub(crate) auto_fit: bool,
+    pub(crate) min_font_size: u16,
+}
+
+impl Default for ThemeTextStyle {
+    fn default() -> Self {
+        Self {
+            color: None,
+            align: ThemeTextAlign::Auto,
+            vertical_align: ThemeVerticalAlign::Auto,
+            shadow: None,
+            outline_color: 0xFF00_0000,
+            outline: 0,
+            letter_spacing: 0,
+            line_height: 100,
+            auto_fit: true,
+            min_font_size: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ThemeSlideDirection {
+    None,
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ThemeAnimation {
+    pub(crate) fade_in_ms: u32,
+    pub(crate) slide_in: ThemeSlideDirection,
+    pub(crate) slide_distance: u16,
+    pub(crate) slide_duration_ms: u32,
+    pub(crate) zoom_in_ms: u32,
+    pub(crate) zoom_from: u16,
+    pub(crate) pulse: u16,
+    pub(crate) pulse_period_ms: u32,
+}
+
+impl Default for ThemeAnimation {
+    fn default() -> Self {
+        Self {
+            fade_in_ms: 0,
+            slide_in: ThemeSlideDirection::None,
+            slide_distance: 64,
+            slide_duration_ms: 450,
+            zoom_in_ms: 0,
+            zoom_from: 85,
+            pulse: 0,
+            pulse_period_ms: 1_600,
+        }
+    }
+}
+
+impl ThemeAnimation {
+    pub(crate) const fn is_static(self) -> bool {
+        self.fade_in_ms == 0
+            && matches!(self.slide_in, ThemeSlideDirection::None)
+            && self.zoom_in_ms == 0
+            && self.pulse == 0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ThemeComponent {
     pub(crate) rect: ThemeRect,
     pub(crate) z: i32,
     pub(crate) visible: bool,
+    pub(crate) artwork: ThemeListArtwork,
+    pub(crate) chrome: ThemeChrome,
+    pub(crate) opacity: u8,
+    pub(crate) selected_scale: u16,
+    pub(crate) unselected_opacity: u8,
+    pub(crate) arc: u32,
+    pub(crate) font_size: u16,
+    pub(crate) show_with_logo: bool,
+    pub(crate) metadata_fields: ThemeMetadataFields,
+    pub(crate) effects: ThemeImageEffects,
+    pub(crate) text_style: ThemeTextStyle,
+    pub(crate) animation: ThemeAnimation,
 }
 
 impl ThemeComponent {
@@ -170,7 +432,115 @@ impl ThemeComponent {
             rect: id.source_rect(),
             z: id.default_z(),
             visible: id.default_visible(),
+            artwork: if matches!(id, ThemeComponentId::GameCarouselHorizontal) {
+                ThemeListArtwork::Box3d
+            } else {
+                ThemeListArtwork::Logo
+            },
+            chrome: ThemeChrome::Panel,
+            opacity: 255,
+            selected_scale: if id.is_game_carousel() { 135 } else { 100 },
+            unselected_opacity: 150,
+            arc: if id.is_game_carousel() { 56 } else { 0 },
+            font_size: 0,
+            show_with_logo: false,
+            metadata_fields: ThemeMetadataFields::default_value(),
+            effects: ThemeImageEffects {
+                brightness: 100,
+                contrast: 100,
+                saturation: 100,
+                grayscale: 0,
+                tint: 0,
+                blur: 0,
+                shadow: None,
+                glow: None,
+                rotation: 0,
+                rounded_corners: 0,
+                gradient: None,
+            },
+            text_style: ThemeTextStyle {
+                color: None,
+                align: ThemeTextAlign::Auto,
+                vertical_align: ThemeVerticalAlign::Auto,
+                shadow: None,
+                outline_color: 0xFF00_0000,
+                outline: 0,
+                letter_spacing: 0,
+                line_height: 100,
+                auto_fit: true,
+                min_font_size: 0,
+            },
+            animation: ThemeAnimation {
+                fade_in_ms: 0,
+                slide_in: ThemeSlideDirection::None,
+                slide_distance: 64,
+                slide_duration_ms: 450,
+                zoom_in_ms: 0,
+                zoom_from: 85,
+                pulse: 0,
+                pulse_period_ms: 1_600,
+            },
         }
+    }
+}
+
+impl ThemeComponentId {
+    pub(crate) const fn is_game_carousel(self) -> bool {
+        matches!(
+            self,
+            Self::GameCarouselLeft | Self::GameCarouselRight | Self::GameCarouselHorizontal
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ThemeMetadataFields {
+    pub(crate) year: bool,
+    pub(crate) developer: bool,
+    pub(crate) publisher: bool,
+    pub(crate) players: bool,
+    pub(crate) manufacturer: bool,
+}
+
+impl ThemeMetadataFields {
+    const fn default_value() -> Self {
+        Self {
+            year: true,
+            developer: true,
+            publisher: false,
+            players: true,
+            manufacturer: false,
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        let mut fields = Self {
+            year: false,
+            developer: false,
+            publisher: false,
+            players: false,
+            manufacturer: false,
+        };
+        let mut any = false;
+        for field in value.split(',') {
+            let field = normalize_name(field);
+            if field.is_empty() {
+                return Err("La lista 'fields' contiene un campo vacío".to_string());
+            }
+            match field.as_str() {
+                "year" | "anio" => fields.year = true,
+                "developer" | "desarrollador" => fields.developer = true,
+                "publisher" | "editor" => fields.publisher = true,
+                "players" | "jugadores" => fields.players = true,
+                "manufacturer" | "fabricante" => fields.manufacturer = true,
+                _ => return Err(format!("Campo de metadatos desconocido: {field}")),
+            }
+            any = true;
+        }
+        if !any {
+            return Err("La lista 'fields' no puede estar vacía".to_string());
+        }
+        Ok(fields)
     }
 }
 
@@ -320,6 +690,8 @@ pub(crate) struct ThemeLayer {
     pub(crate) fit: ThemeLayerFit,
     pub(crate) view: ThemeLayerView,
     pub(crate) visible: bool,
+    pub(crate) effects: ThemeImageEffects,
+    pub(crate) animation: ThemeAnimation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,6 +703,9 @@ pub(crate) struct ThemeMediaSlot {
     pub(crate) opacity: u8,
     pub(crate) fit: ThemeLayerFit,
     pub(crate) visible: bool,
+    pub(crate) chrome: ThemeChrome,
+    pub(crate) effects: ThemeImageEffects,
+    pub(crate) animation: ThemeAnimation,
 }
 
 #[derive(Debug, Clone)]
@@ -341,6 +716,7 @@ pub(crate) struct ThemeDefinition {
     pub(crate) palette: ThemePalette,
     pub(crate) layers: Vec<ThemeLayer>,
     pub(crate) media_slots: Vec<ThemeMediaSlot>,
+    pub(crate) font_source: Option<PathBuf>,
     pub(crate) source_path: Option<PathBuf>,
     components: HashMap<ThemeComponentId, ThemeComponent>,
 }
@@ -354,6 +730,7 @@ impl ThemeDefinition {
             palette: ThemePalette::default(),
             layers: Vec::new(),
             media_slots: Vec::new(),
+            font_source: None,
             source_path: None,
             components: builtin_components(),
         }
@@ -419,20 +796,7 @@ impl ThemeCatalog {
             warnings: Vec::new(),
         };
 
-        let mut paths = fs::read_dir(&directory)
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.is_file()
-                    && path
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-            })
-            .collect::<Vec<_>>();
+        let mut paths = discover_theme_paths(&directory);
         paths.sort_by_cached_key(|path| path.to_string_lossy().to_ascii_lowercase());
 
         for path in paths.into_iter().take(MAX_CATALOG_THEMES) {
@@ -441,7 +805,10 @@ impl ThemeCatalog {
 
         let selected = selected.unwrap_or("builtin").trim();
         if !selected.is_empty() && !is_builtin_selector(selected) {
-            if let Some(index) = catalog.find(selected) {
+            if let Some(index) = catalog
+                .find(selected)
+                .or_else(|| legacy_selector_stem(selected).and_then(|stem| catalog.find(&stem)))
+            {
                 catalog.selected = index;
             } else {
                 let selected_path = resolve_from_root(root, selected);
@@ -580,6 +947,18 @@ struct RawComponent {
     height: Option<u32>,
     z: Option<i32>,
     visible: Option<bool>,
+    artwork: Option<ThemeListArtwork>,
+    chrome: Option<ThemeChrome>,
+    opacity: Option<u8>,
+    selected_scale: Option<u16>,
+    unselected_opacity: Option<u8>,
+    arc: Option<u32>,
+    font_size: Option<u16>,
+    show_with_logo: Option<bool>,
+    metadata_fields: Option<ThemeMetadataFields>,
+    effects: ThemeImageEffects,
+    text_style: ThemeTextStyle,
+    animation: ThemeAnimation,
 }
 
 #[derive(Debug)]
@@ -595,6 +974,8 @@ struct RawLayer {
     fit: ThemeLayerFit,
     view: ThemeLayerView,
     visible: bool,
+    effects: ThemeImageEffects,
+    animation: ThemeAnimation,
 }
 
 #[derive(Debug)]
@@ -609,6 +990,9 @@ struct RawMediaSlot {
     opacity: u8,
     fit: ThemeLayerFit,
     visible: bool,
+    chrome: ThemeChrome,
+    effects: ThemeImageEffects,
+    animation: ThemeAnimation,
 }
 
 #[derive(Debug)]
@@ -623,6 +1007,7 @@ struct RawTheme {
     components: Vec<RawComponent>,
     layers: Vec<RawLayer>,
     media_slots: Vec<RawMediaSlot>,
+    font_source: Option<PathBuf>,
 }
 
 fn parse_theme<R: std::io::Read>(reader: R, path: &Path) -> Result<ThemeDefinition, String> {
@@ -641,6 +1026,7 @@ fn parse_theme<R: std::io::Read>(reader: R, path: &Path) -> Result<ThemeDefiniti
         components: Vec::new(),
         layers: Vec::new(),
         media_slots: Vec::new(),
+        font_source: None,
     };
     let mut stack = Vec::<String>::new();
     let mut root_seen = false;
@@ -665,6 +1051,17 @@ fn parse_theme<R: std::io::Read>(reader: R, path: &Path) -> Result<ThemeDefiniti
                     Some("theme") => match tag.as_str() {
                         "canvas" => parse_canvas(&attributes, &mut raw)?,
                         "palette" => parse_palette_attributes(&attributes, &mut raw.palette)?,
+                        "font" => {
+                            if raw.version < 2 {
+                                return Err(
+                                    "El elemento <font> requiere theme version=\"2\"".to_string()
+                                );
+                            }
+                            if raw.font_source.is_some() {
+                                return Err("Un tema solo admite un elemento <font>".to_string());
+                            }
+                            raw.font_source = Some(parse_font(&attributes, path)?);
+                        }
                         "component" => {
                             let component = parse_component(&attributes)?;
                             if !component_ids.insert(component.id) {
@@ -828,12 +1225,119 @@ fn parse_component(attributes: &[OwnedAttribute]) -> Result<RawComponent, String
         height: parse_u32_attribute(attributes, "height", false)?,
         z,
         visible: parse_bool_attribute(attributes, "visible")?,
+        artwork: attribute(attributes, "artwork")
+            .map(|value| {
+                ThemeListArtwork::parse(&value).ok_or_else(|| {
+                    format!("Artwork de lista desconocido: {value}; usa 'logo' o 'box3d'")
+                })
+            })
+            .transpose()?,
+        chrome: attribute(attributes, "chrome")
+            .map(|value| {
+                ThemeChrome::parse(&value)
+                    .ok_or_else(|| format!("Chrome desconocido: {value}; usa 'panel' o 'none'"))
+            })
+            .transpose()?,
+        opacity: attribute(attributes, "opacity")
+            .map(|value| parse_opacity(&value))
+            .transpose()?,
+        selected_scale: attribute(attributes, "selected_scale")
+            .map(|value| parse_selected_scale(&value))
+            .transpose()?,
+        unselected_opacity: attribute(attributes, "unselected_opacity")
+            .map(|value| parse_opacity(&value))
+            .transpose()?,
+        arc: parse_u32_attribute(attributes, "arc", false)?,
+        font_size: attribute(attributes, "font_size")
+            .map(|value| {
+                let size = value
+                    .parse::<u16>()
+                    .map_err(|_| "font_size debe ser un entero positivo".to_string())?;
+                if !(MIN_COMPONENT_FONT_SIZE..=MAX_COMPONENT_FONT_SIZE).contains(&size) {
+                    return Err(format!(
+                        "font_size debe estar entre {MIN_COMPONENT_FONT_SIZE} y {MAX_COMPONENT_FONT_SIZE}"
+                    ));
+                }
+                Ok(size)
+            })
+            .transpose()?,
+        show_with_logo: parse_bool_attribute(attributes, "show_with_logo")?,
+        metadata_fields: attribute(attributes, "fields")
+            .map(|value| ThemeMetadataFields::parse(&value))
+            .transpose()?,
+        effects: parse_image_effects(attributes)?,
+        text_style: parse_text_style(attributes)?,
+        animation: parse_animation(attributes)?,
     };
+    if component.arc.is_some_and(|value| value > MAX_CAROUSEL_ARC) {
+        return Err(format!("arc debe estar entre 0 y {MAX_CAROUSEL_ARC}"));
+    }
     reject_unknown_attributes(
         attributes,
-        &["id", "x", "y", "width", "height", "z", "visible"],
+        &[
+            "id",
+            "x",
+            "y",
+            "width",
+            "height",
+            "z",
+            "visible",
+            "artwork",
+            "chrome",
+            "opacity",
+            "selected_scale",
+            "unselected_opacity",
+            "arc",
+            "font_size",
+            "show_with_logo",
+            "fields",
+            "brightness",
+            "contrast",
+            "saturation",
+            "grayscale",
+            "tint",
+            "blur",
+            "shadow_color",
+            "shadow_x",
+            "shadow_y",
+            "shadow_blur",
+            "glow_color",
+            "glow_radius",
+            "rotation",
+            "rounded_corners",
+            "gradient_start",
+            "gradient_end",
+            "gradient_direction",
+            "text_color",
+            "text_align",
+            "vertical_align",
+            "text_shadow_color",
+            "text_shadow_x",
+            "text_shadow_y",
+            "text_shadow_blur",
+            "text_outline_color",
+            "text_outline",
+            "letter_spacing",
+            "line_height",
+            "auto_fit",
+            "min_font_size",
+            "fade_in",
+            "slide_in",
+            "slide_distance",
+            "slide_duration",
+            "zoom_in",
+            "zoom_from",
+            "pulse",
+            "pulse_period",
+        ],
     )?;
     Ok(component)
+}
+
+fn parse_font(attributes: &[OwnedAttribute], theme_path: &Path) -> Result<PathBuf, String> {
+    let source = required_attribute(attributes, "source")?;
+    reject_unknown_attributes(attributes, &["source"])?;
+    resolve_asset_path(theme_path, &source)
 }
 
 fn parse_layer(attributes: &[OwnedAttribute], theme_path: &Path) -> Result<RawLayer, String> {
@@ -870,11 +1374,48 @@ fn parse_layer(attributes: &[OwnedAttribute], theme_path: &Path) -> Result<RawLa
         fit,
         view,
         visible: parse_bool_attribute(attributes, "visible")?.unwrap_or(true),
+        effects: parse_image_effects(attributes)?,
+        animation: parse_animation(attributes)?,
     };
     reject_unknown_attributes(
         attributes,
         &[
-            "id", "source", "x", "y", "width", "height", "z", "opacity", "fit", "view", "visible",
+            "id",
+            "source",
+            "x",
+            "y",
+            "width",
+            "height",
+            "z",
+            "opacity",
+            "fit",
+            "view",
+            "visible",
+            "brightness",
+            "contrast",
+            "saturation",
+            "grayscale",
+            "tint",
+            "blur",
+            "shadow_color",
+            "shadow_x",
+            "shadow_y",
+            "shadow_blur",
+            "glow_color",
+            "glow_radius",
+            "rotation",
+            "rounded_corners",
+            "gradient_start",
+            "gradient_end",
+            "gradient_direction",
+            "fade_in",
+            "slide_in",
+            "slide_distance",
+            "slide_duration",
+            "zoom_in",
+            "zoom_from",
+            "pulse",
+            "pulse_period",
         ],
     )?;
     Ok(layer)
@@ -931,11 +1472,55 @@ fn parse_media_slot(attributes: &[OwnedAttribute]) -> Result<RawMediaSlot, Strin
         opacity: parse_opacity(attribute(attributes, "opacity").as_deref().unwrap_or("255"))?,
         fit,
         visible: parse_bool_attribute(attributes, "visible")?.unwrap_or(true),
+        chrome: attribute(attributes, "chrome")
+            .map(|value| {
+                ThemeChrome::parse(&value)
+                    .ok_or_else(|| format!("Chrome desconocido: {value}; usa 'panel' o 'none'"))
+            })
+            .transpose()?
+            .unwrap_or(ThemeChrome::Panel),
+        effects: parse_image_effects(attributes)?,
+        animation: parse_animation(attributes)?,
     };
     reject_unknown_attributes(
         attributes,
         &[
-            "id", "source", "x", "y", "width", "height", "z", "opacity", "fit", "visible",
+            "id",
+            "source",
+            "x",
+            "y",
+            "width",
+            "height",
+            "z",
+            "opacity",
+            "fit",
+            "visible",
+            "chrome",
+            "brightness",
+            "contrast",
+            "saturation",
+            "grayscale",
+            "tint",
+            "blur",
+            "shadow_color",
+            "shadow_x",
+            "shadow_y",
+            "shadow_blur",
+            "glow_color",
+            "glow_radius",
+            "rotation",
+            "rounded_corners",
+            "gradient_start",
+            "gradient_end",
+            "gradient_direction",
+            "fade_in",
+            "slide_in",
+            "slide_distance",
+            "slide_duration",
+            "zoom_in",
+            "zoom_from",
+            "pulse",
+            "pulse_period",
         ],
     )?;
     Ok(media)
@@ -965,6 +1550,40 @@ fn finalize_theme(raw: RawTheme, path: &Path) -> Result<ThemeDefinition, String>
         if let Some(visible) = override_value.visible {
             component.visible = visible;
         }
+        if let Some(artwork) = override_value.artwork {
+            component.artwork = artwork;
+        }
+        if let Some(chrome) = override_value.chrome {
+            component.chrome = chrome;
+        }
+        if let Some(opacity) = override_value.opacity {
+            component.opacity = opacity;
+        }
+        if let Some(selected_scale) = override_value.selected_scale {
+            component.selected_scale = selected_scale;
+        }
+        if let Some(unselected_opacity) = override_value.unselected_opacity {
+            component.unselected_opacity = unselected_opacity;
+        }
+        if let Some(arc) = override_value.arc {
+            component.arc = if arc == 0 {
+                0
+            } else {
+                scale_dimension(arc, THEME_WIDTH as u32, raw.canvas_width)?
+            };
+        }
+        if let Some(font_size) = override_value.font_size {
+            component.font_size = font_size;
+        }
+        if let Some(show_with_logo) = override_value.show_with_logo {
+            component.show_with_logo = show_with_logo;
+        }
+        if let Some(metadata_fields) = override_value.metadata_fields {
+            component.metadata_fields = metadata_fields;
+        }
+        component.effects = override_value.effects;
+        component.text_style = override_value.text_style;
+        component.animation = override_value.animation;
         validate_rect(component.rect, "componente")?;
         components.insert(override_value.id, component);
     }
@@ -989,6 +1608,8 @@ fn finalize_theme(raw: RawTheme, path: &Path) -> Result<ThemeDefinition, String>
                 fit: layer.fit,
                 view: layer.view,
                 visible: layer.visible,
+                effects: layer.effects,
+                animation: layer.animation,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -1021,6 +1642,9 @@ fn finalize_theme(raw: RawTheme, path: &Path) -> Result<ThemeDefinition, String>
                 opacity: media.opacity,
                 fit: media.fit,
                 visible: media.visible,
+                chrome: media.chrome,
+                effects: media.effects,
+                animation: media.animation,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -1047,6 +1671,7 @@ fn finalize_theme(raw: RawTheme, path: &Path) -> Result<ThemeDefinition, String>
         components,
         layers,
         media_slots,
+        font_source: raw.font_source,
         source_path: Some(path.to_path_buf()),
     })
 }
@@ -1128,6 +1753,462 @@ fn parse_opacity(value: &str) -> Result<u8, String> {
     value
         .parse::<u8>()
         .map_err(|_| "La opacidad entera debe estar entre 0 y 255".to_string())
+}
+
+fn parse_effect_percent(value: &str, name: &str) -> Result<u16, String> {
+    let value = value.trim();
+    let percent = if let Some(percent) = value.strip_suffix('%') {
+        percent
+            .trim()
+            .parse::<u16>()
+            .map_err(|_| format!("{name} inválido: {value}"))?
+    } else if value.contains('.') {
+        let factor = value
+            .parse::<f32>()
+            .map_err(|_| format!("{name} inválido: {value}"))?;
+        if !factor.is_finite() || factor < 0.0 {
+            return Err(format!("{name} debe ser un factor positivo"));
+        }
+        (factor * 100.0).round() as u16
+    } else {
+        value
+            .parse::<u16>()
+            .map_err(|_| format!("{name} inválido: {value}"))?
+    };
+    if percent > MAX_EFFECT_PERCENT {
+        return Err(format!(
+            "{name} debe estar entre 0% y {MAX_EFFECT_PERCENT}%"
+        ));
+    }
+    Ok(percent)
+}
+
+fn parse_effect_radius(value: &str, name: &str) -> Result<u8, String> {
+    let radius = value
+        .trim()
+        .parse::<u8>()
+        .map_err(|_| format!("{name} debe ser un entero entre 0 y {MAX_EFFECT_RADIUS}"))?;
+    if radius > MAX_EFFECT_RADIUS {
+        return Err(format!("{name} debe estar entre 0 y {MAX_EFFECT_RADIUS}"));
+    }
+    Ok(radius)
+}
+
+fn parse_effect_offset(value: &str, name: &str) -> Result<i16, String> {
+    let offset = value
+        .trim()
+        .parse::<i16>()
+        .map_err(|_| format!("{name} debe ser un entero"))?;
+    if !(-MAX_EFFECT_OFFSET..=MAX_EFFECT_OFFSET).contains(&offset) {
+        return Err(format!(
+            "{name} debe estar entre -{MAX_EFFECT_OFFSET} y {MAX_EFFECT_OFFSET}"
+        ));
+    }
+    Ok(offset)
+}
+
+fn parse_image_effects(attributes: &[OwnedAttribute]) -> Result<ThemeImageEffects, String> {
+    let brightness = attribute(attributes, "brightness")
+        .map(|value| parse_effect_percent(&value, "brightness"))
+        .transpose()?
+        .unwrap_or(100);
+    let contrast = attribute(attributes, "contrast")
+        .map(|value| parse_effect_percent(&value, "contrast"))
+        .transpose()?
+        .unwrap_or(100);
+    let saturation = attribute(attributes, "saturation")
+        .map(|value| parse_effect_percent(&value, "saturation"))
+        .transpose()?
+        .unwrap_or(100);
+    let grayscale = attribute(attributes, "grayscale")
+        .map(|value| parse_opacity(&value))
+        .transpose()?
+        .unwrap_or(0);
+    let tint = attribute(attributes, "tint")
+        .map(|value| parse_color(&value))
+        .transpose()?
+        .unwrap_or(0);
+    let blur = attribute(attributes, "blur")
+        .map(|value| parse_effect_radius(&value, "blur"))
+        .transpose()?
+        .unwrap_or(0);
+
+    let has_shadow = ["shadow_color", "shadow_x", "shadow_y", "shadow_blur"]
+        .into_iter()
+        .any(|name| attribute(attributes, name).is_some());
+    let shadow = has_shadow
+        .then(|| {
+            Ok::<ThemeShadow, String>(ThemeShadow {
+                color: attribute(attributes, "shadow_color")
+                    .map(|value| parse_color(&value))
+                    .transpose()?
+                    .unwrap_or(0xA000_0000),
+                x: attribute(attributes, "shadow_x")
+                    .map(|value| parse_effect_offset(&value, "shadow_x"))
+                    .transpose()?
+                    .unwrap_or(6),
+                y: attribute(attributes, "shadow_y")
+                    .map(|value| parse_effect_offset(&value, "shadow_y"))
+                    .transpose()?
+                    .unwrap_or(8),
+                blur: attribute(attributes, "shadow_blur")
+                    .map(|value| parse_effect_radius(&value, "shadow_blur"))
+                    .transpose()?
+                    .unwrap_or(6),
+            })
+        })
+        .transpose()?;
+
+    let has_glow = ["glow_color", "glow_radius"]
+        .into_iter()
+        .any(|name| attribute(attributes, name).is_some());
+    let glow = has_glow
+        .then(|| {
+            Ok::<ThemeGlow, String>(ThemeGlow {
+                color: attribute(attributes, "glow_color")
+                    .map(|value| parse_color(&value))
+                    .transpose()?
+                    .unwrap_or(0x80FF_FFFF),
+                radius: attribute(attributes, "glow_radius")
+                    .map(|value| parse_effect_radius(&value, "glow_radius"))
+                    .transpose()?
+                    .unwrap_or(8),
+            })
+        })
+        .transpose()?;
+
+    let rotation = attribute(attributes, "rotation")
+        .map(|value| {
+            let degrees = value
+                .trim()
+                .parse::<i16>()
+                .map_err(|_| "rotation debe ser un entero entre -180 y 180".to_string())?;
+            if !(-180..=180).contains(&degrees) {
+                return Err("rotation debe estar entre -180 y 180".to_string());
+            }
+            Ok(degrees)
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let rounded_corners = attribute(attributes, "rounded_corners")
+        .map(|value| {
+            let radius = value
+                .trim()
+                .parse::<u16>()
+                .map_err(|_| "rounded_corners debe ser un entero".to_string())?;
+            if radius > 512 {
+                return Err("rounded_corners debe estar entre 0 y 512".to_string());
+            }
+            Ok(radius)
+        })
+        .transpose()?
+        .unwrap_or(0);
+
+    let gradient_start = attribute(attributes, "gradient_start")
+        .map(|value| parse_color(&value))
+        .transpose()?;
+    let gradient_end = attribute(attributes, "gradient_end")
+        .map(|value| parse_color(&value))
+        .transpose()?;
+    let gradient = match (gradient_start, gradient_end) {
+        (None, None) => None,
+        (Some(start), Some(end)) => {
+            let direction = match attribute(attributes, "gradient_direction")
+                .unwrap_or_else(|| "vertical".to_string())
+                .trim()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "vertical" | "top_bottom" => ThemeGradientDirection::Vertical,
+                "horizontal" | "left_right" => ThemeGradientDirection::Horizontal,
+                value => {
+                    return Err(format!(
+                        "gradient_direction desconocido: {value}; usa vertical u horizontal"
+                    ));
+                }
+            };
+            Some(ThemeGradient {
+                start,
+                end,
+                direction,
+            })
+        }
+        _ => {
+            return Err("gradient_start y gradient_end deben declararse juntos".to_string());
+        }
+    };
+
+    Ok(ThemeImageEffects {
+        brightness,
+        contrast,
+        saturation,
+        grayscale,
+        tint,
+        blur,
+        shadow,
+        glow,
+        rotation,
+        rounded_corners,
+        gradient,
+    })
+}
+
+fn parse_text_style(attributes: &[OwnedAttribute]) -> Result<ThemeTextStyle, String> {
+    let color = attribute(attributes, "text_color")
+        .map(|value| parse_color(&value))
+        .transpose()?;
+    let align = match attribute(attributes, "text_align")
+        .unwrap_or_else(|| "auto".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "auto" => ThemeTextAlign::Auto,
+        "left" | "izquierda" => ThemeTextAlign::Left,
+        "center" | "centre" | "centro" => ThemeTextAlign::Center,
+        "right" | "derecha" => ThemeTextAlign::Right,
+        value => return Err(format!("text_align desconocido: {value}")),
+    };
+    let vertical_align = match attribute(attributes, "vertical_align")
+        .unwrap_or_else(|| "auto".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "auto" => ThemeVerticalAlign::Auto,
+        "top" | "arriba" => ThemeVerticalAlign::Top,
+        "center" | "centre" | "centro" => ThemeVerticalAlign::Center,
+        "bottom" | "abajo" => ThemeVerticalAlign::Bottom,
+        value => return Err(format!("vertical_align desconocido: {value}")),
+    };
+
+    let has_shadow = [
+        "text_shadow_color",
+        "text_shadow_x",
+        "text_shadow_y",
+        "text_shadow_blur",
+    ]
+    .into_iter()
+    .any(|name| attribute(attributes, name).is_some());
+    let shadow = has_shadow
+        .then(|| {
+            Ok::<ThemeShadow, String>(ThemeShadow {
+                color: attribute(attributes, "text_shadow_color")
+                    .map(|value| parse_color(&value))
+                    .transpose()?
+                    .unwrap_or(0xB000_0000),
+                x: attribute(attributes, "text_shadow_x")
+                    .map(|value| parse_effect_offset(&value, "text_shadow_x"))
+                    .transpose()?
+                    .unwrap_or(2),
+                y: attribute(attributes, "text_shadow_y")
+                    .map(|value| parse_effect_offset(&value, "text_shadow_y"))
+                    .transpose()?
+                    .unwrap_or(3),
+                blur: attribute(attributes, "text_shadow_blur")
+                    .map(|value| parse_effect_radius(&value, "text_shadow_blur"))
+                    .transpose()?
+                    .unwrap_or(2),
+            })
+        })
+        .transpose()?;
+    let outline_color = attribute(attributes, "text_outline_color")
+        .map(|value| parse_color(&value))
+        .transpose()?
+        .unwrap_or(0xFF00_0000);
+    let outline = attribute(attributes, "text_outline")
+        .map(|value| {
+            let width = value
+                .trim()
+                .parse::<u8>()
+                .map_err(|_| "text_outline debe ser un entero entre 0 y 8".to_string())?;
+            if width > 8 {
+                return Err("text_outline debe estar entre 0 y 8".to_string());
+            }
+            Ok(width)
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let letter_spacing = attribute(attributes, "letter_spacing")
+        .map(|value| {
+            let spacing = value
+                .trim()
+                .parse::<i16>()
+                .map_err(|_| "letter_spacing debe ser un entero".to_string())?;
+            if !(-20..=MAX_LETTER_SPACING).contains(&spacing) {
+                return Err(format!(
+                    "letter_spacing debe estar entre -20 y {MAX_LETTER_SPACING}"
+                ));
+            }
+            Ok(spacing)
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let line_height = attribute(attributes, "line_height")
+        .map(|value| parse_effect_percent(&value, "line_height"))
+        .transpose()?
+        .unwrap_or(100);
+    if !(50..=300).contains(&line_height) {
+        return Err("line_height debe estar entre 50% y 300%".to_string());
+    }
+    let auto_fit = parse_bool_attribute(attributes, "auto_fit")?.unwrap_or(true);
+    let min_font_size = attribute(attributes, "min_font_size")
+        .map(|value| {
+            let size = value
+                .trim()
+                .parse::<u16>()
+                .map_err(|_| "min_font_size debe ser un entero".to_string())?;
+            if !(MIN_COMPONENT_FONT_SIZE..=MAX_COMPONENT_FONT_SIZE).contains(&size) {
+                return Err(format!(
+                    "min_font_size debe estar entre {MIN_COMPONENT_FONT_SIZE} y {MAX_COMPONENT_FONT_SIZE}"
+                ));
+            }
+            Ok(size)
+        })
+        .transpose()?
+        .unwrap_or(0);
+
+    Ok(ThemeTextStyle {
+        color,
+        align,
+        vertical_align,
+        shadow,
+        outline_color,
+        outline,
+        letter_spacing,
+        line_height,
+        auto_fit,
+        min_font_size,
+    })
+}
+
+fn parse_animation_duration(
+    attributes: &[OwnedAttribute],
+    name: &str,
+) -> Result<Option<u32>, String> {
+    attribute(attributes, name)
+        .map(|value| {
+            let duration = value
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| format!("{name} debe ser un entero en milisegundos"))?;
+            if duration > MAX_ANIMATION_MS {
+                return Err(format!("{name} debe estar entre 0 y {MAX_ANIMATION_MS} ms"));
+            }
+            Ok(duration)
+        })
+        .transpose()
+}
+
+fn parse_pulse(value: &str) -> Result<u16, String> {
+    let value = value.trim();
+    let amplitude = if let Some(percent) = value.strip_suffix('%') {
+        percent
+            .trim()
+            .parse::<u16>()
+            .map_err(|_| format!("pulse inválido: {value}"))?
+    } else if value.contains('.') {
+        let factor = value
+            .parse::<f32>()
+            .map_err(|_| format!("pulse inválido: {value}"))?;
+        if !factor.is_finite() || factor < 1.0 {
+            return Err("pulse decimal debe ser un factor entre 1.0 y 1.25".to_string());
+        }
+        ((factor - 1.0) * 100.0).round() as u16
+    } else {
+        value
+            .parse::<u16>()
+            .map_err(|_| format!("pulse inválido: {value}"))?
+    };
+    if amplitude > MAX_PULSE_PERCENT {
+        return Err(format!("pulse debe estar entre 0% y {MAX_PULSE_PERCENT}%"));
+    }
+    Ok(amplitude)
+}
+
+fn parse_animation(attributes: &[OwnedAttribute]) -> Result<ThemeAnimation, String> {
+    let slide_in = match attribute(attributes, "slide_in")
+        .unwrap_or_else(|| "none".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "none" | "off" => ThemeSlideDirection::None,
+        "left" | "izquierda" => ThemeSlideDirection::Left,
+        "right" | "derecha" => ThemeSlideDirection::Right,
+        "up" | "arriba" => ThemeSlideDirection::Up,
+        "down" | "abajo" => ThemeSlideDirection::Down,
+        value => return Err(format!("slide_in desconocido: {value}")),
+    };
+    let slide_distance = attribute(attributes, "slide_distance")
+        .map(|value| {
+            let distance = value
+                .trim()
+                .parse::<u16>()
+                .map_err(|_| "slide_distance debe ser un entero".to_string())?;
+            if distance > MAX_SLIDE_DISTANCE {
+                return Err(format!(
+                    "slide_distance debe estar entre 0 y {MAX_SLIDE_DISTANCE}"
+                ));
+            }
+            Ok(distance)
+        })
+        .transpose()?
+        .unwrap_or(64);
+    let zoom_from = attribute(attributes, "zoom_from")
+        .map(|value| parse_effect_percent(&value, "zoom_from"))
+        .transpose()?
+        .unwrap_or(85);
+    if !(10..=100).contains(&zoom_from) {
+        return Err("zoom_from debe estar entre 10% y 100%".to_string());
+    }
+    let pulse = attribute(attributes, "pulse")
+        .map(|value| parse_pulse(&value))
+        .transpose()?
+        .unwrap_or(0);
+    let pulse_period_ms = parse_animation_duration(attributes, "pulse_period")?.unwrap_or(1_600);
+    if pulse > 0 && pulse_period_ms < 100 {
+        return Err("pulse_period debe ser al menos 100 ms".to_string());
+    }
+
+    Ok(ThemeAnimation {
+        fade_in_ms: parse_animation_duration(attributes, "fade_in")?.unwrap_or(0),
+        slide_in,
+        slide_distance,
+        slide_duration_ms: parse_animation_duration(attributes, "slide_duration")?.unwrap_or(450),
+        zoom_in_ms: parse_animation_duration(attributes, "zoom_in")?.unwrap_or(0),
+        zoom_from,
+        pulse,
+        pulse_period_ms,
+    })
+}
+
+fn parse_selected_scale(value: &str) -> Result<u16, String> {
+    let value = value.trim();
+    let percent = if let Some(percent) = value.strip_suffix('%') {
+        percent
+            .trim()
+            .parse::<u16>()
+            .map_err(|_| format!("Escala seleccionada inválida: {value}"))?
+    } else if value.contains('.') {
+        let ratio = value
+            .parse::<f32>()
+            .map_err(|_| format!("Escala seleccionada inválida: {value}"))?;
+        if !ratio.is_finite() {
+            return Err(format!("Escala seleccionada inválida: {value}"));
+        }
+        (ratio * 100.0).round() as u16
+    } else {
+        value
+            .parse::<u16>()
+            .map_err(|_| format!("Escala seleccionada inválida: {value}"))?
+    };
+    if !(MIN_SELECTED_SCALE..=MAX_SELECTED_SCALE).contains(&percent) {
+        return Err(format!(
+            "selected_scale debe estar entre {MIN_SELECTED_SCALE}% y {MAX_SELECTED_SCALE}%"
+        ));
+    }
+    Ok(percent)
 }
 
 fn parse_layer_view(value: &str) -> Result<ThemeLayerView, String> {
@@ -1283,6 +2364,51 @@ fn selector_for(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+fn discover_theme_paths(directory: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if is_xml_file(&path) {
+            // Compatibilidad con el layout antiguo: themes/tema.xml.
+            paths.push(path);
+        } else if path.is_dir() {
+            // El layout recomendado mantiene cada XML y sus assets aislados en
+            // themes/NombreSinEspacios/. No se entra en assets/ anidados.
+            paths.extend(
+                fs::read_dir(path)
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|candidate| is_xml_file(candidate)),
+            );
+        }
+    }
+    paths
+}
+
+fn is_xml_file(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+}
+
+fn legacy_selector_stem(selector: &str) -> Option<String> {
+    let normalized = selector.trim().replace('\\', "/");
+    let filename = normalized.rsplit('/').next()?;
+    Path::new(filename)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .map(str::to_string)
+}
+
 fn paths_equal(left: &Path, right: &Path) -> bool {
     if let (Ok(left), Ok(right)) = (left.canonicalize(), right.canonicalize()) {
         return filesystem_text_equal(
@@ -1337,10 +2463,20 @@ mod tests {
         assert_eq!(theme.component(ThemeComponentId::Status).z, 300);
         assert!(!theme.component(ThemeComponentId::VerticalList).visible);
         assert!(!theme.component(ThemeComponentId::HorizontalList).visible);
+        assert!(!theme.component(ThemeComponentId::GameCarouselLeft).visible);
+        assert!(!theme.component(ThemeComponentId::GameCarouselRight).visible);
         assert!(!theme.component(ThemeComponentId::GameTitle).visible);
         assert!(!theme.component(ThemeComponentId::GameDescription).visible);
         assert!(!theme.component(ThemeComponentId::GameMetadata).visible);
         assert!(!theme.component(ThemeComponentId::PageCounter).visible);
+        assert_eq!(
+            theme.component(ThemeComponentId::VerticalList).artwork,
+            ThemeListArtwork::Logo
+        );
+        assert_eq!(
+            theme.component(ThemeComponentId::VerticalList).chrome,
+            ThemeChrome::Panel
+        );
         assert!(theme.media_slots.is_empty());
     }
 
@@ -1393,12 +2529,15 @@ mod tests {
             "showcase.xml",
             r#"<theme version="2" id="showcase">
               <canvas width="1920" height="1080"/>
-              <component id="horizontal_list" x="0" y="808" width="1920" height="272" z="140" visible="true"/>
-              <component id="game_title" x="520" y="16" width="880" height="168" visible="true"/>
+              <font source="assets/Display.ttf"/>
+              <component id="horizontal_list" x="0" y="808" width="1920" height="272" z="140" visible="true" artwork="box3d" chrome="none"/>
+              <component id="gamecarrousel_right" x="1280" y="96" width="600" height="888" z="150" visible="true" artwork="logo" chrome="none" opacity="0.8" selected_scale="1.45" unselected_opacity="0.42" arc="144"/>
+              <component id="gamecarrousel_horizontal" x="0" y="380" width="1920" height="700" visible="true" artwork="box3d"/>
+              <component id="game_title" x="520" y="16" width="880" height="168" visible="true" font_size="69" show_with_logo="true"/>
               <component id="game_description" visible="true"/>
-              <component id="game_metadata" visible="true"/>
+              <component id="game_metadata" visible="true" font_size="20" fields="developer,publisher"/>
               <component id="page_counter" visible="true"/>
-              <media id="preview" source="game.video, game.screenshot,game.titleshot" x="540" y="224" width="840" height="500" z="125" opacity="0.75" fit="cover" visible="true"/>
+              <media id="preview" source="game.video, game.screenshot,game.titleshot" x="540" y="224" width="840" height="500" z="125" opacity="0.75" fit="cover" visible="true" chrome="none"/>
               <media id="box" source="game.box3d,game.box2d,game.boxart" x="64" y="200" width="380" height="660" fit="contain" visible="false"/>
             </theme>"#,
         );
@@ -1411,12 +2550,66 @@ mod tests {
                 rect: ThemeRect::new(0, 404, 960, 136),
                 z: 140,
                 visible: true,
+                artwork: ThemeListArtwork::Box3d,
+                chrome: ThemeChrome::None,
+                opacity: 255,
+                selected_scale: 100,
+                unselected_opacity: 150,
+                arc: 0,
+                font_size: 0,
+                show_with_logo: false,
+                metadata_fields: ThemeMetadataFields::default_value(),
+                effects: ThemeImageEffects::default(),
+                text_style: ThemeTextStyle::default(),
+                animation: ThemeAnimation::default(),
+            }
+        );
+        assert_eq!(
+            theme.component(ThemeComponentId::GameCarouselRight),
+            ThemeComponent {
+                rect: ThemeRect::new(640, 48, 300, 444),
+                z: 150,
+                visible: true,
+                artwork: ThemeListArtwork::Logo,
+                chrome: ThemeChrome::None,
+                opacity: 204,
+                selected_scale: 145,
+                unselected_opacity: 107,
+                arc: 72,
+                font_size: 0,
+                show_with_logo: false,
+                metadata_fields: ThemeMetadataFields::default_value(),
+                effects: ThemeImageEffects::default(),
+                text_style: ThemeTextStyle::default(),
+                animation: ThemeAnimation::default(),
             }
         );
         assert_eq!(
             theme.component(ThemeComponentId::GameTitle).rect,
             ThemeRect::new(260, 8, 440, 84)
         );
+        assert_eq!(theme.component(ThemeComponentId::GameTitle).font_size, 69);
+        assert!(theme.component(ThemeComponentId::GameTitle).show_with_logo);
+        assert!(
+            theme
+                .component(ThemeComponentId::GameCarouselHorizontal)
+                .visible
+        );
+        assert_eq!(
+            theme
+                .component(ThemeComponentId::GameCarouselHorizontal)
+                .artwork,
+            ThemeListArtwork::Box3d
+        );
+        let metadata = theme.component(ThemeComponentId::GameMetadata);
+        assert_eq!(metadata.font_size, 20);
+        assert!(metadata.metadata_fields.developer);
+        assert!(metadata.metadata_fields.publisher);
+        assert!(!metadata.metadata_fields.year);
+        assert!(theme
+            .font_source
+            .as_deref()
+            .is_some_and(|path| path.ends_with("assets/Display.ttf")));
         assert!(theme.component(ThemeComponentId::GameDescription).visible);
         assert!(theme.component(ThemeComponentId::GameMetadata).visible);
         assert!(theme.component(ThemeComponentId::PageCounter).visible);
@@ -1438,6 +2631,7 @@ mod tests {
         assert_eq!(theme.media_slots[0].opacity, 191);
         assert_eq!(theme.media_slots[0].fit, ThemeLayerFit::Cover);
         assert!(theme.media_slots[0].visible);
+        assert_eq!(theme.media_slots[0].chrome, ThemeChrome::None);
         assert_eq!(
             theme.media_slots[1].sources,
             vec![
@@ -1447,6 +2641,7 @@ mod tests {
             ]
         );
         assert!(!theme.media_slots[1].visible);
+        assert_eq!(theme.media_slots[1].chrome, ThemeChrome::Panel);
     }
 
     #[test]
@@ -1477,6 +2672,18 @@ mod tests {
                 rect: ThemeRect::new(20, 60, 200, 400),
                 z: 77,
                 visible: true,
+                artwork: ThemeListArtwork::Logo,
+                chrome: ThemeChrome::Panel,
+                opacity: 255,
+                selected_scale: 100,
+                unselected_opacity: 150,
+                arc: 0,
+                font_size: 0,
+                show_with_logo: false,
+                metadata_fields: ThemeMetadataFields::default_value(),
+                effects: ThemeImageEffects::default(),
+                text_style: ThemeTextStyle::default(),
+                animation: ThemeAnimation::default(),
             }
         );
         assert_eq!(theme.layers[0].rect, ThemeRect::new(-10, 5, 100, 50));
@@ -1484,6 +2691,117 @@ mod tests {
         assert_eq!(theme.layers[0].fit, ThemeLayerFit::Cover);
         assert_eq!(theme.layers[0].view, ThemeLayerView::Library);
         assert!(theme.layers[0].source.ends_with("assets/frame.png"));
+    }
+
+    #[test]
+    fn visual_effects_text_styles_and_animations_parse_uniformly() {
+        let directory = temp_dir("effects");
+        let _ = fs::remove_dir_all(&directory);
+        let path = write_theme(
+            &directory,
+            "effects.xml",
+            r##"<theme version="2" id="effects">
+              <component id="game_title" visible="true" font_size="64"
+                brightness="1.2" contrast="95%" saturation="80" grayscale="0.25"
+                tint="#40FF8040" blur="3"
+                shadow_color="#A0000000" shadow_x="7" shadow_y="9" shadow_blur="5"
+                glow_color="#8040A0FF" glow_radius="6" rotation="-4"
+                rounded_corners="18" gradient_start="#00000000"
+                gradient_end="#C0000000" gradient_direction="vertical"
+                text_color="#FFEEDD" text_align="right" vertical_align="bottom"
+                text_shadow_color="#B0000000" text_shadow_x="3" text_shadow_y="4"
+                text_shadow_blur="2" text_outline_color="#FF204060" text_outline="2"
+                letter_spacing="5" line_height="125%" auto_fit="false" min_font_size="16"
+                fade_in="500" slide_in="left" slide_distance="90" slide_duration="650"
+                zoom_in="700" zoom_from="72%" pulse="1.05" pulse_period="1800"/>
+              <layer id="frame" source="frame.png" width="960" height="540"
+                saturation="0.5" fade_in="250"/>
+              <media id="logo" source="game.logo" width="300" height="120"
+                glow_color="#80FFFFFF" glow_radius="8" slide_in="right"/>
+            </theme>"##,
+        );
+        let theme = ThemeDefinition::load_xml(&path).unwrap();
+        let _ = fs::remove_dir_all(directory);
+
+        let title = theme.component(ThemeComponentId::GameTitle);
+        assert_eq!(title.effects.brightness, 120);
+        assert_eq!(title.effects.contrast, 95);
+        assert_eq!(title.effects.saturation, 80);
+        assert_eq!(title.effects.grayscale, 64);
+        assert_eq!(title.effects.tint, 0x40FF_8040);
+        assert_eq!(title.effects.blur, 3);
+        assert_eq!(
+            title.effects.shadow,
+            Some(ThemeShadow {
+                color: 0xA000_0000,
+                x: 7,
+                y: 9,
+                blur: 5,
+            })
+        );
+        assert_eq!(
+            title.effects.glow,
+            Some(ThemeGlow {
+                color: 0x8040_A0FF,
+                radius: 6,
+            })
+        );
+        assert_eq!(title.effects.rotation, -4);
+        assert_eq!(title.effects.rounded_corners, 18);
+        assert_eq!(
+            title.effects.gradient,
+            Some(ThemeGradient {
+                start: 0,
+                end: 0xC000_0000,
+                direction: ThemeGradientDirection::Vertical,
+            })
+        );
+        assert_eq!(title.text_style.color, Some(0xFFFF_EEDD));
+        assert_eq!(title.text_style.align, ThemeTextAlign::Right);
+        assert_eq!(title.text_style.vertical_align, ThemeVerticalAlign::Bottom);
+        assert_eq!(title.text_style.outline, 2);
+        assert_eq!(title.text_style.letter_spacing, 5);
+        assert_eq!(title.text_style.line_height, 125);
+        assert!(!title.text_style.auto_fit);
+        assert_eq!(title.text_style.min_font_size, 16);
+        assert_eq!(title.animation.fade_in_ms, 500);
+        assert_eq!(title.animation.slide_in, ThemeSlideDirection::Left);
+        assert_eq!(title.animation.slide_distance, 90);
+        assert_eq!(title.animation.slide_duration_ms, 650);
+        assert_eq!(title.animation.zoom_in_ms, 700);
+        assert_eq!(title.animation.zoom_from, 72);
+        assert_eq!(title.animation.pulse, 5);
+        assert_eq!(title.animation.pulse_period_ms, 1_800);
+        assert_eq!(theme.layers[0].effects.saturation, 50);
+        assert_eq!(theme.layers[0].animation.fade_in_ms, 250);
+        assert_eq!(
+            theme.media_slots[0].animation.slide_in,
+            ThemeSlideDirection::Right
+        );
+        assert_eq!(theme.media_slots[0].animation.slide_duration_ms, 450);
+    }
+
+    #[test]
+    fn unsafe_effect_ranges_and_partial_gradients_are_rejected() {
+        let directory = temp_dir("invalid-effects");
+        let _ = fs::remove_dir_all(&directory);
+        let excessive_blur = write_theme(
+            &directory,
+            "blur.xml",
+            r#"<theme version="2"><component id="game_title" blur="25"/></theme>"#,
+        );
+        assert!(ThemeDefinition::load_xml(&excessive_blur)
+            .unwrap_err()
+            .contains("blur debe estar"));
+        let partial_gradient = write_theme(
+            &directory,
+            "gradient.xml",
+            r##"<theme version="2"><media id="bg" source="game.fanart" width="960" height="540" gradient_start="#000000"/></theme>"##,
+        );
+        assert!(ThemeDefinition::load_xml(&partial_gradient)
+            .unwrap_err()
+            .contains("declararse juntos"));
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]
@@ -1506,6 +2824,30 @@ mod tests {
         assert!(ThemeDefinition::load_xml(&asset)
             .unwrap_err()
             .contains("no puede salir"));
+        let chrome = write_theme(
+            &directory,
+            "chrome.xml",
+            r#"<theme version="2"><component id="vertical_list" chrome="cards"/></theme>"#,
+        );
+        assert!(ThemeDefinition::load_xml(&chrome)
+            .unwrap_err()
+            .contains("Chrome desconocido"));
+        let scale = write_theme(
+            &directory,
+            "scale.xml",
+            r#"<theme version="2"><component id="gamecarousel_left" selected_scale="2.5"/></theme>"#,
+        );
+        assert!(ThemeDefinition::load_xml(&scale)
+            .unwrap_err()
+            .contains("selected_scale"));
+        let arc = write_theme(
+            &directory,
+            "arc.xml",
+            r#"<theme version="2"><component id="gamecarousel_right" arc="961"/></theme>"#,
+        );
+        assert!(ThemeDefinition::load_xml(&arc)
+            .unwrap_err()
+            .contains("arc debe estar"));
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -1668,6 +3010,36 @@ mod tests {
     }
 
     #[test]
+    fn catalog_discovers_theme_folders_and_migrates_legacy_selectors_by_id() {
+        let root = temp_dir("catalog-folders");
+        let _ = fs::remove_dir_all(&root);
+        let theme_directory = root.join("themes/NGNEONNeon");
+        write_theme(
+            &theme_directory,
+            "theme.xml",
+            r#"<theme version="2" id="neon" name="NGNEON Neon"/>"#,
+        );
+        // Un XML dentro de assets/ no es un tema y no se descubre por accidente.
+        write_theme(
+            &theme_directory.join("assets"),
+            "metadata.xml",
+            r#"<theme version="2" id="not-a-theme"/>"#,
+        );
+
+        for selector in [
+            "neon",
+            "themes/NGNEONNeon/theme.xml",
+            "themes/neon.xml",
+            "neon.xml",
+        ] {
+            let catalog = ThemeCatalog::load(&root, None, Some(selector));
+            assert_eq!(catalog.selected().theme.id, "neon", "selector={selector}");
+            assert_eq!(catalog.entries().len(), 2);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn invalid_selected_theme_falls_back_without_blocking_startup() {
         let root = temp_dir("fallback");
         let _ = fs::remove_dir_all(&root);
@@ -1710,7 +3082,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let catalog = ThemeCatalog::load(root, None, Some("neon"));
         assert!(catalog.warnings().is_empty(), "{:?}", catalog.warnings());
-        assert_eq!(catalog.entries().len(), 6);
+        assert_eq!(catalog.entries().len(), 10);
         assert_eq!(catalog.selected().theme.id, "neon");
         assert!(catalog
             .entries()
@@ -1728,12 +3100,192 @@ mod tests {
             .entries()
             .iter()
             .any(|entry| entry.theme.id == "console-showcase"));
+        assert!(catalog
+            .entries()
+            .iter()
+            .any(|entry| entry.theme.id == "neogeo-red-cabinet"));
+        assert!(catalog
+            .entries()
+            .iter()
+            .any(|entry| entry.theme.id == "neogeo-green-cabinet"));
+        assert!(catalog
+            .entries()
+            .iter()
+            .any(|entry| entry.theme.id == "neogeo-29-cabinet"));
+        assert!(catalog
+            .entries()
+            .iter()
+            .any(|entry| entry.theme.id == "fanart-horizon"));
+    }
+
+    #[test]
+    fn neogeo_29_theme_uses_the_right_curved_logo_carousel() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let theme =
+            ThemeDefinition::load_xml(&root.join("themes/NeoGeo29Cabinet/theme.xml")).unwrap();
+        let carousel = theme.component(ThemeComponentId::GameCarouselRight);
+        assert!(carousel.visible);
+        assert_eq!(carousel.artwork, ThemeListArtwork::Logo);
+        assert_eq!(carousel.chrome, ThemeChrome::None);
+        assert_eq!(carousel.selected_scale, 145);
+        assert_eq!(carousel.unselected_opacity, 107);
+        assert_eq!(carousel.arc, 72);
+        assert!(!theme.component(ThemeComponentId::GameCarouselLeft).visible);
+        let cabinet = theme
+            .layers
+            .iter()
+            .find(|layer| layer.id == "neogeo-29-cabinet")
+            .unwrap();
+        let control_fill = theme
+            .layers
+            .iter()
+            .find(|layer| layer.id == "control-deck-fill")
+            .unwrap();
+        assert!(cabinet.source.is_file());
+        assert!(control_fill.source.is_file());
+        assert_eq!(control_fill.rect, ThemeRect::new(140, 482, 280, 31));
+        assert_eq!(control_fill.opacity, 255);
+        assert!(cabinet.z > control_fill.z);
+        for id in ["preview", "logo"] {
+            let media = theme.media_slots.iter().find(|slot| slot.id == id).unwrap();
+            assert!(cabinet.z > media.z);
+        }
+    }
+
+    #[test]
+    fn fanart_horizon_raises_boxes_and_places_credits_in_bottom_corners() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let theme =
+            ThemeDefinition::load_xml(&root.join("themes/FanartHorizon/theme.xml")).unwrap();
+        let carousel = theme.component(ThemeComponentId::GameCarouselHorizontal);
+        assert_eq!(carousel.rect, ThemeRect::new(0, 125, 960, 365));
+        assert_eq!(carousel.artwork, ThemeListArtwork::Box3d);
+        assert!(carousel.visible);
+
+        let credits = theme.component(ThemeComponentId::GameCredits);
+        assert_eq!(credits.rect, ThemeRect::new(20, 496, 920, 36));
+        assert_eq!(credits.font_size, 20);
+        assert_eq!(credits.chrome, ThemeChrome::None);
+        assert!(credits.visible);
+        assert!(!theme.component(ThemeComponentId::GameMetadata).visible);
+    }
+
+    #[test]
+    fn arcade_marquee_geometry_stays_fitted_in_all_bundled_themes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        for (relative_path, expected_rect) in [
+            (
+                "themes/NGNEONNeon/theme.xml",
+                ThemeRect::new(252, 64, 312, 64),
+            ),
+            (
+                "themes/CyberList/theme.xml",
+                ThemeRect::new(502, 12, 440, 96),
+            ),
+            (
+                "themes/ConsoleShowcase/theme.xml",
+                ThemeRect::new(282, 8, 396, 82),
+            ),
+            (
+                "themes/NeoGeo29Cabinet/theme.xml",
+                ThemeRect::new(116, 0, 333, 76),
+            ),
+            (
+                "themes/NeoGeoGreenCabinet/theme.xml",
+                ThemeRect::new(68, 24, 395, 104),
+            ),
+            (
+                "themes/NeoGeoRedCabinet/theme.xml",
+                ThemeRect::new(68, 24, 395, 104),
+            ),
+        ] {
+            let theme = ThemeDefinition::load_xml(&root.join(relative_path)).unwrap();
+            let marquee = theme
+                .media_slots
+                .iter()
+                .find(|slot| slot.id == "logo")
+                .unwrap();
+            assert_eq!(marquee.rect, expected_rect, "{relative_path}");
+            assert_eq!(marquee.fit, ThemeLayerFit::Stretch, "{relative_path}");
+            assert_eq!(
+                marquee.sources.first(),
+                Some(&ThemeMediaSource::Marquee),
+                "{relative_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn cabinet_themes_mask_media_and_green_uses_logos_with_a_separate_box() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let red =
+            ThemeDefinition::load_xml(&root.join("themes/NeoGeoRedCabinet/theme.xml")).unwrap();
+        let green =
+            ThemeDefinition::load_xml(&root.join("themes/NeoGeoGreenCabinet/theme.xml")).unwrap();
+
+        for theme in [&red, &green] {
+            let cabinet = theme
+                .layers
+                .iter()
+                .find(|layer| layer.id.contains("cabinet"))
+                .unwrap();
+            let marquee = theme
+                .media_slots
+                .iter()
+                .find(|slot| slot.id == "logo")
+                .unwrap();
+            let preview = theme
+                .media_slots
+                .iter()
+                .find(|slot| slot.id == "preview")
+                .unwrap();
+            assert!(cabinet.z > marquee.z);
+            assert!(cabinet.z > preview.z);
+            assert_eq!(marquee.rect, ThemeRect::new(68, 24, 395, 104));
+            assert_eq!(marquee.fit, ThemeLayerFit::Stretch);
+            assert_eq!(marquee.chrome, ThemeChrome::None);
+            assert_eq!(preview.rect, ThemeRect::new(99, 180, 333, 243));
+            assert_eq!(preview.chrome, ThemeChrome::None);
+        }
+
+        assert_eq!(
+            green.component(ThemeComponentId::VerticalList).artwork,
+            ThemeListArtwork::Logo
+        );
+        assert_eq!(
+            red.component(ThemeComponentId::VerticalList).chrome,
+            ThemeChrome::None
+        );
+        assert_eq!(
+            green.component(ThemeComponentId::VerticalList).chrome,
+            ThemeChrome::None
+        );
+        assert_eq!(
+            green.component(ThemeComponentId::GameDescription).chrome,
+            ThemeChrome::None
+        );
+        let box_slot = green
+            .media_slots
+            .iter()
+            .find(|slot| slot.id == "box")
+            .unwrap();
+        assert_eq!(box_slot.rect, ThemeRect::new(492, 140, 110, 220));
+        assert_eq!(box_slot.chrome, ThemeChrome::None);
+        assert_eq!(
+            box_slot.sources,
+            vec![
+                ThemeMediaSource::Box3d,
+                ThemeMediaSource::Box2d,
+                ThemeMediaSource::BoxArt,
+                ThemeMediaSource::Thumbnail,
+            ]
+        );
     }
 
     #[test]
     fn documented_theme_template_stays_compatible_with_the_parser() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let template = root.join("themes/theme-template.xml.example");
+        let template = root.join("themes/ThemeTemplate/theme.xml.example");
         let theme = ThemeDefinition::load_xml(&template).unwrap();
 
         assert_eq!(theme.id, "mi-tema");

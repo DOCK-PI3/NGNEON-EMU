@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Escaparate de consola inspirado en una colección física doméstica. -->
+<theme version="2" id="console-showcase" name="Console Showcase" author="NGNEON-EMU">
+  <canvas width="960" height="540"/>
+  <palette
+    background="#E7E0D2"
+    header="#17130F"
+    panel="#CC17130F"
+    panel_alt="#E8353028"
+    primary="#D71920"
+    primary_dark="#741015"
+    secondary="#174A96"
+    accent="#FFD900"
+    warning="#FFE66D"
+    success="#29A366"
+    text="#FFFDF5"
+    text_soft="#E8E0D0"
+    text_dim="#A99F8E"
+    border="#F4E8D0"
+    error="#FF445F"/>
+
+  <component id="library_background" visible="false"/>
+  <component id="header" visible="false"/>
+  <component id="carousel" visible="false"/>
+  <component id="cabinet" visible="false"/>
+  <component id="game_info" visible="false"/>
+  <component id="library_footer" visible="false"/>
+
+  <component id="horizontal_list" x="0" y="420" width="960" height="120" z="145" visible="true" artwork="logo"/>
+  <component id="game_title" x="280" y="4" width="400" height="94" z="150" visible="true"/>
+  <component id="game_metadata" x="280" y="394" width="400" height="24" z="150" visible="true"/>
+  <component id="page_counter" x="480" y="394" width="200" height="24" z="160" visible="true"/>
+
+  <media id="backdrop" source="game.fanart,game.mix,game.image"
+         x="0" y="0" width="960" height="540" z="-100"
+         opacity="0.30" fit="cover" visible="true"/>
+  <media id="logo" source="game.marquee,game.logo,game.wheel"
+         x="282" y="8" width="396" height="82" z="160"
+         opacity="255" fit="stretch" visible="true"/>
+  <media id="box" source="game.box2d,game.box3d,game.boxart,game.thumbnail"
+         x="48" y="92" width="192" height="300" z="130"
+         opacity="255" fit="contain" visible="true"/>
+  <media id="preview" source="game.video,game.screenshot,game.titleshot,game.mix,game.image"
+         x="280" y="102" width="400" height="288" z="130"
+         opacity="255" fit="cover" visible="true"/>
+  <media id="cartridge" source="game.cartridge2d,game.cartridge"
+         x="720" y="170" width="196" height="132" z="130"
+         opacity="255" fit="contain" visible="true"/>
+</theme>

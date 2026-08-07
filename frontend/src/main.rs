@@ -1,6 +1,10 @@
 use core_emulator::bios::{BiosKind, BiosRegion};
-use core_emulator::{video, EmulationMode, NeoGeo};
-use frontend::{audio, gamepad, screenshot};
+use core_emulator::memory::InputDeviceMode;
+use core_emulator::{video, AuxiliaryInput, EmuAction, EmulationMode, NeoGeo, PlayerId};
+use frontend::{
+    audio, gamepad, screenshot,
+    video_options::{OutputResolution, ScalingFilter},
+};
 use rfd::FileDialog;
 use sdl2::audio::AudioSpecDesired;
 use sdl2::event::Event;
@@ -8,6 +12,7 @@ use sdl2::keyboard::{Keycode, Scancode};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::surface::Surface;
 use sdl2::video::{FullscreenType, GLProfile};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -21,7 +26,7 @@ mod ui;
 const WINDOW_SCALE: u32 = 3;
 const TITLE_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 const SAVE_SLOTS: usize = 10;
-const SETTINGS_ITEMS: [usize; 6] = [7, 2, 11, 3, 5, 7]; // Video, Audio, System, Controls, Paths, RetroAchievements
+const SETTINGS_ITEMS: [usize; 6] = [8, 2, 12, 3, 6, 7]; // Video, Audio, System, Controls, Paths, RetroAchievements
 const AUDIO_RING_BUFFER_SAMPLES: usize = 32768;
 const SDL_AUDIO_CALLBACK_SAMPLES: u16 = 1024;
 const AUDIO_PREROLL_SAMPLES: usize =
@@ -33,6 +38,7 @@ const ROM_BROWSER_ROWS: usize = 2;
 const ROM_BROWSER_PER_PAGE: usize = ROM_BROWSER_COLS * ROM_BROWSER_ROWS;
 const THUMB_W: usize = 150;
 const THUMB_H: usize = 84;
+const ROM_BROWSER_IMAGE_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 
 // --- Config file path ---
 const CONFIG_PATH: &str = "config/ngneon.conf";
@@ -53,7 +59,8 @@ struct LoadedRom {
 pub struct RomEntry {
     name: String,
     path: PathBuf,
-    has_thumbnail: bool,
+    /// Artwork selected for this ROM from the current media source.
+    artwork_path: Option<PathBuf>,
     /// Lazily-loaded thumbnail pixels (150×84, aspect-preserving pre-scale).
     thumbnail: Option<Vec<u32>>,
     /// NGH cart ID, if determinable from the ROM file header or filename.
@@ -61,6 +68,57 @@ pub struct RomEntry {
     ngh: Option<u32>,
     /// Human-readable BIOS recommendation (e.g. "MVS/AES", "UniBIOS").
     pub recommended_bios: &'static str,
+}
+
+/// User-selectable artwork source for the in-emulator ROM browser.
+///
+/// Folder names are discovered dynamically below `media_dir`, so scraped
+/// categories beyond the built-in conventions can be selected too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RomBrowserArtworkSource {
+    Auto,
+    Root,
+    Folder(String),
+}
+
+impl RomBrowserArtworkSource {
+    fn from_config(value: Option<&str>) -> Self {
+        let value = value.unwrap_or_default().trim();
+        if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+            Self::Auto
+        } else if value.eq_ignore_ascii_case("root") {
+            Self::Root
+        } else if is_safe_media_subdirectory(value) {
+            Self::Folder(value.to_string())
+        } else {
+            Self::Auto
+        }
+    }
+
+    fn as_config(&self) -> &str {
+        match self {
+            Self::Auto => "auto",
+            Self::Root => "root",
+            Self::Folder(folder) => folder,
+        }
+    }
+
+    fn display_name(&self, language: lang::Language) -> String {
+        match self {
+            Self::Auto => "AUTO".to_string(),
+            Self::Root if language == lang::Language::Es => "RAIZ".to_string(),
+            Self::Root => "ROOT".to_string(),
+            Self::Folder(folder) => folder.to_ascii_uppercase(),
+        }
+    }
+
+    fn matches_configured(&self, configured: &Self) -> bool {
+        match (self, configured) {
+            (Self::Auto, Self::Auto) | (Self::Root, Self::Root) => true,
+            (Self::Folder(left), Self::Folder(right)) => left.eq_ignore_ascii_case(right),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +202,7 @@ struct RuntimeStatus {
     muted_volume: u8,
     muted: bool,
     window_scale: u32,
+    output_resolution: OutputResolution,
     auto_save: bool,
     gamepad_enabled: bool,
     cpu_overclock: bool,
@@ -153,17 +212,21 @@ struct RuntimeStatus {
     memcard_write_protected: bool,
     setting_mode: bool,
     freeplay: bool,
+    four_player: bool,
     palette_mode: video::PaletteMode,
     // Keyboard config overlay
     show_kb_config: bool,
     kb_selected_action: usize,
     kb_listening: bool,
+    kb_player: PlayerId,
     keyboard_mapping: input::KeyboardMapping,
     // ROM browser
     show_rom_browser: bool,
     rom_entries: Vec<RomEntry>,
     rom_browser_selected: usize,
     rom_browser_scroll: usize,
+    rom_browser_artwork: RomBrowserArtworkSource,
+    rom_browser_artwork_sources: Vec<RomBrowserArtworkSource>,
     media_dir: PathBuf,
     /// Has the first-frame diagnostic capture been saved?
     auto_captured: bool,
@@ -352,6 +415,7 @@ impl RuntimeStatus {
             muted_volume: 0,
             muted: false,
             window_scale: WINDOW_SCALE,
+            output_resolution: OutputResolution::Auto,
             auto_save: true,
             gamepad_enabled: false,
             cpu_overclock: false,
@@ -361,15 +425,21 @@ impl RuntimeStatus {
             memcard_write_protected: false,
             setting_mode: false,
             freeplay: false,
+            four_player: false,
             palette_mode: video::PaletteMode::ResistorNetwork,
             show_kb_config: false,
             kb_selected_action: 0,
             kb_listening: false,
+            kb_player: PlayerId::P1,
             keyboard_mapping: input::KeyboardMapping::default(),
             show_rom_browser: false,
             rom_entries: Vec::new(),
             rom_browser_selected: 0,
             rom_browser_scroll: 0,
+            rom_browser_artwork: RomBrowserArtworkSource::from_config(
+                load_config_key("rom_browser_media").as_deref(),
+            ),
+            rom_browser_artwork_sources: vec![RomBrowserArtworkSource::Auto],
             media_dir,
             auto_captured: false,
             show_welcome: false,
@@ -562,6 +632,25 @@ fn has_gamepad_driven_overlay(status: &RuntimeStatus) -> bool {
         || status.show_kb_config
 }
 
+fn process_vliner_controller_button(neogeo: &mut NeoGeo, event: &Event) -> bool {
+    use sdl2::controller::Button;
+
+    let (button, pressed) = match event {
+        Event::ControllerButtonDown { button, .. } => (*button, true),
+        Event::ControllerButtonUp { button, .. } => (*button, false),
+        _ => return false,
+    };
+    match button {
+        Button::LeftShoulder => neogeo.set_player_input(PlayerId::P1, EmuAction::Coin, pressed),
+        Button::RightShoulder => neogeo.set_player_input(PlayerId::P2, EmuAction::Coin, pressed),
+        Button::Back => neogeo.set_auxiliary_input(AuxiliaryInput::VlinerOperator, pressed),
+        Button::Start => neogeo.set_auxiliary_input(AuxiliaryInput::VlinerClearCredit, pressed),
+        Button::RightStick => neogeo.set_auxiliary_input(AuxiliaryInput::VlinerHopperOut, pressed),
+        _ => return false,
+    }
+    true
+}
+
 fn reset_selected_gamepad_mapping(
     status: &RuntimeStatus,
     gamepad_mgr: &mut gamepad::GamepadManager,
@@ -647,7 +736,7 @@ fn reload_ra_after_rom_change(neogeo: &mut NeoGeo, status: &mut RuntimeStatus) {
 fn open_rom_browser(status: &mut RuntimeStatus, neogeo: &mut NeoGeo) {
     let rom_dir = resolve_rom_directory();
     status.media_dir = resolve_media_directory(&rom_dir);
-    status.rom_entries = scan_rom_directory(&rom_dir, &status.media_dir);
+    refresh_rom_browser_library(status, &rom_dir);
     status.show_rom_browser = true;
     status.rom_browser_selected = 0;
     status.rom_browser_scroll = 0;
@@ -659,14 +748,13 @@ fn open_rom_browser(status: &mut RuntimeStatus, neogeo: &mut NeoGeo) {
         println!("[INFO] {msg}");
         ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, &msg);
     } else {
-        load_visible_thumbnails(
-            &mut status.rom_entries,
-            status.rom_browser_scroll,
-            &status.media_dir,
-        );
+        load_visible_thumbnails(&mut status.rom_entries, status.rom_browser_scroll);
         println!(
-            "[INFO] ROM Browser abierto. {} juegos encontrados.",
-            status.rom_entries.len()
+            "[INFO] ROM Browser abierto. {} juegos encontrados. Media: {}.",
+            status.rom_entries.len(),
+            status
+                .rom_browser_artwork
+                .display_name(status.lang.language)
         );
     }
 }
@@ -701,11 +789,7 @@ fn move_rom_browser(status: &mut RuntimeStatus, command: GamepadUiCommand) {
     {
         status.rom_browser_scroll =
             (status.rom_browser_selected / ROM_BROWSER_PER_PAGE) * ROM_BROWSER_PER_PAGE;
-        load_visible_thumbnails(
-            &mut status.rom_entries,
-            status.rom_browser_scroll,
-            &status.media_dir,
-        );
+        load_visible_thumbnails(&mut status.rom_entries, status.rom_browser_scroll);
     }
 }
 
@@ -892,6 +976,10 @@ fn handle_gamepad_ui_command(
                     reported_cpu_fault,
                 )?;
             }
+            GamepadUiCommand::Reset => {
+                let label = cycle_rom_browser_artwork(status);
+                println!("[INFO] Imagen del ROM Browser: {label}");
+            }
             _ => {}
         }
         return Ok(true);
@@ -966,6 +1054,46 @@ fn set_window_icon(window: &mut sdl2::video::Window) -> Result<(), String> {
         .map_err(|e| format!("No se pudo crear superficie SDL del icono: {e}"))?;
     window.set_icon(surface);
     Ok(())
+}
+
+fn configure_gl_attributes(video: &sdl2::VideoSubsystem, gl_api: gl_render::GlApi) {
+    let gl_attr = video.gl_attr();
+    match gl_api {
+        gl_render::GlApi::Desktop => {
+            gl_attr.set_context_version(3, 3);
+            gl_attr.set_context_profile(GLProfile::Core);
+        }
+        gl_render::GlApi::Gles => {
+            gl_attr.set_context_version(3, 0);
+            gl_attr.set_context_profile(GLProfile::GLES);
+        }
+    }
+    gl_attr.set_red_size(8);
+    gl_attr.set_green_size(8);
+    gl_attr.set_blue_size(8);
+    gl_attr.set_alpha_size(8);
+    gl_attr.set_double_buffer(true);
+}
+
+fn create_gl_window_and_renderer(
+    video: &sdl2::VideoSubsystem,
+    gl_api: gl_render::GlApi,
+) -> Result<(sdl2::video::Window, gl_render::CrtGlRenderer), String> {
+    configure_gl_attributes(video, gl_api);
+    let window = video
+        .window(
+            "NGNEON-EMU",
+            video::SCREEN_WIDTH as u32 * WINDOW_SCALE,
+            video::SCREEN_HEIGHT as u32 * WINDOW_SCALE,
+        )
+        .position_centered()
+        .opengl()
+        .resizable()
+        .build()
+        .map_err(|e| format!("No se pudo crear la ventana para {}: {e}", gl_api.label()))?;
+    let renderer = gl_render::CrtGlRenderer::new(video, &window, gl_api)
+        .map_err(|e| format!("No se pudo inicializar {}: {e}", gl_api.label()))?;
+    Ok((window, renderer))
 }
 
 fn main() {
@@ -1068,37 +1196,28 @@ fn run() -> Result<(), String> {
     println!("[INFO] SDL2 video inicializado");
     let mouse_util = sdl_context.mouse();
 
-    // Configure OpenGL 3.3 Core profile BEFORE creating the window
-    {
-        let gl_attr = video_subsystem.gl_attr();
-        gl_attr.set_context_version(3, 3);
-        gl_attr.set_context_profile(GLProfile::Core);
-        gl_attr.set_red_size(8);
-        gl_attr.set_green_size(8);
-        gl_attr.set_blue_size(8);
-        gl_attr.set_alpha_size(8);
-        gl_attr.set_double_buffer(true);
-    }
-
-    let mut window = video_subsystem
-        .window(
-            "NGNEON-EMU",
-            video::SCREEN_WIDTH as u32 * WINDOW_SCALE,
-            video::SCREEN_HEIGHT as u32 * WINDOW_SCALE,
-        )
-        .position_centered()
-        .opengl()
-        .resizable()
-        .build()
-        .map_err(|e| format!("No se pudo crear la ventana: {e}"))?;
+    let (mut window, gl_renderer) = match create_gl_window_and_renderer(
+        &video_subsystem,
+        gl_render::GlApi::Desktop,
+    ) {
+        Ok(result) => result,
+        Err(desktop_error) => {
+            eprintln!("[WARN] {desktop_error}. Reintentando con OpenGL ES 3.0 para EGL/KMSDRM.");
+            create_gl_window_and_renderer(&video_subsystem, gl_render::GlApi::Gles).map_err(
+                    |gles_error| {
+                        format!(
+                            "No se pudo inicializar ningun backend grafico. {desktop_error}; {gles_error}"
+                        )
+                    },
+                )?
+        }
+    };
     println!("[INFO] Ventana SDL2 creada");
     if let Err(error) = set_window_icon(&mut window) {
         eprintln!("[WARN] No se pudo aplicar el icono de ventana: {error}");
     }
     println!("[INFO] Icono de ventana procesado");
 
-    let gl_renderer = gl_render::CrtGlRenderer::new(&video_subsystem, &window)
-        .map_err(|e| format!("No se pudo inicializar OpenGL: {e}"))?;
     println!("[INFO] OpenGL inicializado");
 
     let gamepad_enabled = load_config_bool("gamepad", false);
@@ -1209,7 +1328,7 @@ fn run() -> Result<(), String> {
     status.volume = load_volume();
 
     // Scan ROM directory for the browser (initial scan)
-    status.rom_entries = scan_rom_directory(&rom_dir, &status.media_dir);
+    refresh_rom_browser_library(&mut status, &rom_dir);
     if !status.rom_entries.is_empty() {
         println!(
             "[INFO] ROM Browser: {} juegos encontrados en roms/",
@@ -1228,16 +1347,14 @@ fn run() -> Result<(), String> {
     // Load window scale from config and apply
     status.window_scale = load_config_key("window_scale")
         .and_then(|v| v.parse::<u32>().ok())
+        .filter(|scale| (2..=4).contains(scale))
         .unwrap_or(WINDOW_SCALE);
-    if status.window_scale != WINDOW_SCALE {
-        let (w, h) = (
-            video::SCREEN_WIDTH as u32 * status.window_scale,
-            video::SCREEN_HEIGHT as u32 * status.window_scale,
-        );
-        window
-            .set_size(w, h)
-            .unwrap_or_else(|e| eprintln!("[WARN] No se pudo aplicar escala de ventana: {e}"));
-        println!("[INFO] Window scale applied: {}x", status.window_scale);
+    if !status.fullscreen {
+        apply_windowed_output_resolution(
+            &mut window,
+            status.output_resolution,
+            status.window_scale,
+        )?;
     }
     // Load auto-save preference from config (default: on)
     status.auto_save = load_config_bool("auto_save", true);
@@ -1259,6 +1376,7 @@ fn run() -> Result<(), String> {
     status.memcard_write_protected = load_config_bool("memcard_write_protect", false);
     status.setting_mode = load_config_bool("setting_mode", false);
     status.freeplay = load_config_bool("freeplay", false);
+    status.four_player = load_config_bool("four_player", false);
     status.palette_mode = match load_config_key("palette_mode").as_deref() {
         Some("raw") => video::PaletteMode::Raw,
         _ => video::PaletteMode::ResistorNetwork,
@@ -1270,6 +1388,7 @@ fn run() -> Result<(), String> {
         status.disable_adpcm_wrap = false;
         status.setting_mode = false;
         status.freeplay = false;
+        status.four_player = false;
         println!(
             "[INFO] Sesión limpia: sin autoestado/perfil y con timing, sprites y ADPCM de hardware."
         );
@@ -1295,7 +1414,7 @@ fn run() -> Result<(), String> {
     );
     apply_emulation_hacks(&status, &mut neogeo);
     neogeo.set_memory_card_state(status.memcard_inserted, status.memcard_write_protected);
-    neogeo.set_dip_options(status.setting_mode, false, status.freeplay);
+    neogeo.set_dip_options(status.setting_mode, status.four_player, status.freeplay);
     neogeo.set_palette_mode(status.palette_mode);
     neogeo.ra_set_hardcore(status.ra_hardcore);
     if status.ra_hardcore {
@@ -1333,7 +1452,9 @@ fn run() -> Result<(), String> {
     // --- Auto-load state from slot 0 for seamless session resume ---
     // Skip auto-load for the demo ROM (no persistent saves for demos).
     if !neogeo.demo_mode && !status.ra_hardcore && status.auto_save {
-        auto_load_state(&mut neogeo, &status.label);
+        if auto_load_state(&mut neogeo, &status.label) {
+            clear_audio_pipeline(&ring_buffer, &mut resampler);
+        }
         // Refresh slot availability after auto-load
         status.scan_slots();
     } else if !status.auto_save {
@@ -1359,6 +1480,7 @@ fn run() -> Result<(), String> {
     let mut save_counter: u32 = 0;
     let mut next_frame_deadline =
         Instant::now() + system_timing_for_bios(&status.current_bios).frame_duration();
+    let mut audio_pacing = audio::AudioPacingController::new();
     'running: loop {
         for event in event_pump.poll_iter() {
             match event {
@@ -1447,7 +1569,9 @@ fn run() -> Result<(), String> {
                     repeat: false,
                     ..
                 } => {
-                    if let Some(mut loaded_rom) = pick_rom_from_dialog() {
+                    let selected_rom = pick_rom_from_dialog(&window);
+                    window.raise();
+                    if let Some(mut loaded_rom) = selected_rom {
                         let ra_hash = apply_loaded_rom(
                             &mut neogeo,
                             &mut loaded_rom,
@@ -1565,6 +1689,7 @@ fn run() -> Result<(), String> {
                     match std::fs::read(&path) {
                         Ok(data) => match neogeo.load_state(&data) {
                             Ok(_) => {
+                                clear_audio_pipeline(&ring_buffer, &mut resampler);
                                 println!("[INFO] Estado cargado desde {path}");
                                 let msg = status
                                     .lang
@@ -1645,6 +1770,13 @@ fn run() -> Result<(), String> {
                     window
                         .set_fullscreen(mode)
                         .map_err(|e| format!("No se pudo cambiar pantalla completa: {e}"))?;
+                    if !status.fullscreen {
+                        apply_windowed_output_resolution(
+                            &mut window,
+                            status.output_resolution,
+                            status.window_scale,
+                        )?;
+                    }
                 }
                 Event::KeyDown {
                     keycode: Some(Keycode::F2),
@@ -1957,6 +2089,7 @@ fn run() -> Result<(), String> {
                     status.settings_selected_index = 0;
                     status.settings_vol_adjusting = false;
                     if status.show_settings {
+                        refresh_rom_browser_library(&mut status, &rom_dir);
                         // Sync current diagnostic dumps state from core
                         // (use the RuntimeStatus value which is initialized from config)
                         println!("[INFO] Configuración abierta.");
@@ -2116,6 +2249,16 @@ fn run() -> Result<(), String> {
                         (status.kb_selected_action + 1) % gamepad::ALL_ACTIONS.len();
                 }
                 Event::KeyDown {
+                    keycode: Some(Keycode::Left | Keycode::Right),
+                    repeat: false,
+                    ..
+                } if status.show_kb_config && !status.kb_listening => {
+                    status.kb_player = match status.kb_player {
+                        PlayerId::P1 => PlayerId::P2,
+                        _ => PlayerId::P1,
+                    };
+                }
+                Event::KeyDown {
                     keycode: Some(Keycode::Return),
                     repeat: false,
                     ..
@@ -2147,7 +2290,11 @@ fn run() -> Result<(), String> {
                         // Don't rebind Escape (it cancels listening)
                         if key != Keycode::Escape {
                             let target_action = gamepad::ALL_ACTIONS[status.kb_selected_action];
-                            status.keyboard_mapping.set(key, target_action);
+                            status.keyboard_mapping.set_for_player(
+                                key,
+                                status.kb_player,
+                                target_action,
+                            );
                             let key_name = input::keycode_name(key);
                             let action_name = gamepad::action_name(target_action);
                             let msg = format!("{} -> {}", key_name, action_name);
@@ -2229,6 +2376,23 @@ fn run() -> Result<(), String> {
                     let msg = status.lang.gp_defaults_restored;
                     println!("[INFO] {msg}");
                     ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, msg);
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Tab),
+                    repeat: false,
+                    ..
+                } if status.show_gamepad_config
+                    && !status.gp_listening
+                    && !gamepad_mgr.is_empty() =>
+                {
+                    let next = match gamepad_mgr.player(status.gp_selected_controller) {
+                        Some(PlayerId::P1) => PlayerId::P2,
+                        Some(PlayerId::P2) => PlayerId::P3,
+                        Some(PlayerId::P3) => PlayerId::P4,
+                        _ => PlayerId::P1,
+                    };
+                    gamepad_mgr.set_controller_player(status.gp_selected_controller, next);
+                    gamepad_mgr.save_all();
                 }
                 Event::KeyDown { .. }
                 | Event::KeyUp { .. }
@@ -2536,6 +2700,14 @@ fn run() -> Result<(), String> {
                 }
                 // ── ROM Browser navigation ───────────────────────────
                 Event::KeyDown {
+                    keycode: Some(Keycode::Tab),
+                    repeat: false,
+                    ..
+                } if status.show_rom_browser => {
+                    let label = cycle_rom_browser_artwork(&mut status);
+                    println!("[INFO] Imagen del ROM Browser: {label}");
+                }
+                Event::KeyDown {
                     keycode: Some(Keycode::Up),
                     repeat: false,
                     ..
@@ -2549,11 +2721,7 @@ fn run() -> Result<(), String> {
                         status.rom_browser_scroll = (status.rom_browser_selected
                             / ROM_BROWSER_PER_PAGE)
                             * ROM_BROWSER_PER_PAGE;
-                        load_visible_thumbnails(
-                            &mut status.rom_entries,
-                            status.rom_browser_scroll,
-                            &status.media_dir,
-                        );
+                        load_visible_thumbnails(&mut status.rom_entries, status.rom_browser_scroll);
                     }
                 }
                 Event::KeyDown {
@@ -2573,11 +2741,7 @@ fn run() -> Result<(), String> {
                         status.rom_browser_scroll = (status.rom_browser_selected
                             / ROM_BROWSER_PER_PAGE)
                             * ROM_BROWSER_PER_PAGE;
-                        load_visible_thumbnails(
-                            &mut status.rom_entries,
-                            status.rom_browser_scroll,
-                            &status.media_dir,
-                        );
+                        load_visible_thumbnails(&mut status.rom_entries, status.rom_browser_scroll);
                     }
                 }
                 Event::KeyDown {
@@ -2594,11 +2758,7 @@ fn run() -> Result<(), String> {
                         status.rom_browser_scroll = (status.rom_browser_selected
                             / ROM_BROWSER_PER_PAGE)
                             * ROM_BROWSER_PER_PAGE;
-                        load_visible_thumbnails(
-                            &mut status.rom_entries,
-                            status.rom_browser_scroll,
-                            &status.media_dir,
-                        );
+                        load_visible_thumbnails(&mut status.rom_entries, status.rom_browser_scroll);
                     }
                 }
                 Event::KeyDown {
@@ -2617,11 +2777,7 @@ fn run() -> Result<(), String> {
                         status.rom_browser_scroll = (status.rom_browser_selected
                             / ROM_BROWSER_PER_PAGE)
                             * ROM_BROWSER_PER_PAGE;
-                        load_visible_thumbnails(
-                            &mut status.rom_entries,
-                            status.rom_browser_scroll,
-                            &status.media_dir,
-                        );
+                        load_visible_thumbnails(&mut status.rom_entries, status.rom_browser_scroll);
                     }
                 }
                 Event::KeyDown {
@@ -2848,6 +3004,7 @@ fn run() -> Result<(), String> {
                     match std::fs::read(&base) {
                         Ok(data) => match neogeo.load_state(&data) {
                             Ok(_) => {
+                                clear_audio_pipeline(&ring_buffer, &mut resampler);
                                 println!("[INFO] (Manager) Estado cargado desde {base}");
                             }
                             Err(e) => eprintln!("[ERROR] Error al cargar slot {}: {e}", slot),
@@ -2877,8 +3034,17 @@ fn run() -> Result<(), String> {
                 // --- Controller hotplug ---
                 Event::ControllerDeviceAdded { .. } | Event::ControllerDeviceRemoved { .. } => {
                     if let Some(controller_subsystem) = controller_subsystem.as_ref() {
-                        gamepad_mgr.handle_hotplug(controller_subsystem, &event);
+                        for release in gamepad_mgr.handle_hotplug(controller_subsystem, &event) {
+                            neogeo.set_player_input(release.player, release.action, false);
+                        }
                     }
+                }
+                Event::MouseMotion { xrel, yrel, .. }
+                    if neogeo.input_device_mode() == InputDeviceMode::IrritatingMaze
+                        && !has_gamepad_driven_overlay(&status)
+                        && !status.show_gamepad_config =>
+                {
+                    neogeo.add_trackball_delta(xrel, yrel);
                 }
                 // --- Keyboard game input ---
                 Event::KeyDown { .. } | Event::KeyUp { .. } => {
@@ -2894,11 +3060,25 @@ fn run() -> Result<(), String> {
                     }
                     if let Some(action) = input::process_event(&event) {
                         let pressed = matches!(event, Event::KeyDown { .. });
-                        neogeo.set_input(action, pressed);
+                        match action {
+                            input::KeyboardInput::Player(player, action) => {
+                                neogeo.set_player_input(player, action, pressed);
+                            }
+                            input::KeyboardInput::Auxiliary(action) => {
+                                neogeo.set_auxiliary_input(action, pressed);
+                            }
+                        }
                     }
                 }
                 // --- Gamepad input: system shortcuts, UI overlays, or game input ---
                 Event::ControllerButtonDown { which, button, .. } => {
+                    if neogeo.input_device_mode() == InputDeviceMode::Vliner
+                        && !has_gamepad_driven_overlay(&status)
+                        && !status.show_gamepad_config
+                        && process_vliner_controller_button(&mut neogeo, &event)
+                    {
+                        continue;
+                    }
                     if !status.gp_listening {
                         if let Some(system_action) =
                             gamepad_mgr.system_action_for_button_down(which, button)
@@ -2941,7 +3121,11 @@ fn run() -> Result<(), String> {
                     }
 
                     for gamepad_event in gamepad_mgr.process_event_actions(&event) {
-                        neogeo.set_input(gamepad_event.action, gamepad_event.pressed);
+                        neogeo.set_player_input(
+                            gamepad_event.player,
+                            gamepad_event.action,
+                            gamepad_event.pressed,
+                        );
                     }
                 }
                 Event::ControllerButtonUp { .. } | Event::ControllerAxisMotion { .. } => {
@@ -2968,8 +3152,26 @@ fn run() -> Result<(), String> {
                         continue;
                     }
 
+                    if neogeo.input_device_mode() == InputDeviceMode::Vliner
+                        && process_vliner_controller_button(&mut neogeo, &event)
+                    {
+                        continue;
+                    }
+                    if neogeo.input_device_mode() == InputDeviceMode::IrritatingMaze {
+                        if let Some((player, x, y)) = gamepad_mgr.process_trackball_axis(&event) {
+                            if player == PlayerId::P1 {
+                                neogeo.set_trackball_axes(x, y);
+                            }
+                            continue;
+                        }
+                    }
+
                     for gamepad_event in gamepad_mgr.process_event_actions(&event) {
-                        neogeo.set_input(gamepad_event.action, gamepad_event.pressed);
+                        neogeo.set_player_input(
+                            gamepad_event.player,
+                            gamepad_event.action,
+                            gamepad_event.pressed,
+                        );
                     }
                 }
                 _ => {}
@@ -3200,12 +3402,15 @@ fn run() -> Result<(), String> {
                 .unwrap_or(0);
             if let Ok(buffer) = ring_buffer.lock() {
                 println!(
-                    "[AUDIO_DIAG] frame={} native_samples={} native_nonzero={} native_peak={} ring_samples={} overruns={} underruns={} resampler_source_pairs={} resampler_starved_pairs={}",
+                    "[AUDIO_DIAG] frame={} native_samples={} native_nonzero={} native_peak={} ring_samples={} target_samples={} ewma_samples={:.1} pacing={:+.4}% overruns={} underruns={} resampler_source_pairs={} resampler_starved_pairs={}",
                     status.frame_count,
                     native.len(),
                     native_nonzero,
                     native_peak,
                     buffer.len(),
+                    audio::AUDIO_PACING_TARGET_SAMPLES,
+                    audio_pacing.filtered_samples(),
+                    audio_pacing.correction() * 100.0,
                     buffer.overrun_samples(),
                     buffer.underrun_samples(),
                     resampler.buffered_source_pairs(),
@@ -3294,12 +3499,13 @@ fn run() -> Result<(), String> {
                 status.fullscreen,
                 status.volume,
                 status.muted,
-                status.window_scale,
                 crt_gl.display_aspect.label(),
                 match status.palette_mode {
                     video::PaletteMode::Raw => "RAW",
                     video::PaletteMode::ResistorNetwork => "RESNET",
                 },
+                status.output_resolution.label(),
+                crt_gl.scaling_filter.label(),
                 status.auto_save,
                 status.gamepad_enabled,
                 status.cpu_overclock,
@@ -3309,6 +3515,7 @@ fn run() -> Result<(), String> {
                 status.memcard_write_protected,
                 status.setting_mode,
                 status.freeplay,
+                status.four_player,
                 status.settings_vol_adjusting,
                 status.ra_logged_in,
                 &status.ra_username,
@@ -3328,6 +3535,9 @@ fn run() -> Result<(), String> {
                 &rom_dir.to_string_lossy(),
                 &bios_dir_str,
                 &status.media_dir.to_string_lossy(),
+                &status
+                    .rom_browser_artwork
+                    .display_name(status.lang.language),
                 "screenshots",
                 "saves",
                 &status.lang,
@@ -3342,6 +3552,9 @@ fn run() -> Result<(), String> {
                 &status.rom_entries,
                 status.rom_browser_selected,
                 status.rom_browser_scroll,
+                &status
+                    .rom_browser_artwork
+                    .display_name(status.lang.language),
                 &status.lang,
             );
         }
@@ -3374,6 +3587,7 @@ fn run() -> Result<(), String> {
                 neogeo.video.width,
                 actions,
                 &status.keyboard_mapping,
+                status.kb_player,
                 status.kb_selected_action,
                 status.kb_listening,
                 &status.lang,
@@ -3401,6 +3615,7 @@ fn run() -> Result<(), String> {
                 has_gamepad,
                 status.gp_selected_controller,
                 total_ctrl,
+                gamepad_mgr.player(status.gp_selected_controller),
                 save_counter as u64,
             );
         }
@@ -3438,7 +3653,7 @@ fn run() -> Result<(), String> {
         }
 
         // Get output resolution (for scanline row detection in shader)
-        let (out_w, out_h) = window.size();
+        let (out_w, out_h) = window.drawable_size();
         let render_config = if status.show_rom_browser {
             let mut ui_config = crt_gl.clone();
             ui_config.scanlines = false;
@@ -3483,10 +3698,20 @@ fn run() -> Result<(), String> {
         }
 
         update_window_title(&mut window, &mut status, &neogeo)?;
-        sleep_to_frame_target(
-            &mut next_frame_deadline,
-            system_timing_for_bios(&status.current_bios).frame_duration(),
-        );
+        let nominal_frame_duration = system_timing_for_bios(&status.current_bios).frame_duration();
+        let paced_frame_duration = ring_buffer
+            .lock()
+            .map(|buffer| {
+                audio_pacing.adjusted_frame_duration(
+                    nominal_frame_duration,
+                    buffer.len(),
+                    buffer.generation(),
+                )
+            })
+            .unwrap_or(nominal_frame_duration);
+        if sleep_to_frame_target(&mut next_frame_deadline, paced_frame_duration) {
+            audio_pacing.reset();
+        }
     }
 
     // Save persistent data and auto-save state to slot 0 before exiting
@@ -3763,8 +3988,9 @@ fn load_initial_rom(request: InitialRomRequest) -> Result<LoadedRom, String> {
     }
 }
 
-fn pick_rom_from_dialog() -> Option<LoadedRom> {
+fn pick_rom_from_dialog(window: &sdl2::video::Window) -> Option<LoadedRom> {
     let result = FileDialog::new()
+        .set_parent(window)
         .add_filter("NeoGeo ROM", &["neo", "zip"])
         .pick_file()
         .and_then(|path| match load_rom_path(&path) {
@@ -3952,7 +4178,7 @@ fn update_window_title(
         .map_err(|e| format!("No se pudo actualizar el título: {e}"))
 }
 
-fn sleep_to_frame_target(next_deadline: &mut Instant, frame_time: Duration) {
+fn sleep_to_frame_target(next_deadline: &mut Instant, frame_time: Duration) -> bool {
     let now = Instant::now();
     if now < *next_deadline {
         std::thread::sleep(*next_deadline - now);
@@ -3965,7 +4191,9 @@ fn sleep_to_frame_target(next_deadline: &mut Instant, frame_time: Duration) {
     // far behind. Reset instead of running many catch-up frames without delay.
     if after_sleep.saturating_duration_since(*next_deadline) >= frame_time {
         *next_deadline = after_sleep + frame_time;
+        return true;
     }
+    false
 }
 
 fn next_screenshot_path(label: &str) -> std::path::PathBuf {
@@ -4016,7 +4244,7 @@ fn auto_save_state(neogeo: &mut NeoGeo, label: &str) {
 
 /// Auto-load state from slot 0 on startup (seamless session resume).
 /// Draws a notification on success. Logs at INFO level if no save found.
-fn auto_load_state(neogeo: &mut NeoGeo, label: &str) {
+fn auto_load_state(neogeo: &mut NeoGeo, label: &str) -> bool {
     let path = format!("saves/{}.state.0", sanitize_filename(label));
     match std::fs::read(&path) {
         Ok(data) => match neogeo.load_state(&data) {
@@ -4024,6 +4252,7 @@ fn auto_load_state(neogeo: &mut NeoGeo, label: &str) {
                 println!("[INFO] Estado auto-cargado desde {path}");
                 let msg = "Sesión reanudada";
                 ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, msg);
+                return true;
             }
             Err(e) => {
                 eprintln!("[WARN] Error al auto-cargar estado: {e}");
@@ -4033,9 +4262,31 @@ fn auto_load_state(neogeo: &mut NeoGeo, label: &str) {
             println!("[INFO] No hay save state previo para reanudar");
         }
     }
+    false
 }
 
 // --- Settings menu handler ---
+
+fn apply_windowed_output_resolution(
+    window: &mut sdl2::video::Window,
+    resolution: OutputResolution,
+    auto_scale: u32,
+) -> Result<(), String> {
+    let (width, height) = resolution.dimensions().unwrap_or((
+        video::SCREEN_WIDTH as u32 * auto_scale,
+        video::SCREEN_HEIGHT as u32 * auto_scale,
+    ));
+    window
+        .set_size(width, height)
+        .map_err(|error| format!("No se pudo aplicar resolución {width}x{height}: {error}"))?;
+    println!(
+        "[INFO] Resolución de salida: {} (ventana {}x{})",
+        resolution.label(),
+        width,
+        height
+    );
+    Ok(())
+}
 
 fn apply_emulation_hacks(status: &RuntimeStatus, neogeo: &mut NeoGeo) {
     neogeo.set_cpu_overclock(status.cpu_overclock);
@@ -4084,7 +4335,7 @@ fn handle_settings_enter(
     match status.settings_tab {
         0 => {
             // VIDEO tab: Scanlines(0), Curvature(1), Bloom(2), Fullscreen(3),
-            // Aspect(4), Palette(5), Window Scale(6).
+            // Aspect(4), Palette(5), Output Resolution(6), Scaling Filter(7).
             match status.settings_selected_index {
                 0 => {
                     crt_gl.scanlines = !crt_gl.scanlines;
@@ -4123,6 +4374,13 @@ fn handle_settings_enter(
                     };
                     if let Err(e) = window.set_fullscreen(mode) {
                         eprintln!("[ERROR] No se pudo cambiar pantalla completa: {e}");
+                    } else if !status.fullscreen {
+                        apply_windowed_output_resolution(
+                            window,
+                            status.output_resolution,
+                            status.window_scale,
+                        )
+                        .unwrap_or_else(|error| eprintln!("[WARN] {error}"));
                     }
                 }
                 4 => {
@@ -4148,21 +4406,26 @@ fn handle_settings_enter(
                     ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, &msg);
                 }
                 6 => {
-                    // Cycle window scale: 2x -> 3x -> 4x -> 2x
-                    status.window_scale = match status.window_scale {
-                        2 => 3,
-                        3 => 4,
-                        _ => 2,
-                    };
-                    save_config_key("window_scale", &status.window_scale.to_string());
-                    let (w, h) = (
-                        video::SCREEN_WIDTH as u32 * status.window_scale,
-                        video::SCREEN_HEIGHT as u32 * status.window_scale,
-                    );
-                    window.set_size(w, h).unwrap_or_else(|e| {
-                        eprintln!("[WARN] No se pudo cambiar tamaño de ventana: {e}")
-                    });
-                    println!("[INFO] Window scale: {}x", status.window_scale);
+                    let next = status.output_resolution.next();
+                    if !status.fullscreen {
+                        if let Err(error) =
+                            apply_windowed_output_resolution(window, next, status.window_scale)
+                        {
+                            eprintln!("[WARN] {error}");
+                            return;
+                        }
+                    }
+                    status.output_resolution = next;
+                    save_config_key("output_resolution", next.as_config());
+                    let msg = format!("Output resolution: {}", next.label());
+                    ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, &msg);
+                }
+                7 => {
+                    crt_gl.scaling_filter = crt_gl.scaling_filter.next();
+                    save_config_key("scaling_filter", crt_gl.scaling_filter.as_config());
+                    let msg = format!("Scaling filter: {}", crt_gl.scaling_filter.label());
+                    println!("[INFO] {msg}");
+                    ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, &msg);
                 }
                 _ => {}
             }
@@ -4212,7 +4475,7 @@ fn handle_settings_enter(
             // SYSTEM tab: Language(0), ROM Dumps(1), Auto-save(2), BIOS(3),
             // MVS Setting Mode(4), MVS Freeplay(5), CPU overclock(6),
             // sprite limit(7), disable ADPCM wrap(8), memory card inserted(9),
-            // memory card write protect(10).
+            // memory card write protect(10), four-player FTC1B(11).
             match status.settings_selected_index {
                 0 => {
                     // Toggle language
@@ -4272,7 +4535,11 @@ fn handle_settings_enter(
                 }
                 4 => {
                     status.setting_mode = !status.setting_mode;
-                    neogeo.set_dip_options(status.setting_mode, false, status.freeplay);
+                    neogeo.set_dip_options(
+                        status.setting_mode,
+                        status.four_player,
+                        status.freeplay,
+                    );
                     save_config_bool("setting_mode", status.setting_mode);
                     let msg = if status.setting_mode {
                         "MVS Setting Mode: ON"
@@ -4284,7 +4551,11 @@ fn handle_settings_enter(
                 }
                 5 => {
                     status.freeplay = !status.freeplay;
-                    neogeo.set_dip_options(status.setting_mode, false, status.freeplay);
+                    neogeo.set_dip_options(
+                        status.setting_mode,
+                        status.four_player,
+                        status.freeplay,
+                    );
                     save_config_bool("freeplay", status.freeplay);
                     let msg = if status.freeplay {
                         "MVS Freeplay: ON"
@@ -4389,6 +4660,22 @@ fn handle_settings_enter(
                     println!("[INFO] {msg}");
                     ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, msg);
                 }
+                11 => {
+                    status.four_player = !status.four_player;
+                    neogeo.set_dip_options(
+                        status.setting_mode,
+                        status.four_player,
+                        status.freeplay,
+                    );
+                    save_config_bool("four_player", status.four_player);
+                    let msg = if status.four_player {
+                        "FTC1B 4 Players: ON"
+                    } else {
+                        "FTC1B 4 Players: OFF"
+                    };
+                    println!("[INFO] {msg}");
+                    ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, msg);
+                }
                 _ => {}
             }
         }
@@ -4429,29 +4716,53 @@ fn handle_settings_enter(
                     status.show_kb_config = true;
                     status.kb_selected_action = 0;
                     status.kb_listening = false;
+                    status.kb_player = PlayerId::P1;
                     status.keyboard_mapping = input::get_global_mapping();
                     println!("[INFO] Keyboard Config abierto desde configuración.");
                 }
                 _ => {}
             }
         }
-        4 if status.settings_selected_index == 2 => {
-            // PATHS tab: Media folder can be changed from the UI.
-            let start_dir = if status.media_dir.is_dir() {
-                status.media_dir.clone()
-            } else {
-                PathBuf::from(".")
-            };
-            if let Some(folder) = FileDialog::new()
-                .set_title("Seleccionar carpeta media")
-                .set_directory(start_dir)
-                .pick_folder()
-            {
-                status.media_dir = folder;
-                save_config_key("media_dir", &status.media_dir.to_string_lossy());
-                let msg = format!("Media: {}", status.media_dir.to_string_lossy());
-                println!("[INFO] {msg}");
-                ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, &msg);
+        4 => {
+            match status.settings_selected_index {
+                2 => {
+                    // PATHS tab: Media folder can be changed from the UI.
+                    let start_dir = if status.media_dir.is_dir() {
+                        status.media_dir.clone()
+                    } else {
+                        PathBuf::from(".")
+                    };
+                    let selected_folder = FileDialog::new()
+                        .set_parent(&*window)
+                        .set_title("Seleccionar carpeta media")
+                        .set_directory(start_dir)
+                        .pick_folder();
+                    window.raise();
+                    if let Some(folder) = selected_folder {
+                        status.media_dir = folder;
+                        save_config_key("media_dir", &status.media_dir.to_string_lossy());
+                        let rom_dir = resolve_rom_directory();
+                        refresh_rom_browser_library(status, &rom_dir);
+                        let msg = format!("Media: {}", status.media_dir.to_string_lossy());
+                        println!("[INFO] {msg}");
+                        ui::draw_notification(
+                            &mut neogeo.video.framebuffer,
+                            neogeo.video.width,
+                            &msg,
+                        );
+                    }
+                }
+                3 => {
+                    let label = cycle_rom_browser_artwork(status);
+                    let msg = if status.lang.language == lang::Language::Es {
+                        format!("Imagen del explorador: {label}")
+                    } else {
+                        format!("Browser image: {label}")
+                    };
+                    println!("[INFO] {msg}");
+                    ui::draw_notification(&mut neogeo.video.framebuffer, neogeo.video.width, &msg);
+                }
+                _ => {}
             }
         }
         5 => {
@@ -4702,6 +5013,10 @@ fn apply_startup_config(
         .as_deref()
         .map(gl_render::DisplayAspect::from_config)
         .unwrap_or(gl_render::DisplayAspect::Original4_3);
+    crt_gl.scaling_filter =
+        ScalingFilter::from_config(load_config_key("scaling_filter").as_deref());
+    status.output_resolution =
+        OutputResolution::from_config(load_config_key("output_resolution").as_deref());
     // Fullscreen (F11)
     if load_config_bool("fullscreen", false) {
         status.fullscreen = true;
@@ -5007,8 +5322,7 @@ fn resolve_bios_directory() -> PathBuf {
 }
 
 /// Scan a directory for ROM files (.neo, .zip) and return RomEntry list.
-/// Also checks for matching box art in the configured media directory.
-fn scan_rom_directory(dir: &Path, media_dir: &Path) -> Vec<RomEntry> {
+fn scan_rom_directory(dir: &Path) -> Vec<RomEntry> {
     let mut entries = Vec::new();
     let read_dir = match std::fs::read_dir(dir) {
         Ok(d) => d,
@@ -5035,8 +5349,6 @@ fn scan_rom_directory(dir: &Path, media_dir: &Path) -> Vec<RomEntry> {
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
-        // Accept the legacy flat directory and the conventional catalog roots.
-        let has_thumbnail = rom_browser_art_path(media_dir, &name).is_some();
         // Determine NGH (and thus BIOS recommendation) from ROM headers or filename.
         let (ngh, recommended_bios) = if ext == "neo" {
             // Read NGH from the .neo file header (4 bytes LE at offset 0x28)
@@ -5062,7 +5374,7 @@ fn scan_rom_directory(dir: &Path, media_dir: &Path) -> Vec<RomEntry> {
         entries.push(RomEntry {
             name,
             path,
-            has_thumbnail,
+            artwork_path: None,
             thumbnail: None,
             ngh,
             recommended_bios,
@@ -5087,31 +5399,234 @@ fn read_neo_ngh(path: &Path) -> Option<u32> {
 }
 
 /// Load thumbnails for the currently visible page of the ROM browser.
-fn load_visible_thumbnails(entries: &mut [RomEntry], scroll: usize, media_dir: &Path) {
+fn load_visible_thumbnails(entries: &mut [RomEntry], scroll: usize) {
     let end = (scroll + ROM_BROWSER_PER_PAGE).min(entries.len());
     for entry in entries[scroll..end].iter_mut() {
         if entry.thumbnail.is_some() {
             continue; // Already loaded
         }
-        if !entry.has_thumbnail {
-            continue;
-        }
-        let Some(thumb_path) = rom_browser_art_path(media_dir, &entry.name) else {
-            entry.has_thumbnail = false;
+        let Some(thumb_path) = entry.artwork_path.as_ref() else {
             continue;
         };
-        match screenshot::load_png_thumbnail(&thumb_path, THUMB_W, THUMB_H) {
+        match screenshot::load_png_thumbnail(thumb_path, THUMB_W, THUMB_H) {
             Ok(pixels) => entry.thumbnail = Some(pixels),
-            Err(_) => entry.has_thumbnail = false,
+            Err(error) => {
+                eprintln!(
+                    "[WARN] No se pudo cargar media del ROM Browser {}: {error}",
+                    thumb_path.display()
+                );
+                entry.artwork_path = None;
+            }
         }
     }
 }
 
-fn rom_browser_art_path(media_dir: &Path, rom_name: &str) -> Option<PathBuf> {
-    ["", "box2d", "box3d", "mix", "screenshots"]
+fn is_safe_media_subdirectory(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.chars().any(|character| {
+            character.is_control()
+                || matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+        })
+}
+
+fn is_supported_rom_browser_image(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                ROM_BROWSER_IMAGE_EXTENSIONS
+                    .iter()
+                    .any(|supported| extension.eq_ignore_ascii_case(supported))
+            })
+}
+
+fn artwork_files_in_directory(directory: &Path) -> HashMap<String, PathBuf> {
+    let mut paths: Vec<_> = std::fs::read_dir(directory)
+        .ok()
         .into_iter()
-        .map(|subdir| media_dir.join(subdir).join(format!("{rom_name}.png")))
-        .find(|path| path.is_file())
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| is_supported_rom_browser_image(path))
+        .collect();
+    paths.sort_by_cached_key(|path| {
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let extension_rank = ROM_BROWSER_IMAGE_EXTENSIONS
+            .iter()
+            .position(|supported| extension.eq_ignore_ascii_case(supported))
+            .unwrap_or(ROM_BROWSER_IMAGE_EXTENSIONS.len());
+        (extension_rank, path.to_string_lossy().to_ascii_lowercase())
+    });
+
+    let mut files = HashMap::new();
+    for path in paths {
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        files.entry(stem.to_ascii_lowercase()).or_insert(path);
+    }
+    files
+}
+
+fn artwork_source_directory(media_dir: &Path, source: &RomBrowserArtworkSource) -> Option<PathBuf> {
+    match source {
+        RomBrowserArtworkSource::Auto => None,
+        RomBrowserArtworkSource::Root => Some(media_dir.to_path_buf()),
+        RomBrowserArtworkSource::Folder(folder) if is_safe_media_subdirectory(folder) => {
+            Some(media_dir.join(folder))
+        }
+        RomBrowserArtworkSource::Folder(_) => None,
+    }
+}
+
+fn artwork_source_sort_key(source: &RomBrowserArtworkSource) -> (usize, String) {
+    let RomBrowserArtworkSource::Folder(folder) = source else {
+        return (0, String::new());
+    };
+    let lower = folder.to_ascii_lowercase();
+    let preferred = [
+        "box2d",
+        "box3d",
+        "mix",
+        "screenshots",
+        "titles",
+        "fanart",
+        "logos",
+        "wheelhd",
+        "marquees",
+        "cartridges",
+    ];
+    let rank = preferred
+        .iter()
+        .position(|candidate| *candidate == lower)
+        .map_or(100, |index| index + 1);
+    (rank, lower)
+}
+
+fn detect_rom_browser_artwork_sources(
+    media_dir: &Path,
+    entries: &[RomEntry],
+) -> Vec<RomBrowserArtworkSource> {
+    let rom_names: std::collections::HashSet<_> = entries
+        .iter()
+        .map(|entry| entry.name.to_ascii_lowercase())
+        .collect();
+    let has_matching_art = |directory: &Path| {
+        artwork_files_in_directory(directory)
+            .keys()
+            .any(|stem| rom_names.contains(stem))
+    };
+
+    let mut sources = vec![RomBrowserArtworkSource::Auto];
+    if has_matching_art(media_dir) {
+        sources.push(RomBrowserArtworkSource::Root);
+    }
+
+    let mut folders: Vec<_> = std::fs::read_dir(media_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (path.is_dir() && is_safe_media_subdirectory(&name) && has_matching_art(&path))
+                .then_some(RomBrowserArtworkSource::Folder(name))
+        })
+        .collect();
+    folders.sort_by_cached_key(artwork_source_sort_key);
+    sources.extend(folders);
+    sources
+}
+
+fn resolve_available_artwork_source(
+    configured: &RomBrowserArtworkSource,
+    available: &[RomBrowserArtworkSource],
+) -> RomBrowserArtworkSource {
+    available
+        .iter()
+        .find(|source| source.matches_configured(configured))
+        .cloned()
+        .unwrap_or(RomBrowserArtworkSource::Auto)
+}
+
+fn apply_rom_browser_artwork(
+    entries: &mut [RomEntry],
+    media_dir: &Path,
+    selected: &RomBrowserArtworkSource,
+    available: &[RomBrowserArtworkSource],
+) {
+    let selected_sources: Vec<_> = if selected == &RomBrowserArtworkSource::Auto {
+        available.iter().skip(1).collect()
+    } else {
+        vec![selected]
+    };
+    let artwork_indexes: Vec<_> = selected_sources
+        .into_iter()
+        .filter_map(|source| artwork_source_directory(media_dir, source))
+        .map(|directory| artwork_files_in_directory(&directory))
+        .collect();
+
+    for entry in entries {
+        let key = entry.name.to_ascii_lowercase();
+        entry.artwork_path = artwork_indexes
+            .iter()
+            .find_map(|index| index.get(&key).cloned());
+        entry.thumbnail = None;
+    }
+}
+
+fn refresh_rom_browser_library(status: &mut RuntimeStatus, rom_dir: &Path) {
+    status.rom_entries = scan_rom_directory(rom_dir);
+    status.rom_browser_artwork_sources =
+        detect_rom_browser_artwork_sources(&status.media_dir, &status.rom_entries);
+    status.rom_browser_artwork = resolve_available_artwork_source(
+        &status.rom_browser_artwork,
+        &status.rom_browser_artwork_sources,
+    );
+    apply_rom_browser_artwork(
+        &mut status.rom_entries,
+        &status.media_dir,
+        &status.rom_browser_artwork,
+        &status.rom_browser_artwork_sources,
+    );
+}
+
+fn cycle_rom_browser_artwork(status: &mut RuntimeStatus) -> String {
+    let current = status
+        .rom_browser_artwork_sources
+        .iter()
+        .position(|source| source.matches_configured(&status.rom_browser_artwork))
+        .unwrap_or(0);
+    let next = (current + 1) % status.rom_browser_artwork_sources.len().max(1);
+    status.rom_browser_artwork = status
+        .rom_browser_artwork_sources
+        .get(next)
+        .cloned()
+        .unwrap_or(RomBrowserArtworkSource::Auto);
+    save_config_key("rom_browser_media", status.rom_browser_artwork.as_config());
+    apply_rom_browser_artwork(
+        &mut status.rom_entries,
+        &status.media_dir,
+        &status.rom_browser_artwork,
+        &status.rom_browser_artwork_sources,
+    );
+    if status.show_rom_browser {
+        load_visible_thumbnails(&mut status.rom_entries, status.rom_browser_scroll);
+    }
+    status
+        .rom_browser_artwork
+        .display_name(status.lang.language)
 }
 
 #[cfg(test)]
@@ -5216,16 +5731,87 @@ mod tests {
         );
     }
 
+    fn test_rom_entry(name: &str) -> RomEntry {
+        RomEntry {
+            name: name.to_string(),
+            path: PathBuf::from(format!("{name}.neo")),
+            artwork_path: None,
+            thumbnail: None,
+            ngh: None,
+            recommended_bios: "",
+        }
+    }
+
     #[test]
-    fn rom_browser_uses_box2d_from_the_shared_media_catalog() {
+    fn rom_browser_detects_matching_image_folders_dynamically() {
         let directory =
-            std::env::temp_dir().join(format!("ngneon-rom-browser-art-{}", std::process::id()));
+            std::env::temp_dir().join(format!("ngneon-rom-browser-detect-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(directory.join("box2d")).unwrap();
-        let artwork = directory.join("box2d/aof.png");
-        std::fs::write(&artwork, []).unwrap();
+        std::fs::create_dir_all(directory.join("steamgrid")).unwrap();
+        std::fs::create_dir_all(directory.join("flyers")).unwrap();
+        std::fs::create_dir_all(directory.join("videos")).unwrap();
+        std::fs::write(directory.join("aof.jpeg"), []).unwrap();
+        std::fs::write(directory.join("box2d/AOF.PNG"), []).unwrap();
+        std::fs::write(directory.join("steamgrid/aof.webp"), []).unwrap();
+        std::fs::write(directory.join("flyers/other.jpg"), []).unwrap();
+        std::fs::write(directory.join("videos/aof.mp4"), []).unwrap();
 
-        assert_eq!(rom_browser_art_path(&directory, "aof"), Some(artwork));
+        let entries = vec![test_rom_entry("aof")];
+        let sources = detect_rom_browser_artwork_sources(&directory, &entries);
+
+        assert_eq!(
+            sources,
+            vec![
+                RomBrowserArtworkSource::Auto,
+                RomBrowserArtworkSource::Root,
+                RomBrowserArtworkSource::Folder("box2d".to_string()),
+                RomBrowserArtworkSource::Folder("steamgrid".to_string()),
+            ]
+        );
+        let configured = RomBrowserArtworkSource::from_config(Some("BOX2D"));
+        assert_eq!(
+            resolve_available_artwork_source(&configured, &sources),
+            RomBrowserArtworkSource::Folder("box2d".to_string())
+        );
+        assert_eq!(
+            RomBrowserArtworkSource::from_config(Some("../box2d")),
+            RomBrowserArtworkSource::Auto
+        );
+
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn rom_browser_applies_selected_source_and_auto_priority() {
+        let directory =
+            std::env::temp_dir().join(format!("ngneon-rom-browser-select-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("box2d")).unwrap();
+        std::fs::create_dir_all(directory.join("mix")).unwrap();
+        let box_art = directory.join("box2d/aof.png");
+        let mix_art = directory.join("mix/aof.jpg");
+        std::fs::write(&box_art, []).unwrap();
+        std::fs::write(&mix_art, []).unwrap();
+
+        let mut entries = vec![test_rom_entry("aof")];
+        let sources = detect_rom_browser_artwork_sources(&directory, &entries);
+        apply_rom_browser_artwork(
+            &mut entries,
+            &directory,
+            &RomBrowserArtworkSource::Auto,
+            &sources,
+        );
+        assert_eq!(entries[0].artwork_path, Some(box_art));
+
+        apply_rom_browser_artwork(
+            &mut entries,
+            &directory,
+            &RomBrowserArtworkSource::Folder("mix".to_string()),
+            &sources,
+        );
+        assert_eq!(entries[0].artwork_path, Some(mix_art));
+
         let _ = std::fs::remove_dir_all(directory);
     }
 

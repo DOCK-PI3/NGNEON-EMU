@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 egui = "0.34.2"
-sdl2 = "0.38.0"
+sdl2 = { version = "0.38.0", features = ["raw-window-handle"] }
 gl = "0.14"
 core-emulator = { path = "../core-emulator" }
 rfd = "0.14.1"

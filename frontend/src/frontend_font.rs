@@ -5,7 +5,7 @@
 //! a small built-in bitmap font keeps the UI functional.
 
 use fontdue::{Font, FontSettings};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 const MAX_FONT_SIZE_PX: usize = 512;
@@ -27,6 +27,70 @@ pub(crate) fn draw_text(
     color_argb: u32,
     text: &str,
 ) {
+    draw_text_with_font(
+        None,
+        framebuffer,
+        canvas_w,
+        canvas_h,
+        x,
+        y,
+        size_px,
+        color_argb,
+        text,
+    );
+}
+
+/// Load a TrueType/OpenType font selected by a frontend theme.
+pub(crate) fn load_font(path: &Path) -> Result<Font, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("No se pudo leer la fuente {}: {error}", path.display()))?;
+    Font::from_bytes(bytes, FontSettings::default())
+        .map_err(|error| format!("Fuente no válida {}: {error}", path.display()))
+}
+
+/// Draw text with a theme font, falling back to the normal system font.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_text_with_font(
+    theme_font: Option<&Font>,
+    framebuffer: &mut [u32],
+    canvas_w: usize,
+    canvas_h: usize,
+    x: usize,
+    y: usize,
+    size_px: usize,
+    color_argb: u32,
+    text: &str,
+) {
+    draw_text_with_font_layout(
+        theme_font,
+        framebuffer,
+        canvas_w,
+        canvas_h,
+        x,
+        y,
+        size_px,
+        color_argb,
+        text,
+        0,
+        100,
+    );
+}
+
+/// Draw text with explicit tracking and line-height percentage.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_text_with_font_layout(
+    theme_font: Option<&Font>,
+    framebuffer: &mut [u32],
+    canvas_w: usize,
+    canvas_h: usize,
+    x: usize,
+    y: usize,
+    size_px: usize,
+    color_argb: u32,
+    text: &str,
+    letter_spacing: i16,
+    line_height_percent: u16,
+) {
     if framebuffer.is_empty()
         || canvas_w == 0
         || canvas_h == 0
@@ -38,7 +102,11 @@ pub(crate) fn draw_text(
         return;
     }
 
-    if let Some(font) = system_font() {
+    let active_font = match theme_font {
+        Some(font) => Some(font),
+        None => system_font(),
+    };
+    if let Some(font) = active_font {
         draw_fontdue_text(
             font,
             framebuffer,
@@ -49,9 +117,11 @@ pub(crate) fn draw_text(
             size_px,
             color_argb,
             text,
+            letter_spacing,
+            line_height_percent,
         );
     } else {
-        draw_bitmap_text(
+        draw_bitmap_text_layout(
             framebuffer,
             canvas_w,
             canvas_h,
@@ -60,20 +130,54 @@ pub(crate) fn draw_text(
             size_px,
             color_argb,
             text,
+            letter_spacing,
+            line_height_percent,
         );
     }
 }
 
 /// Return the width of the widest line in `text`, in pixels.
 pub(crate) fn text_width(text: &str, size_px: usize) -> usize {
+    text_width_with_font(None, text, size_px)
+}
+
+/// Return text width using a theme font when one is active.
+pub(crate) fn text_width_with_font(theme_font: Option<&Font>, text: &str, size_px: usize) -> usize {
+    text_width_with_font_spacing(theme_font, text, size_px, 0)
+}
+
+/// Return text width including signed tracking between glyphs.
+pub(crate) fn text_width_with_font_spacing(
+    theme_font: Option<&Font>,
+    text: &str,
+    size_px: usize,
+    letter_spacing: i16,
+) -> usize {
     if text.is_empty() {
         return 0;
     }
 
-    system_font().map_or_else(
-        || bitmap_text_width(text, size_px),
-        |font| fontdue_text_width(font, text, size_px),
+    let active_font = match theme_font {
+        Some(font) => Some(font),
+        None => system_font(),
+    };
+    active_font.map_or_else(
+        || bitmap_text_width(text, size_px, letter_spacing),
+        |font| fontdue_text_width(font, text, size_px, letter_spacing),
     )
+}
+
+/// Wrap text using the same font and tracking that will be used for drawing.
+pub(crate) fn wrap_text_with_font_spacing(
+    theme_font: Option<&Font>,
+    text: &str,
+    max_width: usize,
+    size_px: usize,
+    letter_spacing: i16,
+) -> Vec<String> {
+    wrap_text_measured(text, max_width, |candidate| {
+        text_width_with_font_spacing(theme_font, candidate, size_px, letter_spacing)
+    })
 }
 
 /// Wrap text to `max_width`, preserving explicit line breaks.
@@ -120,6 +224,62 @@ pub(crate) fn wrap_text(text: &str, max_width: usize, size_px: usize) -> Vec<Str
             }
         }
 
+        if !current.is_empty() {
+            lines.push(current);
+        }
+    }
+    lines
+}
+
+fn wrap_text_measured(
+    text: &str,
+    max_width: usize,
+    measure: impl Fn(&str) -> usize,
+) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    if max_width == 0 {
+        return normalized
+            .split('\n')
+            .map(|line| line.trim().to_owned())
+            .collect();
+    }
+
+    let mut lines = Vec::new();
+    for paragraph in normalized.split('\n') {
+        if paragraph.trim().is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        for word in paragraph.split_whitespace() {
+            let candidate = if current.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{current} {word}")
+            };
+            if measure(&candidate) <= max_width {
+                current = candidate;
+                continue;
+            }
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+            }
+            if measure(word) <= max_width {
+                current.push_str(word);
+                continue;
+            }
+            for character in word.chars() {
+                let mut candidate = current.clone();
+                candidate.push(character);
+                if !current.is_empty() && measure(&candidate) > max_width {
+                    lines.push(std::mem::take(&mut current));
+                }
+                current.push(character);
+            }
+        }
         if !current.is_empty() {
             lines.push(current);
         }
@@ -209,12 +369,15 @@ fn draw_fontdue_text(
     size_px: usize,
     color_argb: u32,
     text: &str,
+    letter_spacing: i16,
+    line_height_percent: u16,
 ) {
     let size = sanitized_size(size_px);
     let (ascent, line_height) = font
         .horizontal_line_metrics(size)
         .map(|metrics| (metrics.ascent, metrics.new_line_size.max(size)))
         .unwrap_or((size * 0.8, size * 1.2));
+    let line_height = line_height * f32::from(line_height_percent) / 100.0;
     let space_advance = font.metrics(' ', size).advance_width.max(1.0);
     let mut cursor_x = x as f32;
     let mut baseline = y as f32 + ascent;
@@ -255,25 +418,33 @@ fn draw_fontdue_text(
                 );
             }
         }
-        cursor_x += metrics.advance_width.max(0.0);
+        cursor_x += metrics.advance_width.max(0.0) + f32::from(letter_spacing);
     }
 }
 
-fn fontdue_text_width(font: &Font, text: &str, size_px: usize) -> usize {
+fn fontdue_text_width(font: &Font, text: &str, size_px: usize, letter_spacing: i16) -> usize {
     let size = sanitized_size(size_px);
     let space_advance = font.metrics(' ', size).advance_width.max(1.0);
     let mut widest = 0.0_f32;
     let mut current = 0.0_f32;
 
+    let mut glyphs_on_line = 0_usize;
     for character in text.chars() {
         match character {
             '\r' => {}
             '\n' => {
                 widest = widest.max(current);
                 current = 0.0;
+                glyphs_on_line = 0;
             }
             '\t' => current += space_advance * 4.0,
-            _ => current += font.metrics(character, size).advance_width.max(0.0),
+            _ => {
+                if glyphs_on_line > 0 {
+                    current += f32::from(letter_spacing);
+                }
+                current += font.metrics(character, size).advance_width.max(0.0);
+                glyphs_on_line += 1;
+            }
         }
     }
     widest.max(current).ceil() as usize
@@ -392,7 +563,7 @@ fn source_over(source: u32, destination: u32) -> u32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_bitmap_text(
+fn draw_bitmap_text_layout(
     framebuffer: &mut [u32],
     canvas_w: usize,
     canvas_h: usize,
@@ -401,10 +572,12 @@ fn draw_bitmap_text(
     size_px: usize,
     color_argb: u32,
     text: &str,
+    letter_spacing: i16,
+    line_height_percent: u16,
 ) {
     let scale = bitmap_scale(size_px);
-    let advance = 6 * scale;
-    let line_height = 8 * scale;
+    let advance = (6 * scale) as i64 + i64::from(letter_spacing);
+    let line_height = 8 * scale * usize::from(line_height_percent) / 100;
     let mut cursor_x = x;
     let mut cursor_y = y;
 
@@ -417,7 +590,7 @@ fn draw_bitmap_text(
                 continue;
             }
             '\t' => {
-                cursor_x = cursor_x.saturating_add(advance * 4);
+                cursor_x = signed_saturating_add(cursor_x, advance * 4);
                 continue;
             }
             _ => {}
@@ -448,12 +621,12 @@ fn draw_bitmap_text(
                 }
             }
         }
-        cursor_x = cursor_x.saturating_add(advance);
+        cursor_x = signed_saturating_add(cursor_x, advance);
     }
 }
 
-fn bitmap_text_width(text: &str, size_px: usize) -> usize {
-    let advance = 6 * bitmap_scale(size_px);
+fn bitmap_text_width(text: &str, size_px: usize, letter_spacing: i16) -> usize {
+    let advance = (6 * bitmap_scale(size_px)) as i64 + i64::from(letter_spacing);
     let mut widest = 0usize;
     let mut current = 0usize;
     for character in text.chars() {
@@ -463,11 +636,19 @@ fn bitmap_text_width(text: &str, size_px: usize) -> usize {
                 widest = widest.max(current);
                 current = 0;
             }
-            '\t' => current = current.saturating_add(advance * 4),
-            _ => current = current.saturating_add(advance),
+            '\t' => current = signed_saturating_add(current, advance * 4),
+            _ => current = signed_saturating_add(current, advance),
         }
     }
     widest.max(current)
+}
+
+fn signed_saturating_add(value: usize, delta: i64) -> usize {
+    if delta >= 0 {
+        value.saturating_add(delta as usize)
+    } else {
+        value.saturating_sub(delta.unsigned_abs() as usize)
+    }
 }
 
 fn bitmap_scale(size_px: usize) -> usize {
@@ -571,6 +752,21 @@ mod tests {
     #[test]
     fn explicit_blank_lines_are_preserved() {
         assert_eq!(wrap_text("UNO\n\nDOS", 1_000, 16), ["UNO", "", "DOS"]);
+    }
+
+    #[test]
+    fn letter_spacing_changes_measurement_and_wrapping() {
+        let normal = text_width_with_font_spacing(None, "NEOGEO", 22, 0);
+        let expanded = text_width_with_font_spacing(None, "NEOGEO", 22, 5);
+        let condensed = text_width_with_font_spacing(None, "NEOGEO", 22, -2);
+        assert!(expanded > normal);
+        assert!(condensed < normal);
+
+        let lines = wrap_text_with_font_spacing(None, "METAL SLUG X", normal.max(1), 22, 5);
+        assert!(lines.len() >= 2);
+        assert!(lines
+            .iter()
+            .all(|line| { text_width_with_font_spacing(None, line, 22, 5) <= normal.max(1) }));
     }
 
     #[test]

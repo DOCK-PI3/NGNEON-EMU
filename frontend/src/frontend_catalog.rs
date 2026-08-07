@@ -413,13 +413,16 @@ fn build_media(
     let wheel = resolve_declared(declared("wheel"), gamelist_dir)
         .or_else(|| conventional(&["logos", "wheelhd"], &image_extensions));
 
+    let marquee = conventional(&["arcade-marquee"], &image_extensions)
+        .or_else(|| resolve_declared(declared("marquee"), gamelist_dir))
+        .or_else(|| conventional(&["screen-marquees", "marquees"], &image_extensions));
+
     GameMedia {
         image: resolve_declared(declared("image"), gamelist_dir)
             .or_else(|| mix.clone())
             .or_else(|| box_3d.clone()),
         thumbnail: resolve_declared(declared("thumbnail"), gamelist_dir).or_else(|| box_2d.clone()),
-        marquee: resolve_declared(declared("marquee"), gamelist_dir)
-            .or_else(|| conventional(&["marquees"], &image_extensions)),
+        marquee,
         video: resolve_declared(declared("video"), gamelist_dir)
             .or_else(|| conventional(&["videos"], &["mp4", "webm", "mkv", "avi"])),
         manual: resolve_declared(declared("manual"), gamelist_dir)
@@ -688,6 +691,64 @@ mod tests {
         assert_eq!(
             games[0].media.box_3d,
             Some(media_dir.join("box3d/homebrew.png"))
+        );
+    }
+
+    #[test]
+    fn arcade_marquee_is_primary_and_screen_marquee_is_fallback() {
+        let directory = TestDirectory::new("marquee-priority");
+        let rom_dir = directory.0.join("roms");
+        let media_dir = rom_dir.join("media");
+        fs::create_dir_all(media_dir.join("arcade-marquee")).unwrap();
+        fs::create_dir_all(media_dir.join("screen-marquees")).unwrap();
+        write_neo(
+            &rom_dir.join("primary.neo"),
+            2026,
+            "Primary Marquee",
+            "NGNEON",
+        );
+        write_neo(
+            &rom_dir.join("fallback.neo"),
+            2026,
+            "Fallback Marquee",
+            "NGNEON",
+        );
+        fs::write(media_dir.join("arcade-marquee/primary.png"), b"arcade").unwrap();
+        fs::write(media_dir.join("screen-marquees/primary.png"), b"screen").unwrap();
+        fs::write(media_dir.join("screen-marquees/fallback.png"), b"screen").unwrap();
+        fs::write(
+            rom_dir.join("gamelist.xml"),
+            r#"<gameList>
+                 <game>
+                   <path>./primary.neo</path>
+                   <name>Primary Marquee</name>
+                   <marquee>./media/screen-marquees/primary.png</marquee>
+                 </game>
+                 <game>
+                   <path>./fallback.neo</path>
+                   <name>Fallback Marquee</name>
+                 </game>
+               </gameList>"#,
+        )
+        .unwrap();
+
+        let games = scan_game_library(&rom_dir, &media_dir);
+        let primary = games
+            .iter()
+            .find(|game| game.path.ends_with("primary.neo"))
+            .unwrap();
+        let fallback = games
+            .iter()
+            .find(|game| game.path.ends_with("fallback.neo"))
+            .unwrap();
+
+        assert_eq!(
+            primary.media.marquee,
+            Some(media_dir.join("arcade-marquee/primary.png"))
+        );
+        assert_eq!(
+            fallback.media.marquee,
+            Some(media_dir.join("screen-marquees/fallback.png"))
         );
     }
 

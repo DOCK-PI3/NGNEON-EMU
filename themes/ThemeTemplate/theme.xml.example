@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copia la carpeta ThemeTemplate como themes/MiTema (sin espacios) y renombra
+  este archivo a theme.xml. Referencia completa: themes/README.md
+-->
+<theme version="2" id="mi-tema" name="Mi tema" author="Tu nombre">
+  <!-- Todas las coordenadas se normalizan al framebuffer 960x540. -->
+  <canvas width="960" height="540"/>
+  <!-- Fuente TTF/OTF opcional, siempre dentro de la carpeta del tema. -->
+  <!-- <font source="assets/fuente.ttf"/> -->
+
+  <!-- Los colores omitidos heredan la paleta Neon integrada. -->
+  <palette
+    background="#05070B"
+    header="#080D15"
+    panel="#E00B111B"
+    panel_alt="#121B29"
+    primary="#EA3357"
+    primary_dark="#65182A"
+    secondary="#4C6FFF"
+    accent="#22D3EE"
+    warning="#F2C94C"
+    success="#4DD68A"
+    text="#F5F7FB"
+    text_soft="#AAB4C3"
+    text_dim="#657083"
+    border="#25344A"
+    error="#FF6B7D"/>
+
+  <!-- Oculta los bloques clásicos si vas a construir un layout completo. -->
+  <component id="library_background" visible="false"/>
+  <component id="header" visible="false"/>
+  <component id="carousel" visible="false"/>
+  <component id="cabinet" visible="false"/>
+  <component id="game_info" visible="false"/>
+  <component id="library_footer" visible="false"/>
+
+  <!-- artwork acepta logo (por defecto) o box3d.
+       Añade chrome="none" a un componente o media para quitar panel y borde.
+       gamecarousel_left/right aceptan selected_scale, unselected_opacity y arc.
+       gamecarousel_horizontal muestra cinco cajas 3D grandes.
+       game_title/game_metadata aceptan font_size; metadata también fields.
+       game_credits separa desarrollador y publisher en las esquinas inferiores.
+       component/layer/media comparten filtros (brightness, saturation, glow...)
+       y animaciones (fade_in, slide_in, zoom_in y pulse).
+       Los componentes de texto aceptan text_color, alineación, sombra,
+       contorno, letter_spacing, line_height y auto_fit. -->
+  <component id="vertical_list"
+             x="16" y="50" width="466" height="474"
+             z="130" visible="true" artwork="logo"/>
+  <component id="game_title"
+             x="500" y="8" width="444" height="100"
+             z="145" visible="true"
+             font_size="46" text_align="center"
+             text_shadow_color="#B0000000"
+             text_shadow_x="2" text_shadow_y="3" text_shadow_blur="2"
+             text_outline_color="#FF101820" text_outline="1"
+             letter_spacing="2" auto_fit="true"
+             fade_in="450" slide_in="right" slide_duration="550"/>
+  <component id="game_description"
+             x="498" y="410" width="446" height="116"
+             z="145" visible="true"/>
+  <component id="game_metadata"
+             x="498" y="370" width="446" height="36"
+             z="145" visible="true"/>
+  <component id="page_counter"
+             x="16" y="10" width="466" height="32"
+             z="150" visible="true"/>
+
+  <media id="backdrop"
+         source="game.fanart,game.mix,game.image"
+         x="0" y="0" width="960" height="540"
+         z="-100" opacity="0.48" fit="cover" visible="true"
+         brightness="0.78" saturation="0.85"
+         gradient_start="#00000000" gradient_end="#A0000000"
+         gradient_direction="vertical" fade_in="650"/>
+
+  <media id="logo"
+         source="game.marquee,game.logo,game.wheel"
+         x="502" y="8" width="440" height="100"
+         z="160" opacity="255" fit="contain" visible="true"
+         shadow_color="#A0000000" shadow_x="4" shadow_y="6" shadow_blur="4"
+         glow_color="#6022D3EE" glow_radius="6"
+         zoom_in="550" zoom_from="88%"/>
+
+  <media id="preview"
+         source="game.video,game.screenshot,game.titleshot,game.mix,game.image"
+         x="498" y="116" width="446" height="246"
+         z="120" opacity="255" fit="cover" visible="true"/>
+
+  <!-- Asset propio del tema, relativo a este XML:
+  <layer id="frame"
+         source="assets/frame.png"
+         x="0" y="0" width="960" height="540"
+         z="200" opacity="1.0" fit="contain"
+         view="library" visible="true"/>
+  -->
+</theme>

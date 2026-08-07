@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cabinet roja MVS con carrusel vertical de logos. -->
+<theme version="2" id="neogeo-red-cabinet" name="Neo Geo Red Cabinet" author="NGNEON-EMU">
+  <canvas width="960" height="540"/>
+  <palette
+    background="#060305"
+    header="#12070A"
+    panel="#E00A0709"
+    panel_alt="#D21A0C10"
+    primary="#F0182C"
+    primary_dark="#710C17"
+    secondary="#8A1722"
+    accent="#FF3348"
+    warning="#FFD85A"
+    success="#45D483"
+    text="#FFF7F4"
+    text_soft="#E7C8C5"
+    text_dim="#8D6969"
+    border="#8E2631"
+    error="#FF6B7D"/>
+
+  <component id="library_background" visible="false"/>
+  <component id="header" visible="false"/>
+  <component id="carousel" visible="false"/>
+  <component id="cabinet" visible="false"/>
+  <component id="game_info" visible="false"/>
+  <component id="library_footer" visible="false"/>
+
+  <component id="vertical_list"
+             x="535" y="34" width="409" height="490"
+             z="230" visible="true" artwork="logo" chrome="none"/>
+  <component id="page_counter"
+             x="548" y="6" width="382" height="24"
+             z="240" visible="true" chrome="none"/>
+
+  <media id="backdrop" source="game.fanart,game.mix,game.image"
+         x="0" y="0" width="960" height="540" z="-100"
+         opacity="0.12" fit="cover" visible="true"/>
+  <layer id="red-cabinet" source="assets/cabinet.png"
+         x="0" y="21" width="625" height="519" z="220"
+         opacity="255" fit="stretch" view="library" visible="true"/>
+  <media id="preview" source="game.video,game.screenshot,game.titleshot,game.mix,game.image"
+         x="99" y="180" width="333" height="243" z="210"
+         opacity="255" fit="cover" visible="true" chrome="none"/>
+  <media id="logo" source="game.marquee,game.logo,game.wheel"
+         x="68" y="24" width="395" height="104" z="210"
+         opacity="255" fit="stretch" visible="true" chrome="none"/>
+</theme>

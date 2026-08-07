@@ -1,0 +1,30 @@
+[Unit]
+Description=NGNEON-EMU exclusive game session
+After=local-fs.target systemd-tmpfiles-setup.service systemd-user-sessions.service sound.target ngneon-kiosk.service
+Wants=sound.target
+Conflicts=ngneon-kiosk.service getty@tty1.service
+
+[Service]
+Type=simple
+User=neo
+Group=neo
+SupplementaryGroups=audio video render input
+WorkingDirectory=/home/neo/NGNEON-EMU-linux-aarch64
+Environment=HOME=/home/neo
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=SDL_AUDIODRIVER=alsa
+Environment=XDG_RUNTIME_DIR=/run/ngneon-game
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty-force
+StandardOutput=journal
+StandardError=journal
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+UtmpIdentifier=tty1
+ExecStart=/home/neo/NGNEON-EMU-linux-aarch64/rpi5/ngneon-game-session.sh
+ExecStopPost=+/usr/bin/systemctl --no-block start ngneon-kiosk.service
+Restart=no
+TimeoutStopSec=10
+KillMode=mixed

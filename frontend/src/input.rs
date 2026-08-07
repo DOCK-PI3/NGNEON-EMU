@@ -3,7 +3,7 @@
 //! Gamepad/controller input is handled by the `GamepadManager` in
 //! `gamepad.rs`, which supports per-controller remapping and hotplug.
 
-use core_emulator::EmuAction;
+use core_emulator::{AuxiliaryInput, EmuAction, PlayerId};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ pub fn get_global_mapping() -> KeyboardMapping {
 }
 
 /// Map SDL2 keyboard events to emulator actions using the global mapping.
-pub fn process_event(event: &Event) -> Option<EmuAction> {
+pub fn process_event(event: &Event) -> Option<KeyboardInput> {
     if let Ok(guard) = KEYBOARD_MAPPING.lock() {
         if let Some(ref mapping) = *guard {
             return mapping.process(event);
@@ -52,11 +52,17 @@ pub fn process_event(event: &Event) -> Option<EmuAction> {
 
 /// Configurable keyboard-to-action mapping.
 ///
-/// Maps SDL2 `Keycode` values to `EmuAction` values.
+/// Maps SDL2 `Keycode` values to player or auxiliary hardware inputs.
 /// Default bindings match the original hardcoded `process_event()`.
 #[derive(Debug, Clone)]
 pub struct KeyboardMapping {
-    map: HashMap<Keycode, EmuAction>,
+    map: HashMap<Keycode, KeyboardInput>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyboardInput {
+    Player(PlayerId, EmuAction),
+    Auxiliary(AuxiliaryInput),
 }
 
 impl KeyboardMapping {
@@ -67,38 +73,92 @@ impl KeyboardMapping {
     /// - Space  →  Coin
     pub fn default() -> Self {
         let mut map = HashMap::new();
-        map.insert(Keycode::Up, EmuAction::Up);
-        map.insert(Keycode::Down, EmuAction::Down);
-        map.insert(Keycode::Left, EmuAction::Left);
-        map.insert(Keycode::Right, EmuAction::Right);
-        map.insert(Keycode::Z, EmuAction::A);
-        map.insert(Keycode::X, EmuAction::B);
-        map.insert(Keycode::C, EmuAction::C);
-        map.insert(Keycode::V, EmuAction::D);
-        map.insert(Keycode::Return, EmuAction::Start);
-        map.insert(Keycode::Space, EmuAction::Coin);
+        for (key, action) in [
+            (Keycode::Up, EmuAction::Up),
+            (Keycode::Down, EmuAction::Down),
+            (Keycode::Left, EmuAction::Left),
+            (Keycode::Right, EmuAction::Right),
+            (Keycode::Z, EmuAction::A),
+            (Keycode::X, EmuAction::B),
+            (Keycode::C, EmuAction::C),
+            (Keycode::V, EmuAction::D),
+            (Keycode::Return, EmuAction::Start),
+            (Keycode::Space, EmuAction::Coin),
+        ] {
+            map.insert(key, KeyboardInput::Player(PlayerId::P1, action));
+        }
+        for (key, action) in [
+            (Keycode::W, EmuAction::Up),
+            (Keycode::S, EmuAction::Down),
+            (Keycode::A, EmuAction::Left),
+            (Keycode::D, EmuAction::Right),
+            (Keycode::F, EmuAction::A),
+            (Keycode::G, EmuAction::B),
+            (Keycode::H, EmuAction::C),
+            (Keycode::J, EmuAction::D),
+            (Keycode::T, EmuAction::Start),
+            (Keycode::R, EmuAction::Coin),
+        ] {
+            map.insert(key, KeyboardInput::Player(PlayerId::P2, action));
+        }
+        map.insert(
+            Keycode::O,
+            KeyboardInput::Auxiliary(AuxiliaryInput::VlinerOperator),
+        );
+        map.insert(
+            Keycode::Backspace,
+            KeyboardInput::Auxiliary(AuxiliaryInput::VlinerClearCredit),
+        );
+        map.insert(
+            Keycode::Y,
+            KeyboardInput::Auxiliary(AuxiliaryInput::VlinerHopperOut),
+        );
         Self { map }
     }
 
     /// Assign an action to a keycode.
+    #[allow(dead_code)]
     pub fn set(&mut self, key: Keycode, action: EmuAction) {
+        self.set_for_player(key, PlayerId::P1, action);
+    }
+
+    pub fn set_for_player(&mut self, key: Keycode, player: PlayerId, action: EmuAction) {
+        self.set_input(key, KeyboardInput::Player(player, action));
+    }
+
+    pub fn set_auxiliary(&mut self, key: Keycode, action: AuxiliaryInput) {
+        self.set_input(key, KeyboardInput::Auxiliary(action));
+    }
+
+    fn set_input(&mut self, key: Keycode, input: KeyboardInput) {
         // Remove any previous binding for this key
         self.map.remove(&key);
         // Remove any previous binding TO this action (to avoid duplicates)
-        self.map.retain(|_, a| *a != action);
+        self.map.retain(|_, mapped| *mapped != input);
         // Insert the new binding
-        self.map.insert(key, action);
+        self.map.insert(key, input);
     }
 
     /// Look up the keycode currently bound to an action.
+    #[allow(dead_code)]
     pub fn key_for_action(&self, action: EmuAction) -> Option<Keycode> {
+        self.key_for_player_action(PlayerId::P1, action)
+    }
+
+    pub fn key_for_player_action(&self, player: PlayerId, action: EmuAction) -> Option<Keycode> {
+        self.map.iter().find_map(|(&key, &mapped)| {
+            (mapped == KeyboardInput::Player(player, action)).then_some(key)
+        })
+    }
+
+    pub fn key_for_auxiliary(&self, action: AuxiliaryInput) -> Option<Keycode> {
         self.map
             .iter()
-            .find_map(|(&k, &a)| if a == action { Some(k) } else { None })
+            .find_map(|(&key, &mapped)| (mapped == KeyboardInput::Auxiliary(action)).then_some(key))
     }
 
     /// Process an SDL2 event and return the corresponding `EmuAction`.
-    pub fn process(&self, event: &Event) -> Option<EmuAction> {
+    pub fn process(&self, event: &Event) -> Option<KeyboardInput> {
         match event {
             Event::KeyDown {
                 keycode: Some(k), ..
@@ -123,8 +183,26 @@ impl KeyboardMapping {
         lines.push("# NGNEON-EMU keyboard mapping".into());
         lines.push(String::new());
 
-        for (key, action) in self.map.iter() {
-            lines.push(format!("{}={}", keycode_name(*key), action_name(*action)));
+        for player in [PlayerId::P1, PlayerId::P2] {
+            for action in ALL_ACTIONS {
+                if let Some(key) = self.key_for_player_action(player, action) {
+                    lines.push(format!(
+                        "{}.{}={}",
+                        player_name(player),
+                        action_name(action),
+                        keycode_name(key)
+                    ));
+                }
+            }
+        }
+        for action in ALL_AUXILIARY_ACTIONS {
+            if let Some(key) = self.key_for_auxiliary(action) {
+                lines.push(format!(
+                    "Aux.{}={}",
+                    auxiliary_action_name(action),
+                    keycode_name(key)
+                ));
+            }
         }
 
         let content = lines.join("\n");
@@ -150,12 +228,29 @@ impl KeyboardMapping {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            if let Some((key_str, act_str)) = line.split_once('=') {
-                let key_str = key_str.trim();
-                let act_str = act_str.trim();
-                if let Some(key) = find_keycode_by_name(key_str) {
-                    if let Some(action) = find_action_by_name(act_str) {
-                        mapping.set(key, action);
+            if let Some((left, right)) = line.split_once('=') {
+                let left = left.trim();
+                let right = right.trim();
+
+                if let Some((player, action)) = parse_player_action(left) {
+                    if let Some(key) = find_keycode_by_name(right) {
+                        mapping.set_for_player(key, player, action);
+                    }
+                } else if let Some(action) = parse_auxiliary_action(left) {
+                    if let Some(key) = find_keycode_by_name(right) {
+                        mapping.set_auxiliary(key, action);
+                    }
+                } else if let (Some(key), Some(action)) =
+                    (find_keycode_by_name(left), find_action_by_name(right))
+                {
+                    // Legacy key=action format belongs to P1.
+                    mapping.set_for_player(key, PlayerId::P1, action);
+                } else if let (Some(action), Ok(raw_keycode)) =
+                    (find_action_by_name(left), right.parse::<i32>())
+                {
+                    // Older documented action=numeric-SDL-keycode format.
+                    if let Some(key) = Keycode::from_i32(raw_keycode) {
+                        mapping.set_for_player(key, PlayerId::P1, action);
                     }
                 }
             }
@@ -174,6 +269,34 @@ impl Default for KeyboardMapping {
 // ---------------------------------------------------------------------------
 // Name helpers
 // ---------------------------------------------------------------------------
+
+const ALL_ACTIONS: [EmuAction; 10] = [
+    EmuAction::Up,
+    EmuAction::Down,
+    EmuAction::Left,
+    EmuAction::Right,
+    EmuAction::A,
+    EmuAction::B,
+    EmuAction::C,
+    EmuAction::D,
+    EmuAction::Start,
+    EmuAction::Coin,
+];
+
+const ALL_AUXILIARY_ACTIONS: [AuxiliaryInput; 3] = [
+    AuxiliaryInput::VlinerOperator,
+    AuxiliaryInput::VlinerClearCredit,
+    AuxiliaryInput::VlinerHopperOut,
+];
+
+fn player_name(player: PlayerId) -> &'static str {
+    match player {
+        PlayerId::P1 => "P1",
+        PlayerId::P2 => "P2",
+        PlayerId::P3 => "P3",
+        PlayerId::P4 => "P4",
+    }
+}
 
 /// Human-readable name for an SDL2 keycode.
 pub fn keycode_name(key: Keycode) -> &'static str {
@@ -508,6 +631,36 @@ fn find_action_by_name(name: &str) -> Option<EmuAction> {
     }
 }
 
+fn auxiliary_action_name(action: AuxiliaryInput) -> &'static str {
+    match action {
+        AuxiliaryInput::VlinerOperator => "VlinerOperator",
+        AuxiliaryInput::VlinerClearCredit => "VlinerClearCredit",
+        AuxiliaryInput::VlinerHopperOut => "VlinerHopperOut",
+    }
+}
+
+fn parse_auxiliary_action(name: &str) -> Option<AuxiliaryInput> {
+    let name = name.strip_prefix("Aux.").unwrap_or(name);
+    match name {
+        "VlinerOperator" => Some(AuxiliaryInput::VlinerOperator),
+        "VlinerClearCredit" => Some(AuxiliaryInput::VlinerClearCredit),
+        "VlinerHopperOut" => Some(AuxiliaryInput::VlinerHopperOut),
+        _ => None,
+    }
+}
+
+fn parse_player_action(name: &str) -> Option<(PlayerId, EmuAction)> {
+    let (player, action) = name.split_once('.')?;
+    let player = match player {
+        "P1" => PlayerId::P1,
+        "P2" => PlayerId::P2,
+        "P3" => PlayerId::P3,
+        "P4" => PlayerId::P4,
+        _ => return None,
+    };
+    Some((player, find_action_by_name(action)?))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -515,6 +668,10 @@ fn find_action_by_name(name: &str) -> Option<EmuAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn p1(action: EmuAction) -> Option<KeyboardInput> {
+        Some(KeyboardInput::Player(PlayerId::P1, action))
+    }
 
     #[test]
     fn default_mapping_has_all_actions() {
@@ -547,7 +704,7 @@ mod tests {
             timestamp: 0,
             window_id: 0,
         };
-        assert_eq!(m.process(&event), Some(EmuAction::A));
+        assert_eq!(m.process(&event), p1(EmuAction::A));
     }
 
     #[test]
@@ -588,25 +745,19 @@ mod tests {
             window_id: 0,
         };
 
-        assert_eq!(m.process(&down_event(Keycode::Up)), Some(EmuAction::Up));
-        assert_eq!(m.process(&down_event(Keycode::Down)), Some(EmuAction::Down));
-        assert_eq!(m.process(&down_event(Keycode::Left)), Some(EmuAction::Left));
-        assert_eq!(
-            m.process(&down_event(Keycode::Right)),
-            Some(EmuAction::Right)
-        );
-        assert_eq!(m.process(&down_event(Keycode::Z)), Some(EmuAction::A));
-        assert_eq!(m.process(&down_event(Keycode::X)), Some(EmuAction::B));
-        assert_eq!(m.process(&down_event(Keycode::C)), Some(EmuAction::C));
-        assert_eq!(m.process(&down_event(Keycode::V)), Some(EmuAction::D));
+        assert_eq!(m.process(&down_event(Keycode::Up)), p1(EmuAction::Up));
+        assert_eq!(m.process(&down_event(Keycode::Down)), p1(EmuAction::Down));
+        assert_eq!(m.process(&down_event(Keycode::Left)), p1(EmuAction::Left));
+        assert_eq!(m.process(&down_event(Keycode::Right)), p1(EmuAction::Right));
+        assert_eq!(m.process(&down_event(Keycode::Z)), p1(EmuAction::A));
+        assert_eq!(m.process(&down_event(Keycode::X)), p1(EmuAction::B));
+        assert_eq!(m.process(&down_event(Keycode::C)), p1(EmuAction::C));
+        assert_eq!(m.process(&down_event(Keycode::V)), p1(EmuAction::D));
         assert_eq!(
             m.process(&down_event(Keycode::Return)),
-            Some(EmuAction::Start)
+            p1(EmuAction::Start)
         );
-        assert_eq!(
-            m.process(&down_event(Keycode::Space)),
-            Some(EmuAction::Coin)
-        );
+        assert_eq!(m.process(&down_event(Keycode::Space)), p1(EmuAction::Coin));
 
         // Unknown key
         assert_eq!(m.process(&down_event(Keycode::Q)), None);
@@ -624,7 +775,7 @@ mod tests {
             timestamp: 0,
             window_id: 0,
         };
-        assert_eq!(m.process(&event), Some(EmuAction::A));
+        assert_eq!(m.process(&event), p1(EmuAction::A));
         // Old Z should no longer map to A
         let z_event = Event::KeyDown {
             keycode: Some(Keycode::Z),
@@ -635,5 +786,22 @@ mod tests {
             window_id: 0,
         };
         assert_eq!(m.process(&z_event), None);
+    }
+
+    #[test]
+    fn defaults_include_p2_and_vliner_auxiliary_inputs() {
+        let m = KeyboardMapping::default();
+        assert_eq!(
+            m.key_for_player_action(PlayerId::P2, EmuAction::Up),
+            Some(Keycode::W)
+        );
+        assert_eq!(
+            m.key_for_player_action(PlayerId::P2, EmuAction::A),
+            Some(Keycode::F)
+        );
+        assert_eq!(
+            m.key_for_auxiliary(AuxiliaryInput::VlinerOperator),
+            Some(Keycode::O)
+        );
     }
 }

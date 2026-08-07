@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<theme version="1" id="amber" name="Amber Arcade" author="NGNEON-EMU">
+  <canvas width="960" height="540"/>
+  <palette
+    background="#090704"
+    header="#120D05"
+    panel="#181006"
+    panel_alt="#2A1B08"
+    primary="#FF8A24"
+    primary_dark="#71350F"
+    secondary="#C96E1B"
+    accent="#FFC247"
+    warning="#FFE29A"
+    success="#E8B84E"
+    text="#FFF4D6"
+    text_soft="#D7B982"
+    text_dim="#806B48"
+    border="#59411D"
+    error="#FF5C4D"/>
+
+  <component id="carousel" x="20" y="70" width="188" height="406" z="100"/>
+  <component id="cabinet" x="214" y="66" width="392" height="414" z="110"/>
+</theme>
