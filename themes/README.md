@@ -19,6 +19,14 @@ No es necesario recompilar. La recarga es segura: si el XML nuevo no es válido,
 el frontend conserva la última versión funcional. Si un tema falla durante el
 arranque, se utiliza el tema Neon integrado y se muestra un aviso.
 
+**Neo Collection** presenta una biblioteca clara con seis carátulas por página,
+vídeo/captura y ficha lateral. **Cinema Neo** usa fanart a pantalla completa,
+logo y descripción sobre un sombreado legible, con una tira de capturas y títulos.
+Ambos se seleccionan en **Ajustes → Tema frontend**. Estos dos temas requieren
+la versión del frontend que incluye `game_grid`, `launch_button` y
+`artwork="screenshot"`; al actualizar desde un ejecutable anterior hay que
+recompilar o usar el nuevo `ngneon-frontend.exe`.
+
 ## Configuración y rutas
 
 Las claves relacionadas se guardan en `config/ngneon.conf`:
@@ -149,6 +157,10 @@ atributos. No se admite texto libre dentro de los elementos.
 
 Los IDs admiten entre 1 y 64 caracteres ASCII: letras, números, guion y guion
 bajo. Dos temas no pueden compartir el mismo ID, sin distinguir mayúsculas.
+La excepción son los XML planos heredados junto a un tema en carpeta con el
+mismo ID: se conservan como aliases de compatibilidad, se prioriza
+`Nombre/theme.xml` y los selectores antiguos migran a esa versión sin avisos
+de duplicación. Los demás IDs duplicados siguen mostrando un aviso.
 
 ## Canvas y coordenadas
 
@@ -235,12 +247,12 @@ integrado:
 
 | Atributo | Valores |
 |---|---|
-| `id` | Uno de los 20 IDs de la tabla siguiente |
+| `id` | Uno de los 22 IDs de la tabla siguiente |
 | `x`, `y` | Enteros; admiten negativos |
 | `width`, `height` | Enteros positivos |
 | `z` | `-10000..10000`; un valor mayor queda delante |
 | `visible` | `true/false`, `on/off`, `yes/no` o `1/0` |
-| `artwork` | `logo` o `box3d`; afecta a listas y gamecarousels |
+| `artwork` | `logo` o `box3d`; `horizontal_list` admite también `screenshot` |
 | `chrome` | `panel` (predeterminado) o `none`; elimina fondo, borde, banda de selección y flecha |
 | `opacity` | `0..255` o `0.0..1.0`; opacidad global del componente |
 | `selected_scale` | `100..200`, porcentaje (`145%`) o factor decimal (`1.45`); sólo gamecarousels |
@@ -264,7 +276,7 @@ integrado:
 | `game_info` | Título, metadatos, descripción y caja | Biblioteca con juegos | `610,66,334,414`, z `120` | Sí |
 | `library_footer` | Acciones Jugar, Ajustes, Media, Tema, etc. | Biblioteca | `0,492,960,48`, z `200` | Sí |
 | `empty_library` | Mensaje y selector cuando no hay ROMs | Biblioteca vacía | `128,116,704,302`, z `120` | Sí |
-| `settings` | Las 27 opciones y botones inferiores | Ajustes | `0,56,960,484`, z `120` | Sí |
+| `settings` | Las 31 opciones y botones inferiores | Ajustes | `0,56,960,484`, z `120` | Sí |
 | `status` | Mensajes de éxito y error | Ambas vistas | `0,56,960,52`, z `300` | Sí |
 | `vertical_list` | Lista vertical alternativa de 7 juegos | Biblioteca con juegos | `24,42,438,476`, z `130` | No |
 | `horizontal_list` | Carrusel horizontal alternativo de 7 juegos | Biblioteca con juegos | `0,404,960,136`, z `130` | No |
@@ -276,6 +288,26 @@ integrado:
 | `game_metadata` | Año, estudio y jugadores | Biblioteca con juegos | `510,474,426,44`, z `130` | No |
 | `game_credits` | Desarrollador en la esquina inferior izquierda y publisher en la derecha | Biblioteca con juegos | `20,496,920,36`, z `130` | No |
 | `page_counter` | Posición actual y total de juegos | Biblioteca con juegos | `24,12,260,24`, z `130` | No |
+| `game_grid` | Cuadrícula de tres columnas y dos filas, con carátulas y títulos | Biblioteca con juegos | `24,76,600,400`, z `130` | No |
+| `launch_button` | Botón independiente para lanzar el juego | Biblioteca con juegos | `686,454,244,36`, z `130` | No |
+
+`game_grid` muestra hasta seis juegos sin repetirlos, con caja 3D como artwork
+predeterminado. `←`/`→` avanza un juego, `↑`/`↓` una fila de tres y
+`PageUp`/`PageDown` una página de seis. También funciona con el mando; clic
+selecciona y doble clic lanza. La última página deja vacías las celdas sobrantes.
+Los espacios entre tarjetas y el encabezado no seleccionan juegos.
+
+`horizontal_list artwork="screenshot"` muestra hasta siete capturas y sus
+títulos, usando `game.screenshot`, `game.titleshot`, `game.mix` y `game.image`
+como fallbacks. No repite juegos en bibliotecas pequeñas. `unselected_opacity`
+atenúa las capturas no seleccionadas; la selección lleva el color `accent`.
+Este artwork sólo se admite en `horizontal_list`.
+
+`launch_button` reutiliza el lanzamiento normal por teclado, mando o ratón,
+muestra «Jugar»/«Play» según el idioma y respeta la geometría, la capa y los
+efectos del tema. Al activarlo, el pie mantiene el atajo Enter sin otro botón
+relleno. Sus textos y los botones de cabecera conservan contraste tanto en
+paletas claras como oscuras.
 
 `carousel`, `vertical_list`, `horizontal_list`, `gamecarousel_left`,
 `gamecarousel_right` y `gamecarousel_horizontal` se pueden pulsar para

@@ -35,6 +35,8 @@ impl Language {
 #[allow(dead_code)]
 pub struct Lang {
     pub language: Language,
+    pub frontend_play: &'static str,
+    pub frontend_collection: &'static str,
 
     // ---- Language toggle notification ----
     pub lang_toggled: &'static str,
@@ -231,6 +233,8 @@ impl Lang {
     /// Spanish strings.
     pub fn spanish() -> Self {
         Self {
+            frontend_play: "Jugar",
+            frontend_collection: "Tu colección",
             language: Language::Es,
             lang_toggled: "Idioma cambiado a Español",
 
@@ -462,6 +466,8 @@ impl Lang {
     /// English strings.
     pub fn english() -> Self {
         Self {
+            frontend_play: "Play",
+            frontend_collection: "Your collection",
             language: Language::En,
             lang_toggled: "Language switched to English",
 

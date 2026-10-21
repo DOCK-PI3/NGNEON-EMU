@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Biblioteca clara con seis carátulas por página y ficha lateral. -->
+<theme version="2" id="neo-collection" name="Neo Collection" author="NGNEON-EMU">
+  <canvas width="960" height="540"/>
+  <palette background="#EEF1F6" header="#FFFFFF" panel="#FFFFFF"
+           panel_alt="#E1E7F0" primary="#265DAB" primary_dark="#DDE8F8"
+           secondary="#D4DCE7" accent="#265DAB" warning="#265DAB"
+           success="#247149" text="#192C48" text_soft="#53657C"
+           text_dim="#53657C" border="#D4DCE7" error="#B5223A"/>
+
+  <component id="library_background" visible="false"/>
+  <component id="carousel" visible="false"/>
+  <component id="cabinet" visible="false"/>
+  <component id="game_info" visible="false"/>
+  <component id="game_grid" x="24" y="76" width="600" height="400"
+             z="130" visible="true" artwork="box3d" chrome="none"/>
+  <component id="game_title" x="674" y="320" width="264" height="44"
+             visible="true" chrome="none" show_with_logo="true"
+             font_size="40" min_font_size="24" text_color="#192C48"
+             text_align="left" text_shadow_color="#00000000"/>
+  <component id="game_metadata" x="674" y="369" width="264" height="24"
+             visible="true" chrome="none" font_size="22"
+             fields="developer" text_color="#53657C" text_align="left"/>
+  <component id="game_description" x="674" y="394" width="264" height="56"
+             visible="true" chrome="none" font_size="24" line_height="115%"
+             text_color="#53657C" text_align="left"/>
+  <component id="launch_button" x="686" y="454" width="244" height="36"
+             visible="true" font_size="17" rounded_corners="5"/>
+
+  <layer id="collection-surface" source="assets/surface.png"
+         x="0" y="56" width="960" height="436" z="-50"
+         view="library" fit="stretch"/>
+  <media id="logo" source="game.logo,game.wheel,game.marquee"
+         x="686" y="72" width="244" height="56" z="140"
+         visible="true" chrome="none" fit="contain"/>
+  <media id="preview" source="game.video,game.screenshot,game.titleshot,game.image"
+         x="686" y="139" width="244" height="171" z="120"
+         visible="true" chrome="none" fit="contain" rounded_corners="5"/>
+</theme>

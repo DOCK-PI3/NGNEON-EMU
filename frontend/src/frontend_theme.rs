@@ -55,12 +55,15 @@ pub(crate) enum ThemeComponentId {
     GameMetadata,
     GameCredits,
     PageCounter,
+    GameGrid,
+    LaunchButton,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThemeListArtwork {
     Logo,
     Box3d,
+    Screenshot,
 }
 
 impl ThemeListArtwork {
@@ -68,6 +71,7 @@ impl ThemeListArtwork {
         match normalize_name(value).as_str() {
             "logo" | "wheel" | "marquee" => Some(Self::Logo),
             "box3d" | "box_3d" | "box" => Some(Self::Box3d),
+            "screenshot" | "capture" => Some(Self::Screenshot),
             _ => None,
         }
     }
@@ -90,7 +94,7 @@ impl ThemeChrome {
 }
 
 impl ThemeComponentId {
-    pub(crate) const ALL: [Self; 20] = [
+    pub(crate) const ALL: [Self; 22] = [
         Self::LibraryBackground,
         Self::SettingsBackground,
         Self::Header,
@@ -111,6 +115,8 @@ impl ThemeComponentId {
         Self::GameMetadata,
         Self::GameCredits,
         Self::PageCounter,
+        Self::GameGrid,
+        Self::LaunchButton,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -135,6 +141,8 @@ impl ThemeComponentId {
             Self::GameMetadata => "game_metadata",
             Self::GameCredits => "game_credits",
             Self::PageCounter => "page_counter",
+            Self::GameGrid => "game_grid",
+            Self::LaunchButton => "launch_button",
         }
     }
 
@@ -175,6 +183,8 @@ impl ThemeComponentId {
             Self::GameMetadata => ThemeRect::new(510, 474, 426, 44),
             Self::GameCredits => ThemeRect::new(20, 496, 920, 36),
             Self::PageCounter => ThemeRect::new(24, 12, 260, 24),
+            Self::GameGrid => ThemeRect::new(24, 76, 600, 400),
+            Self::LaunchButton => ThemeRect::new(686, 454, 244, 36),
         }
     }
 
@@ -195,7 +205,9 @@ impl ThemeComponentId {
             | Self::GameDescription
             | Self::GameMetadata
             | Self::GameCredits
-            | Self::PageCounter => 130,
+            | Self::PageCounter
+            | Self::GameGrid
+            | Self::LaunchButton => 130,
         }
     }
 
@@ -212,6 +224,8 @@ impl ThemeComponentId {
                 | Self::GameMetadata
                 | Self::GameCredits
                 | Self::PageCounter
+                | Self::GameGrid
+                | Self::LaunchButton
         )
     }
 }
@@ -432,7 +446,10 @@ impl ThemeComponent {
             rect: id.source_rect(),
             z: id.default_z(),
             visible: id.default_visible(),
-            artwork: if matches!(id, ThemeComponentId::GameCarouselHorizontal) {
+            artwork: if matches!(
+                id,
+                ThemeComponentId::GameCarouselHorizontal | ThemeComponentId::GameGrid
+            ) {
                 ThemeListArtwork::Box3d
             } else {
                 ThemeListArtwork::Logo
@@ -797,7 +814,13 @@ impl ThemeCatalog {
         };
 
         let mut paths = discover_theme_paths(&directory);
-        paths.sort_by_cached_key(|path| path.to_string_lossy().to_ascii_lowercase());
+        // Prefer the current folder layout to flat XML aliases kept by older releases.
+        paths.sort_by_cached_key(|path| {
+            (
+                path.file_name().is_none_or(|name| name != "theme.xml"),
+                path.to_string_lossy().to_ascii_lowercase(),
+            )
+        });
 
         for path in paths.into_iter().take(MAX_CATALOG_THEMES) {
             catalog.push_path(root, &path);
@@ -877,6 +900,18 @@ impl ThemeCatalog {
                         .as_deref()
                         .is_some_and(|candidate| paths_equal(candidate, path))
                 }) {
+                    return;
+                }
+                let legacy_alias = self.entries.iter().any(|entry| {
+                    entry.theme.id.eq_ignore_ascii_case(&theme.id)
+                        && entry.theme.source_path.as_deref().is_some_and(|canonical| {
+                            canonical
+                                .file_name()
+                                .is_some_and(|name| name == "theme.xml")
+                                && canonical.parent().and_then(Path::parent) == path.parent()
+                        })
+                });
+                if legacy_alias {
                     return;
                 }
                 if self
@@ -1228,7 +1263,7 @@ fn parse_component(attributes: &[OwnedAttribute]) -> Result<RawComponent, String
         artwork: attribute(attributes, "artwork")
             .map(|value| {
                 ThemeListArtwork::parse(&value).ok_or_else(|| {
-                    format!("Artwork de lista desconocido: {value}; usa 'logo' o 'box3d'")
+                    format!("Artwork de lista desconocido: {value}; usa 'logo', 'box3d' o 'screenshot'")
                 })
             })
             .transpose()?,
@@ -1271,6 +1306,11 @@ fn parse_component(attributes: &[OwnedAttribute]) -> Result<RawComponent, String
     };
     if component.arc.is_some_and(|value| value > MAX_CAROUSEL_ARC) {
         return Err(format!("arc debe estar entre 0 y {MAX_CAROUSEL_ARC}"));
+    }
+    if component.artwork == Some(ThemeListArtwork::Screenshot)
+        && component.id != ThemeComponentId::HorizontalList
+    {
+        return Err("artwork='screenshot' requiere el componente horizontal_list".to_string());
     }
     reject_unknown_attributes(
         attributes,
@@ -3040,6 +3080,27 @@ mod tests {
     }
 
     #[test]
+    fn folder_themes_take_precedence_over_preserved_flat_legacy_aliases() {
+        let root = temp_dir("catalog-preserved-aliases");
+        write_theme(
+            &root.join("themes"),
+            "neon.xml",
+            r#"<theme version="2" id="NeOn" name="Legacy"/>"#,
+        );
+        write_theme(
+            &root.join("themes/NGNEONNeon"),
+            "theme.xml",
+            r#"<theme version="2" id="neon" name="Current"/>"#,
+        );
+        for selector in ["neon", "neon.xml", "themes/neon.xml"] {
+            let catalog = ThemeCatalog::load(&root, None, Some(selector));
+            assert!(catalog.warnings().is_empty(), "{:?}", catalog.warnings());
+            assert_eq!(catalog.entries().len(), 2);
+            assert_eq!(catalog.selected().theme.name, "Current");
+        }
+    }
+
+    #[test]
     fn invalid_selected_theme_falls_back_without_blocking_startup() {
         let root = temp_dir("fallback");
         let _ = fs::remove_dir_all(&root);
@@ -3082,7 +3143,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let catalog = ThemeCatalog::load(root, None, Some("neon"));
         assert!(catalog.warnings().is_empty(), "{:?}", catalog.warnings());
-        assert_eq!(catalog.entries().len(), 10);
+        assert_eq!(catalog.entries().len(), 12);
         assert_eq!(catalog.selected().theme.id, "neon");
         assert!(catalog
             .entries()
@@ -3116,6 +3177,14 @@ mod tests {
             .entries()
             .iter()
             .any(|entry| entry.theme.id == "fanart-horizon"));
+        assert!(catalog
+            .entries()
+            .iter()
+            .any(|entry| entry.theme.id == "neo-collection"));
+        assert!(catalog
+            .entries()
+            .iter()
+            .any(|entry| entry.theme.id == "cinema-neo"));
     }
 
     #[test]

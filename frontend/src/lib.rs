@@ -6,6 +6,7 @@ mod frontend_music;
 mod frontend_theme;
 mod frontend_video;
 pub mod gamepad;
+pub mod lang;
 pub mod native_frontend;
 pub mod screenshot;
 pub mod video_options;

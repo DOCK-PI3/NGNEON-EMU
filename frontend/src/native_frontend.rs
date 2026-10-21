@@ -7,6 +7,7 @@ use crate::frontend_theme::{
     THEME_HEIGHT, THEME_WIDTH,
 };
 use crate::frontend_video::VideoPlayer;
+use crate::lang::Lang;
 use crate::video_options::{OutputResolution, ScalingFilter};
 use core_emulator::bios::{self, BiosImage, BiosKind, BiosRegion};
 use fontdue::Font;
@@ -48,6 +49,8 @@ const VERTICAL_LIST_ITEMS: usize = 7;
 const BOX3D_VERTICAL_LIST_ITEMS: usize = 5;
 const HORIZONTAL_LIST_ITEMS: usize = 7;
 const HORIZONTAL_BOX_CAROUSEL_ITEMS: usize = 5;
+const GAME_GRID_COLUMNS: usize = 3;
+const GAME_GRID_ITEMS: usize = 6;
 const SETTING_ROW_HEIGHT: usize = 26;
 const SETTINGS_VISIBLE_ROWS: usize = 13;
 const BIOS_PROFILES: [BiosKind; 3] = [BiosKind::Mvs, BiosKind::Aes, BiosKind::Unibios];
@@ -691,12 +694,35 @@ impl NativeFrontend {
     }
 
     fn library_page_size(&self) -> usize {
-        if let Some(id) = self.active_horizontal_list_component() {
+        if self.theme().component(ThemeComponentId::GameGrid).visible {
+            GAME_GRID_ITEMS
+        } else if let Some(id) = self.active_horizontal_list_component() {
             horizontal_list_item_count(self.theme().component(id).artwork)
         } else if let Some(id) = self.active_vertical_list_component() {
             vertical_list_item_count(self.theme().component(id).artwork)
         } else {
             VISIBLE_WHEEL_ROWS
+        }
+    }
+
+    fn library_navigation_step(&self, horizontal: bool) -> isize {
+        if self.theme().component(ThemeComponentId::GameGrid).visible {
+            if horizontal {
+                1
+            } else {
+                GAME_GRID_COLUMNS as isize
+            }
+        } else if self.horizontal_list_active() == horizontal {
+            1
+        } else {
+            self.library_page_size() as isize
+        }
+    }
+
+    fn lang(&self) -> Lang {
+        match self.settings.language {
+            LanguageSetting::Spanish => Lang::spanish(),
+            LanguageSetting::English => Lang::english(),
         }
     }
 
@@ -945,6 +971,7 @@ impl NativeFrontend {
             })
             .collect();
         let active_list = [
+            ThemeComponentId::GameGrid,
             ThemeComponentId::VerticalList,
             ThemeComponentId::HorizontalList,
             ThemeComponentId::GameCarouselLeft,
@@ -959,7 +986,9 @@ impl NativeFrontend {
         let (list_artwork, list_item_count) = active_list.map_or(
             (ThemeListArtwork::Logo, VERTICAL_LIST_ITEMS),
             |(id, component)| {
-                let count = if matches!(
+                let count = if id == ThemeComponentId::GameGrid {
+                    GAME_GRID_ITEMS
+                } else if matches!(
                     id,
                     ThemeComponentId::HorizontalList | ThemeComponentId::GameCarouselHorizontal
                 ) {
@@ -971,9 +1000,21 @@ impl NativeFrontend {
             },
         );
         let list_radius = (list_item_count / 2) as isize;
-        let list_paths: Vec<_> = (-list_radius..=list_radius)
-            .map(|offset| {
-                let index = cycle_index(self.selected, self.games.len(), offset);
+        let list_indices: Vec<_> =
+            if active_list.is_some_and(|(id, _)| id == ThemeComponentId::GameGrid) {
+                let start = self.selected / GAME_GRID_ITEMS * GAME_GRID_ITEMS;
+                (start..(start + GAME_GRID_ITEMS).min(self.games.len())).collect()
+            } else if list_artwork == ThemeListArtwork::Screenshot {
+                let start = screenshot_list_start(self.selected, self.games.len());
+                (start..(start + list_item_count).min(self.games.len())).collect()
+            } else {
+                (-list_radius..=list_radius)
+                    .map(|offset| cycle_index(self.selected, self.games.len(), offset))
+                    .collect()
+            };
+        let list_paths: Vec<_> = list_indices
+            .into_iter()
+            .map(|index| {
                 let path = list_artwork_path(&self.games[index].media, list_artwork);
                 (index, path)
             })
@@ -1013,6 +1054,7 @@ impl NativeFrontend {
                 logo: match list_artwork {
                     ThemeListArtwork::Logo => self.cached_source_image(path, 640, 192),
                     ThemeListArtwork::Box3d => self.cached_source_image(path, 512, 512),
+                    ThemeListArtwork::Screenshot => self.cached_source_image(path, 480, 336),
                 },
             })
             .collect();
@@ -2033,38 +2075,22 @@ fn handle_key(frontend: &mut NativeFrontend, key: Keycode) -> FrontendAction {
             FrontendAction::None
         }
         (FrontendView::Library, Keycode::Up) => {
-            let delta = if frontend.horizontal_list_active() {
-                -(frontend.library_page_size() as isize)
-            } else {
-                -1
-            };
+            let delta = -frontend.library_navigation_step(false);
             frontend.move_selection(delta);
             FrontendAction::None
         }
         (FrontendView::Library, Keycode::Down) => {
-            let delta = if frontend.horizontal_list_active() {
-                frontend.library_page_size() as isize
-            } else {
-                1
-            };
+            let delta = frontend.library_navigation_step(false);
             frontend.move_selection(delta);
             FrontendAction::None
         }
         (FrontendView::Library, Keycode::Left) => {
-            let delta = if frontend.horizontal_list_active() {
-                -1
-            } else {
-                -(frontend.library_page_size() as isize)
-            };
+            let delta = -frontend.library_navigation_step(true);
             frontend.move_selection(delta);
             FrontendAction::None
         }
         (FrontendView::Library, Keycode::Right) => {
-            let delta = if frontend.horizontal_list_active() {
-                1
-            } else {
-                frontend.library_page_size() as isize
-            };
+            let delta = frontend.library_navigation_step(true);
             frontend.move_selection(delta);
             FrontendAction::None
         }
@@ -2133,38 +2159,22 @@ fn handle_controller_button(
 ) -> FrontendAction {
     match (frontend.view, button) {
         (FrontendView::Library, ControllerButton::DPadUp) => {
-            let delta = if frontend.horizontal_list_active() {
-                -(frontend.library_page_size() as isize)
-            } else {
-                -1
-            };
+            let delta = -frontend.library_navigation_step(false);
             frontend.move_selection(delta);
             FrontendAction::None
         }
         (FrontendView::Library, ControllerButton::DPadDown) => {
-            let delta = if frontend.horizontal_list_active() {
-                frontend.library_page_size() as isize
-            } else {
-                1
-            };
+            let delta = frontend.library_navigation_step(false);
             frontend.move_selection(delta);
             FrontendAction::None
         }
         (FrontendView::Library, ControllerButton::DPadLeft) => {
-            let delta = if frontend.horizontal_list_active() {
-                -1
-            } else {
-                -(frontend.library_page_size() as isize)
-            };
+            let delta = -frontend.library_navigation_step(true);
             frontend.move_selection(delta);
             FrontendAction::None
         }
         (FrontendView::Library, ControllerButton::DPadRight) => {
-            let delta = if frontend.horizontal_list_active() {
-                1
-            } else {
-                frontend.library_page_size() as isize
-            };
+            let delta = frontend.library_navigation_step(true);
             frontend.move_selection(delta);
             FrontendAction::None
         }
@@ -2285,6 +2295,23 @@ fn handle_mouse(frontend: &mut NativeFrontend, x: i32, y: i32, clicks: u8) -> Fr
                 return FrontendAction::Launch;
             }
         }
+        (FrontendView::Library, ThemeComponentId::GameGrid) => {
+            let rect = ThemeComponentId::GameGrid.source_rect();
+            let local_x = component_x.saturating_sub(rect.x as usize);
+            let local_y = component_y.saturating_sub(rect.y as usize);
+            if let Some(slot) = game_grid_slot_at(local_x, local_y) {
+                let index = frontend.selected / GAME_GRID_ITEMS * GAME_GRID_ITEMS + slot;
+                if index < frontend.games.len() {
+                    frontend.set_selection(index);
+                    if clicks >= 2 {
+                        return FrontendAction::Launch;
+                    }
+                }
+            }
+        }
+        (FrontendView::Library, ThemeComponentId::LaunchButton) => {
+            return FrontendAction::Launch;
+        }
         (
             FrontendView::Library,
             component @ (ThemeComponentId::VerticalList
@@ -2321,7 +2348,15 @@ fn handle_mouse(frontend: &mut NativeFrontend, x: i32, y: i32, clicks: u8) -> Fr
             let slot_width = rect.width as usize / item_count;
             if let Some(slot) = local_x.checked_div(slot_width) {
                 let slot = slot.min(item_count - 1);
-                frontend.move_selection(slot as isize - (item_count / 2) as isize);
+                if frontend.theme().component(component).artwork == ThemeListArtwork::Screenshot {
+                    let start = screenshot_list_start(frontend.selected, frontend.games.len());
+                    if start + slot >= frontend.games.len() {
+                        return FrontendAction::None;
+                    }
+                    frontend.set_selection(start + slot);
+                } else {
+                    frontend.move_selection(slot as isize - (item_count / 2) as isize);
+                }
                 if clicks >= 2 {
                     return FrontendAction::Launch;
                 }
@@ -2379,7 +2414,7 @@ fn top_interactive_component_at(
     x: i32,
     y: i32,
 ) -> Option<(ThemeComponentId, usize, usize)> {
-    const INTERACTIVE_COMPONENTS: [ThemeComponentId; 10] = [
+    const INTERACTIVE_COMPONENTS: [ThemeComponentId; 12] = [
         ThemeComponentId::Header,
         ThemeComponentId::Carousel,
         ThemeComponentId::VerticalList,
@@ -2390,6 +2425,8 @@ fn top_interactive_component_at(
         ThemeComponentId::LibraryFooter,
         ThemeComponentId::EmptyLibrary,
         ThemeComponentId::Settings,
+        ThemeComponentId::GameGrid,
+        ThemeComponentId::LaunchButton,
     ];
     INTERACTIVE_COMPONENTS
         .into_iter()
@@ -2546,6 +2583,13 @@ fn draw_frontend(framebuffer: &mut [u32], frontend: &NativeFrontend) {
                 scratch.fill(0);
                 draw_theme_component(&mut scratch, frontend, id);
                 let component = frontend.theme().component(id);
+                // The independent launch control draws text at its final pixel size.
+                // Other components retain their historical source geometry.
+                let source_rect = if id == ThemeComponentId::LaunchButton {
+                    component.rect
+                } else {
+                    id.source_rect()
+                };
                 let visual = crate::frontend_effects::animate_visual(
                     component.rect,
                     component.opacity,
@@ -2557,11 +2601,10 @@ fn draw_frontend(framebuffer: &mut [u32], frontend: &NativeFrontend) {
                         framebuffer,
                         visual.rect,
                         &scratch,
-                        id.source_rect(),
+                        source_rect,
                         visual.opacity,
                     );
                 } else {
-                    let source_rect = id.source_rect();
                     let source =
                         extract_buffer_region(&scratch, LOGICAL_WIDTH, LOGICAL_HEIGHT, source_rect);
                     let processed = crate::frontend_effects::apply_image_effects(
@@ -2612,7 +2655,9 @@ fn component_is_active(frontend: &NativeFrontend, id: ThemeComponentId) -> bool 
         | ThemeComponentId::GameDescription
         | ThemeComponentId::GameMetadata
         | ThemeComponentId::GameCredits
-        | ThemeComponentId::PageCounter => {
+        | ThemeComponentId::PageCounter
+        | ThemeComponentId::GameGrid
+        | ThemeComponentId::LaunchButton => {
             if frontend.view != FrontendView::Library {
                 return false;
             }
@@ -2629,7 +2674,9 @@ fn component_is_active(frontend: &NativeFrontend, id: ThemeComponentId) -> bool 
                 | ThemeComponentId::GameDescription
                 | ThemeComponentId::GameMetadata
                 | ThemeComponentId::GameCredits
-                | ThemeComponentId::PageCounter => !frontend.games.is_empty(),
+                | ThemeComponentId::PageCounter
+                | ThemeComponentId::GameGrid
+                | ThemeComponentId::LaunchButton => !frontend.games.is_empty(),
                 ThemeComponentId::EmptyLibrary => frontend.games.is_empty(),
                 _ => true,
             }
@@ -2651,7 +2698,7 @@ fn draw_theme_component(framebuffer: &mut [u32], frontend: &NativeFrontend, id: 
         ThemeComponentId::Carousel => draw_carousel(framebuffer, frontend),
         ThemeComponentId::Cabinet => draw_arcade_cabinet(framebuffer, frontend),
         ThemeComponentId::GameInfo => draw_game_information(framebuffer, frontend),
-        ThemeComponentId::LibraryFooter => draw_library_footer(framebuffer, frontend.palette()),
+        ThemeComponentId::LibraryFooter => draw_library_footer(framebuffer, frontend),
         ThemeComponentId::EmptyLibrary => draw_empty_library(framebuffer, frontend.palette()),
         ThemeComponentId::Settings => draw_settings(framebuffer, frontend),
         ThemeComponentId::Status => draw_status(framebuffer, frontend),
@@ -2668,6 +2715,8 @@ fn draw_theme_component(framebuffer: &mut [u32], frontend: &NativeFrontend, id: 
         ThemeComponentId::GameMetadata => draw_game_metadata(framebuffer, frontend),
         ThemeComponentId::GameCredits => draw_game_credits(framebuffer, frontend),
         ThemeComponentId::PageCounter => draw_page_counter(framebuffer, frontend),
+        ThemeComponentId::GameGrid => draw_game_grid(framebuffer, frontend),
+        ThemeComponentId::LaunchButton => draw_launch_button(framebuffer, frontend),
     }
 }
 
@@ -2722,19 +2771,25 @@ fn list_artwork_path(media: &GameMedia, artwork: ThemeListArtwork) -> Option<Pat
             .or_else(|| media.box_2d.clone())
             .or_else(|| media.box_art.clone())
             .or_else(|| media.thumbnail.clone()),
+        ThemeListArtwork::Screenshot => media
+            .screenshot
+            .clone()
+            .or_else(|| media.title_shot.clone())
+            .or_else(|| media.mix.clone())
+            .or_else(|| media.image.clone()),
     }
 }
 
 const fn vertical_list_item_count(artwork: ThemeListArtwork) -> usize {
     match artwork {
-        ThemeListArtwork::Logo => VERTICAL_LIST_ITEMS,
+        ThemeListArtwork::Logo | ThemeListArtwork::Screenshot => VERTICAL_LIST_ITEMS,
         ThemeListArtwork::Box3d => BOX3D_VERTICAL_LIST_ITEMS,
     }
 }
 
 const fn horizontal_list_item_count(artwork: ThemeListArtwork) -> usize {
     match artwork {
-        ThemeListArtwork::Logo => HORIZONTAL_LIST_ITEMS,
+        ThemeListArtwork::Logo | ThemeListArtwork::Screenshot => HORIZONTAL_LIST_ITEMS,
         ThemeListArtwork::Box3d => HORIZONTAL_BOX_CAROUSEL_ITEMS,
     }
 }
@@ -2976,7 +3031,201 @@ fn draw_vertical_list(framebuffer: &mut [u32], frontend: &NativeFrontend) {
     }
 }
 
+fn screenshot_list_start(selected: usize, count: usize) -> usize {
+    selected
+        .saturating_sub(HORIZONTAL_LIST_ITEMS / 2)
+        .min(count.saturating_sub(HORIZONTAL_LIST_ITEMS))
+}
+
+fn game_grid_cell(slot: usize) -> ThemeRect {
+    let rect = ThemeComponentId::GameGrid.source_rect();
+    let cell_width = rect.width as usize / GAME_GRID_COLUMNS;
+    let cell_height = (rect.height as usize - 36) / 2;
+    ThemeRect::new(
+        rect.x + (slot % GAME_GRID_COLUMNS * cell_width + 6) as i32,
+        rect.y + (36 + slot / GAME_GRID_COLUMNS * cell_height + 6) as i32,
+        (cell_width - 12) as u32,
+        (cell_height - 12) as u32,
+    )
+}
+
+fn game_grid_slot_at(x: usize, y: usize) -> Option<usize> {
+    let source = ThemeComponentId::GameGrid.source_rect();
+    let x = x + source.x as usize;
+    let y = y + source.y as usize;
+    (0..GAME_GRID_ITEMS).find(|slot| {
+        let rect = game_grid_cell(*slot);
+        (rect.x as usize..rect.x as usize + rect.width as usize).contains(&x)
+            && (rect.y as usize..rect.y as usize + rect.height as usize).contains(&y)
+    })
+}
+
+fn draw_game_grid(framebuffer: &mut [u32], frontend: &NativeFrontend) {
+    let colors = frontend.palette();
+    let rect = ThemeComponentId::GameGrid.source_rect();
+    draw_ui_text(
+        framebuffer,
+        rect.x as usize + 6,
+        rect.y as usize,
+        22,
+        colors.text,
+        frontend.lang().frontend_collection,
+    );
+    for (slot, artwork) in frontend
+        .selected_media
+        .list
+        .iter()
+        .take(GAME_GRID_ITEMS)
+        .enumerate()
+    {
+        let cell = game_grid_cell(slot);
+        let selected = artwork.index == frontend.selected;
+        if selected {
+            fill_rect_alpha_signed(framebuffer, cell, colors.panel, 255);
+            stroke_rect_signed(framebuffer, cell, colors.primary, 2);
+        }
+        let picture = ThemeRect::new(cell.x + 8, cell.y + 6, cell.width - 16, cell.height - 42);
+        if let Some(image) = &artwork.logo {
+            blit_raw_fit_signed_alpha(
+                framebuffer,
+                picture,
+                image.width,
+                image.height,
+                &image.pixels,
+                ThemeLayerFit::Contain,
+                255,
+            );
+        } else {
+            fill_rect_alpha_signed(framebuffer, picture, colors.panel_alt, 160);
+        }
+        if let Some(game) = frontend.games.get(artwork.index) {
+            let lines = crate::frontend_font::wrap_text(&game.title, cell.width as usize - 16, 13);
+            for (line, title) in lines.iter().take(2).enumerate() {
+                draw_ui_text(
+                    framebuffer,
+                    cell.x as usize + 8,
+                    cell.y as usize + cell.height as usize - 32 + line * 15,
+                    13,
+                    colors.text,
+                    title,
+                );
+            }
+        }
+    }
+}
+
+fn draw_screenshot_list(framebuffer: &mut [u32], frontend: &NativeFrontend) {
+    let rect = ThemeComponentId::HorizontalList.source_rect();
+    let component = frontend.theme().component(ThemeComponentId::HorizontalList);
+    let colors = frontend.palette();
+    let slot_width = rect.width as usize / HORIZONTAL_LIST_ITEMS;
+    for (slot, artwork) in frontend
+        .selected_media
+        .list
+        .iter()
+        .take(HORIZONTAL_LIST_ITEMS)
+        .enumerate()
+    {
+        let selected = artwork.index == frontend.selected;
+        let cell = ThemeRect::new(
+            rect.x + (slot * slot_width + 4) as i32,
+            rect.y + 6,
+            (slot_width - 8) as u32,
+            rect.height - 12,
+        );
+        if component.chrome == ThemeChrome::Panel {
+            fill_rect_alpha_signed(
+                framebuffer,
+                cell,
+                if selected {
+                    colors.primary_dark
+                } else {
+                    colors.panel
+                },
+                245,
+            );
+        }
+        if let Some(image) = &artwork.logo {
+            let picture = ThemeRect::new(cell.x + 3, cell.y + 3, cell.width - 6, cell.height - 42);
+            blit_raw_fit_signed_alpha(
+                framebuffer,
+                picture,
+                image.width,
+                image.height,
+                &image.pixels,
+                ThemeLayerFit::Cover,
+                if selected {
+                    255
+                } else {
+                    component.unselected_opacity
+                },
+            );
+        }
+        if selected {
+            stroke_rect_signed(framebuffer, cell, colors.accent, 2);
+        }
+        if let Some(game) = frontend.games.get(artwork.index) {
+            let lines = crate::frontend_font::wrap_text(&game.title, cell.width as usize - 12, 12);
+            for (line, title) in lines.iter().take(2).enumerate() {
+                draw_ui_text(
+                    framebuffer,
+                    cell.x as usize + 6,
+                    cell.y as usize + cell.height as usize - 34 + line * 14,
+                    12,
+                    if selected {
+                        colors.text
+                    } else {
+                        colors.text_soft
+                    },
+                    title,
+                );
+            }
+        }
+    }
+}
+
+fn primary_foreground(color: u32) -> u32 {
+    let red = (color >> 16) & 0xFF;
+    let green = (color >> 8) & 0xFF;
+    let blue = color & 0xFF;
+    if red * 299 + green * 587 + blue * 114 > 150_000 {
+        0xFF19_2C48
+    } else {
+        0xFFFF_FFFF
+    }
+}
+
+fn draw_launch_button(framebuffer: &mut [u32], frontend: &NativeFrontend) {
+    let colors = frontend.palette();
+    let component = frontend.theme().component(ThemeComponentId::LaunchButton);
+    let rect = component.rect;
+    fill_rect_alpha_signed(framebuffer, rect, colors.primary, 255);
+    let label = frontend.lang().frontend_play;
+    let size = usize::from(component.font_size.max(16));
+    let width = styled_theme_text_width(frontend, label, size, component.text_style);
+    draw_styled_theme_text(
+        framebuffer,
+        frontend,
+        rect.x + (rect.width as usize).saturating_sub(width) as i32 / 2,
+        rect.y + (rect.height as usize).saturating_sub(size) as i32 / 2,
+        size,
+        primary_foreground(colors.primary),
+        label,
+        component.text_style,
+        None,
+    );
+}
+
 fn draw_horizontal_list(framebuffer: &mut [u32], frontend: &NativeFrontend) {
+    if frontend
+        .theme()
+        .component(ThemeComponentId::HorizontalList)
+        .artwork
+        == ThemeListArtwork::Screenshot
+    {
+        draw_screenshot_list(framebuffer, frontend);
+        return;
+    }
     let rect = ThemeComponentId::HorizontalList.source_rect();
     let x = rect.x.max(0) as usize;
     let y = rect.y.max(0) as usize;
@@ -3764,7 +4013,7 @@ fn draw_header(framebuffer: &mut [u32], frontend: &NativeFrontend) {
         20,
         14,
         if frontend.view == FrontendView::Library {
-            colors.text
+            primary_foreground(colors.primary)
         } else {
             colors.text_dim
         },
@@ -3776,7 +4025,7 @@ fn draw_header(framebuffer: &mut [u32], frontend: &NativeFrontend) {
         20,
         14,
         if frontend.view == FrontendView::Settings {
-            colors.text
+            primary_foreground(colors.primary)
         } else {
             colors.text_dim
         },
@@ -4168,7 +4417,8 @@ fn draw_chip(
     width
 }
 
-fn draw_library_footer(framebuffer: &mut [u32], colors: ThemePalette) {
+fn draw_library_footer(framebuffer: &mut [u32], frontend: &NativeFrontend) {
+    let colors = frontend.palette();
     fill_rect_alpha(
         framebuffer,
         0,
@@ -4179,8 +4429,25 @@ fn draw_library_footer(framebuffer: &mut [u32], colors: ThemePalette) {
         245,
     );
     fill_rect(framebuffer, 0, FOOTER_Y, LOGICAL_WIDTH, 2, colors.border);
-    fill_rect_alpha(framebuffer, 16, 500, 142, 31, colors.primary, 235);
-    draw_ui_text(framebuffer, 35, 508, 14, colors.text, "ENTER  JUGAR");
+    let separate_launch = frontend
+        .theme()
+        .component(ThemeComponentId::LaunchButton)
+        .visible;
+    if !separate_launch {
+        fill_rect_alpha(framebuffer, 16, 500, 142, 31, colors.primary, 235);
+    }
+    draw_ui_text(
+        framebuffer,
+        35,
+        508,
+        14,
+        if separate_launch {
+            colors.text_soft
+        } else {
+            primary_foreground(colors.primary)
+        },
+        "ENTER  JUGAR",
+    );
     const HINTS: [(usize, &str); 7] = [
         (178, "CURSOR  ELEGIR"),
         (304, "PAGINA  SALTO"),
@@ -4470,7 +4737,9 @@ fn draw_segmented_bios(
             x_positions[index] + (108 - text_width(label, 1)) / 2,
             y + 11,
             1,
-            if available {
+            if active {
+                primary_foreground(colors.primary)
+            } else if available {
                 colors.text
             } else {
                 colors.text_dim
@@ -4525,7 +4794,11 @@ fn draw_segmented_region(
             x_positions[index] + (94 - text_width(label, 1)) / 2,
             y + 11,
             1,
-            colors.text,
+            if active {
+                primary_foreground(colors.primary)
+            } else {
+                colors.text
+            },
             label,
         );
     }
@@ -4554,7 +4827,11 @@ fn draw_footer_buttons(
             start + width.saturating_sub(label_width) / 2,
             509,
             2,
-            colors.text,
+            if color == colors.primary {
+                primary_foreground(color)
+            } else {
+                colors.text
+            },
             label,
         );
     }
@@ -6440,6 +6717,124 @@ mod tests {
         let _ = fs::remove_dir_all(directory);
     }
 
+    fn collection_fixture(name: &str, selector: &str) -> NativeFrontend {
+        let directory = temp_dir(name);
+        fs::create_dir_all(directory.join("config")).unwrap();
+        fs::create_dir_all(directory.join("roms")).unwrap();
+        for index in 0..8 {
+            fs::write(directory.join(format!("roms/{index:02}.neo")), []).unwrap();
+        }
+        let project_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        fs::write(
+            directory.join("config/ngneon.conf"),
+            format!(
+                "frontend_theme_dir={}\nfrontend_theme={selector}\nrom_path=roms\n",
+                project_root.join("themes").display()
+            ),
+        )
+        .unwrap();
+        NativeFrontend::load(directory).unwrap()
+    }
+
+    #[test]
+    fn collection_grid_navigates_rows_pages_and_partial_page_without_repeated_games() {
+        let mut frontend = collection_fixture("collection-grid-navigation", "neo-collection");
+        assert_eq!(frontend.games.len(), 8);
+        assert_eq!(frontend.selected_media.list.len(), 6);
+        handle_key(&mut frontend, Keycode::Right);
+        assert_eq!(frontend.selected, 1);
+        handle_key(&mut frontend, Keycode::Down);
+        assert_eq!(frontend.selected, 4);
+        handle_controller_button(&mut frontend, ControllerButton::DPadLeft);
+        assert_eq!(frontend.selected, 3);
+        handle_controller_button(&mut frontend, ControllerButton::DPadUp);
+        assert_eq!(frontend.selected, 0);
+        handle_key(&mut frontend, Keycode::PageDown);
+        assert_eq!(frontend.selected, 6);
+        assert_eq!(
+            frontend
+                .selected_media
+                .list
+                .iter()
+                .map(|item| item.index)
+                .collect::<Vec<_>>(),
+            vec![6, 7]
+        );
+
+        let cell = game_grid_cell(1);
+        handle_mouse(&mut frontend, cell.x + 20, cell.y + 20, 1);
+        assert_eq!(frontend.selected, 7);
+        let empty_cell = game_grid_cell(5);
+        assert_eq!(
+            handle_mouse(&mut frontend, empty_cell.x + 20, empty_cell.y + 20, 2),
+            FrontendAction::None
+        );
+        assert_eq!(frontend.selected, 7);
+        assert_eq!(
+            handle_mouse(&mut frontend, 710, 470, 1),
+            FrontendAction::Launch
+        );
+    }
+
+    #[test]
+    fn cinema_strip_mouse_matches_visible_artwork_at_both_catalog_ends() {
+        let mut frontend = collection_fixture("cinema-strip-navigation", "cinema-neo");
+        assert_eq!(
+            frontend
+                .selected_media
+                .list
+                .iter()
+                .map(|item| item.index)
+                .collect::<Vec<_>>(),
+            (0..7).collect::<Vec<_>>()
+        );
+        frontend.set_selection(7);
+        assert_eq!(
+            frontend
+                .selected_media
+                .list
+                .iter()
+                .map(|item| item.index)
+                .collect::<Vec<_>>(),
+            (1..8).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            handle_mouse(&mut frontend, 70, 400, 2),
+            FrontendAction::Launch
+        );
+        assert_eq!(frontend.selected, 1);
+        frontend.games.truncate(2);
+        frontend.set_selection(0);
+        assert_eq!(frontend.selected_media.list.len(), 2);
+        assert_eq!(
+            handle_mouse(&mut frontend, 900, 400, 2),
+            FrontendAction::None
+        );
+        assert_eq!(frontend.selected, 0);
+    }
+
+    #[test]
+    fn grid_hitboxes_ignore_title_and_gaps_and_follow_transformed_rectangles() {
+        assert_eq!(game_grid_slot_at(50, 10), None);
+        assert_eq!(game_grid_slot_at(200, 80), None);
+        let mut frontend = collection_fixture("collection-grid-transform", "neo-collection");
+        let path = frontend.root.join("compact.xml");
+        fs::write(&path, r#"<theme version="2" id="compact-grid">
+            <component id="carousel" visible="false"/>
+            <component id="cabinet" visible="false"/>
+            <component id="game_info" visible="false"/>
+            <component id="game_grid" x="30" y="120" width="300" height="200" visible="true" artwork="box3d"/>
+        </theme>"#).unwrap();
+        frontend.theme_catalog = ThemeCatalog::load(&frontend.root, Some("."), path.to_str());
+        assert_eq!(frontend.theme().id, "compact-grid");
+        frontend.load_selected_media();
+        assert_eq!(
+            handle_mouse(&mut frontend, 160, 160, 2),
+            FrontendAction::Launch
+        );
+        assert_eq!(frontend.selected, 1);
+    }
+
     #[test]
     fn bundled_themes_render_distinct_non_empty_frames() {
         let directory = temp_dir("theme-render");
@@ -6462,6 +6857,8 @@ mod tests {
             "neogeo-green-cabinet",
             "neogeo-29-cabinet",
             "fanart-horizon",
+            "neo-collection",
+            "cinema-neo",
         ] {
             fs::write(
                 directory.join("config/ngneon.conf"),
@@ -6472,6 +6869,8 @@ mod tests {
             )
             .unwrap();
             let mut frontend = NativeFrontend::load(directory.clone()).unwrap();
+            // Snapshot the settled layout, not a fade-in's transparent first frame.
+            frontend.theme_animation_started_at = Instant::now() - Duration::from_secs(11);
             let mut framebuffer = vec![0; LOGICAL_WIDTH * LOGICAL_HEIGHT];
             draw_frontend(&mut framebuffer, &frontend);
 
@@ -6504,7 +6903,7 @@ mod tests {
             );
             save_theme_preview(&framebuffer, &format!("{selector}-settings"));
         }
-        assert_eq!(signatures.len(), 9);
+        assert_eq!(signatures.len(), 11);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -6530,6 +6929,8 @@ mod tests {
             "neogeo-green-cabinet",
             "neogeo-29-cabinet",
             "fanart-horizon",
+            "neo-collection",
+            "cinema-neo",
         ] {
             fs::write(
                 directory.join("config/ngneon.conf"),
@@ -6543,6 +6944,20 @@ mod tests {
             .unwrap();
             let mut frontend = NativeFrontend::load(directory.clone()).unwrap();
             assert!(frontend.games.len() > 100);
+            if matches!(selector, "neo-collection" | "cinema-neo") {
+                let index = frontend
+                    .games
+                    .iter()
+                    .position(|game| game.path.file_stem().is_some_and(|stem| stem == "mslug3"))
+                    .unwrap();
+                frontend.set_selection(index);
+                assert!(!frontend.selected_media.list.is_empty());
+                assert!(frontend
+                    .selected_media
+                    .list
+                    .iter()
+                    .all(|item| item.logo.is_some()));
+            }
             if let Some(preview) = frontend.selected_media.dynamic.get("preview") {
                 assert!(preview.uses_video);
                 assert!(preview.image.is_some(), "fallback estático de {selector}");

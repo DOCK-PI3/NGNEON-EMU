@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fanart protagonista y tira horizontal de capturas con sus títulos. -->
+<theme version="2" id="cinema-neo" name="Cinema Neo" author="NGNEON-EMU">
+  <canvas width="960" height="540"/>
+  <font source="assets/Rajdhani-SemiBold.ttf"/>
+  <palette background="#0D1726" header="#900D1726" panel="#D0142133"
+           panel_alt="#223249" primary="#D2A352" primary_dark="#223249"
+           secondary="#3C4B60" accent="#D2A352" warning="#D2A352"
+           success="#7ECDAC" text="#FFFFFF" text_soft="#D0D9E6"
+           text_dim="#A7B7CC" border="#3C4B60" error="#FF8D9B"/>
+
+  <component id="library_background" visible="false"/>
+  <component id="carousel" visible="false"/>
+  <component id="cabinet" visible="false"/>
+  <component id="game_info" visible="false"/>
+  <component id="horizontal_list" x="28" y="364" width="904" height="122"
+             z="150" visible="true" artwork="screenshot"
+             unselected_opacity="0.82" chrome="panel"/>
+  <component id="game_title" x="30" y="94" width="344" height="102"
+             z="130" visible="true" chrome="none" font_size="48"
+             text_align="left" text_color="#FFFFFF"/>
+  <component id="game_metadata" x="28" y="217" width="344" height="28"
+             visible="true" chrome="none" font_size="24"
+             fields="developer" text_align="left" text_color="#D0D9E6"/>
+  <component id="game_description" x="28" y="250" width="350" height="74"
+             visible="true" chrome="none" font_size="23" line_height="120%"
+             text_color="#D0D9E6" text_align="left"/>
+  <component id="launch_button" x="40" y="326" width="146" height="34"
+             visible="true" z="160" font_size="18" rounded_corners="5"/>
+
+  <media id="backdrop" source="game.fanart,game.screenshot,game.mix,game.image"
+         x="0" y="0" width="960" height="540" z="-100"
+         visible="true" chrome="none" fit="cover"/>
+  <layer id="cinema-shade" source="assets/shade.png"
+         x="0" y="0" width="960" height="540" z="-50"
+         view="library" fit="stretch"/>
+  <media id="logo" source="game.logo,game.wheel,game.marquee"
+         x="40" y="96" width="300" height="100" z="140"
+         visible="true" chrome="none" fit="contain"
+         shadow_color="#80000000" shadow_x="2" shadow_y="3" shadow_blur="3"/>
+</theme>
